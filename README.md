@@ -30,15 +30,3 @@ bun run dev
 ```bash
 bun run build
 ```
-
-## 기출 / 독자제공 프로젝트 (로컬 전용)
-
-문제 원문과 생성된 패키지는 `private/` 에만 두며 **GitHub에 올리지 않습니다**.
-
-```bash
-bun run build:gichul    # 퇴딴짓 + part4
-bun run build:golden    # 골든래빗 09 독자제공 (기출변형·수준별 모의고사)
-```
-
-- [docs/private-gichul.md](docs/private-gichul.md) — build then **프로젝트 불러오기** (`gichul.project.zip`)
-- [docs/private-goldenrabbit.md](docs/private-goldenrabbit.md) — build then **프로젝트 불러오기** (`goldenrabbit.project.zip`)
