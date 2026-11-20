@@ -9,13 +9,20 @@ import ExamPickPage from '@/pages/ExamPickPage';
 import ExamPage from '@/pages/ExamPage';
 import GradeResultPage from '@/pages/GradeResultPage';
 
+/** Vite `base` (trailing slash) → React Router basename (no trailing slash). */
+const routerBasename = (() => {
+  const raw = import.meta.env.BASE_URL || '/';
+  if (raw === '/') return undefined;
+  return raw.replace(/\/$/, '') || undefined;
+})();
+
 export default function App() {
   return (
     <ThemeProvider>
       <RuntimeProvider>
         <ProjectProvider>
           <ExamSessionProvider>
-            <BrowserRouter>
+            <BrowserRouter basename={routerBasename}>
               <Routes>
                 <Route path="/" element={<HomePage />} />
                 <Route path="/project" element={<ProjectPage />} />

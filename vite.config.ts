@@ -4,7 +4,11 @@ import { fileURLToPath, URL } from 'node:url';
 
 const rootDir = fileURLToPath(new URL('.', import.meta.url));
 
+/** Project Pages path; override with VITE_BASE=/ for user/org root sites. */
+const base = process.env.VITE_BASE ?? '/';
+
 export default defineConfig({
+  base,
   plugins: [react()],
   resolve: {
     alias: {
