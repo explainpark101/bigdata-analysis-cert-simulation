@@ -9,3 +9,25 @@ dist-ssr
 !.env.example
 # Keep bun.lock committed; ignore only local caches
 *.tsbuildinfo
+
+# =============================================================================
+# PRIVATE past-exam (기출) content — NEVER commit / push to GitHub
+# Includes: 퇴딴짓 problem text, part4 CSV cache, generated project packages
+# =============================================================================
+private/
+**/gichul.project.json
+**/gichul.project.zip
+**/goldenrabbit.project.json
+**/goldenrabbit.project.zip
+# Never track copied 기출 markdown / packages under any name
+**/*_기출.md
+**/*.gichul.*
+**/*.goldenrabbit.*
+# Builder + docs are public; outputs stay private/
+!docs/private-gichul.md
+!docs/private-goldenrabbit.md
+!scripts/
+!scripts/build-gichul-project.ts
+!scripts/build-goldenrabbit-project.ts
+docs/rea/
+docs/private-*.md

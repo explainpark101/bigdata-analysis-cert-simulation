@@ -1,0 +1,4 @@
+# Past-exam content must never be indexed or suggested for commit
+private/
+**/gichul.project.json
+**/gichul.project.zip

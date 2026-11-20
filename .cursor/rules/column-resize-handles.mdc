@@ -1,0 +1,48 @@
+---
+description: Left/right column splits must use EdgeResizeHandle for width
+alwaysApply: true
+---
+
+# Column resize handles
+
+Any **left/right column split** (sidebar | main, main | preview, problem | workspace, etc.) MUST expose a horizontal width control via `EdgeResizeHandle` (`axis="x"`).
+
+## Requirements
+
+- Use existing [`EdgeResizeHandle`](src/components/layout/EdgeResizeHandle.tsx) + [`useEdgeResize`](src/hooks/useEdgeResize.ts). Do not invent a second drag API.
+- Wrap the sized column in a `position: relative` pane; put the handle on that pane’s shared edge.
+- Keep min/max clamps (sensible mins ~200–280px; max from viewport).
+- Pane must stay within the viewport: parent `overflow: hidden` / `min-height: 0`; only inner content scrolls.
+- Handle on the **left** edge of a right-hand pane → set `invert`.
+- Mobile/narrow breakpoints may hide the handle and stack columns; desktop must keep resize.
+
+## Pattern
+
+```tsx
+const [sideWidth, setSideWidth] = useState(240);
+
+<div className="split-layout">
+  <div className="side-pane" style={{ width: sideWidth }}>
+    {/* left column */}
+    <EdgeResizeHandle
+      axis="x"
+      value={sideWidth}
+      onChange={setSideWidth}
+      min={200}
+      max={480}
+      label="사이드바 너비 조절"
+    />
+  </div>
+  <div className="main-pane">{/* flex: 1; min-width: 0 */}</div>
+</div>
+```
+
+## Anti-patterns
+
+```tsx
+// ❌ Fixed grid columns with no handle
+<div style={{ display: 'grid', gridTemplateColumns: '240px 1fr' }} />
+
+// ❌ CSS-only resize without EdgeResizeHandle
+aside { resize: horizontal; }
+```

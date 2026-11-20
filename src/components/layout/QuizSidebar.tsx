@@ -1,5 +1,5 @@
 import type { ExamSet, QuizProblem } from '@/types/exam';
-import { submittedCount } from '@/lib/examIO';
+import { submittedCount } from '@/lib/projectIO';
 
 interface QuizSidebarProps {
   exam: ExamSet;
@@ -8,15 +8,19 @@ interface QuizSidebarProps {
 }
 
 function statusLabel(quiz: QuizProblem): { text: string; className: string } {
+  if (quiz.kind === 'practice' || quiz.kind === 'guide') {
+    return { text: '문제 풀이', className: 'quiz-status quiz-status--info' };
+  }
   if (quiz.kind !== 'submit') {
-    return { text: '문제 풀이', className: 'badge' };
+    return { text: '안내', className: 'quiz-status quiz-status--info' };
   }
   if (quiz.submitted) {
-    return { text: '제출', className: 'badge ok' };
+    return { text: '제출', className: 'quiz-status quiz-status--ok' };
   }
-  return { text: '미제출', className: 'badge warn' };
+  return { text: '미제출', className: 'quiz-status quiz-status--warn' };
 }
 
+/** DataQ-style left quiz navigator. */
 export function QuizSidebar({ exam, activeId, onSelect }: QuizSidebarProps) {
   const { done, total } = submittedCount(exam);
 
@@ -30,9 +34,11 @@ export function QuizSidebar({ exam, activeId, onSelect }: QuizSidebarProps) {
           </strong>
         </div>
       </div>
+
       <div className="quiz-list">
         {exam.quizzes.map((quiz) => {
           const status = statusLabel(quiz);
+          const showNumber = Boolean(quiz.number);
           return (
             <button
               key={quiz.id}
@@ -40,11 +46,11 @@ export function QuizSidebar({ exam, activeId, onSelect }: QuizSidebarProps) {
               className={`quiz-item ${quiz.id === activeId ? 'active' : ''}`}
               onClick={() => onSelect(quiz.id)}
             >
-              <div className="quiz-item__top">
-                <span>{quiz.number || '·'}</span>
-                <span className={status.className}>{status.text}</span>
-              </div>
-              <div className="quiz-item__title">{quiz.title}</div>
+              {showNumber ? (
+                <span className="quiz-item__num">{quiz.number}</span>
+              ) : null}
+              <span className="quiz-item__title">{quiz.title}</span>
+              <span className={status.className}>{status.text}</span>
             </button>
           );
         })}
