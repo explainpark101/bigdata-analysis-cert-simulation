@@ -1,0 +1,7 @@
+[install]
+# Prefer bun.lock — do not use npm/yarn lockfiles for this project.
+exact = false
+auto = true
+
+[run]
+bun = true

@@ -1,0 +1,11 @@
+node_modules
+dist
+dist-ssr
+*.local
+.DS_Store
+.vite
+.env
+.env.*
+!.env.example
+# Keep bun.lock committed; ignore only local caches
+*.tsbuildinfo

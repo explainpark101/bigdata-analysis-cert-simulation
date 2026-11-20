@@ -1,0 +1,123 @@
+- document:
+  - banner:
+    - img
+    - text: 시험빅데이터분석기사 실기 체험
+    - img
+    - text: "제출 완료 문제 제출 완료 : 00/03"
+    - link "빅데이터분석기사 실기 체험환경 안내 문제 풀이":
+      - /url: /exam/3/빅데이터분석기사-실기-체험/quiz/1?embed
+      - img
+      - text: 빅데이터분석기사 실기 체험환경 안내
+      - img
+      - text: 문제 풀이
+    - link "(체험) 제1유형 (풀이용) 문제 풀이":
+      - /url: /exam/3/빅데이터분석기사-실기-체험/quiz/2?embed
+      - img
+      - text: (체험) 제1유형 (풀이용)
+      - img
+      - text: 문제 풀이
+    - link "01 (체험) 제1유형 (답안제출) 미제출":
+      - /url: /exam/3/빅데이터분석기사-실기-체험/quiz/3?embed
+      - img
+      - text: 01 (체험) 제1유형 (답안제출) 미제출
+    - link "02 (체험) 제2유형 미제출":
+      - /url: /exam/3/빅데이터분석기사-실기-체험/quiz/4?embed
+      - img
+      - text: 02 (체험) 제2유형 미제출
+    - link "(체험) 제3유형 (풀이용) 문제 풀이":
+      - /url: /exam/3/빅데이터분석기사-실기-체험/quiz/5?embed
+      - img
+      - text: (체험) 제3유형 (풀이용)
+      - img
+      - text: 문제 풀이
+    - link "03 (체험) 제3유형 (답안제출) 미제출":
+      - /url: /exam/3/빅데이터분석기사-실기-체험/quiz/6?embed
+      - img
+      - text: 03 (체험) 제3유형 (답안제출) 미제출
+    - button "맨 아래로 이동"
+    - button:
+      - img
+    - text: 시험빅데이터분석기사 실기 체험 제한 시간 없음
+    - img
+    - img "화면 설정"
+  - text: 우측 버튼을 눌러 기기를 연결해주세요.
+  - main:
+    - img
+    - text: "제출 : 00/03"
+    - button "Open hamburger menu":
+      - img
+      - text: 문제 풀이
+    - button "Open hamburger menu":
+      - img
+      - text: 문제 풀이
+    - button "Open hamburger menu": 01 미제출
+    - button "Open hamburger menu": 02 미제출
+    - button "Open hamburger menu":
+      - img
+      - text: 문제 풀이
+    - button "Open hamburger menu": 03 미제출
+    - button "문제 정보"
+    - article:
+      - group "zoom controller":
+        - group:
+          - button "축소"
+          - status: 100%
+          - button "확대"
+      - text: 빅데이터분석기사 실기 체험환경 안내 유형 프로그래밍
+      - region "본문 내용":
+        - region "일반 콘텐츠 영역":
+          - paragraph: 본 사이트는 빅데이터분석기사 실기 응시자가 사전에 시험 환경을 체험할 수 있도록 하기 위해 제공되고 있습니다.
+          - paragraph
+          - paragraph: 1. 본 사이트에서 제공되는 예시 문제는 시험 환경 테스트를 목적으로 제공되는 예시 문제로 실제 출제되는 시험문제의 경향과 다를 수 있으며, 코드 작성, 결과 실행, 답안 제출 등의 체험 목적으로만 활용하여 주시기 바랍니다.
+          - paragraph: "* 실제 시험환경에서는 코드 및 메모장 작성내용이 저장되나, 체험환경에서는 저장 기능 미제공"
+          - paragraph
+          - paragraph: 2. 본 사이트에서는 시험환경에서 제공되는 패키지 및 라이브러리를 출력하여 확인할 수 있으며, 오른쪽 화면의 언어별 기본 코드를 실행하여 확인 가능합니다.
+          - paragraph
+          - paragraph: 3. 시험환경에서 제공되는 패키지 및 라이브러리는 시험 회차별로 다를 수 있으며, 자세한 내용은 데이터자격검정 홈페이지 공지사항을 참조하여 주시기 바랍니다.
+          - paragraph
+          - paragraph: 4. 기타 시험환경 이용 방법 등과 관련하여 자세한 내용은 ‘빅데이터분석기사 체험환경 가이드’를 참조하시기 바랍니다.
+          - paragraph
+          - paragraph
+          - paragraph:
+            - text: ◾
+            - link "빅데이터분석기사 체험환경 가이드 링크":
+              - /url: https://kr.object.gov-ncloudstorage.com/dataq/dataq-10th/%5BK-DATA%5D%20%EB%B9%85%EB%8D%B0%EC%9D%B4%ED%84%B0%EB%B6%84%EC%84%9D%EA%B8%B0%EC%82%AC%20%EC%8B%A4%EA%B8%B0%20%EC%B2%B4%ED%97%98%ED%99%98%EA%B2%BD%20%EA%B0%80%EC%9D%B4%EB%93%9C_250605.pdf
+          - paragraph
+    - button "Python3":
+      - text: Python3
+      - img
+    - button "초기화"
+    - button "저장" [disabled]
+    - button "실행"
+    - button "테스트 케이스 추가"
+    - button "테스트"
+    - list:
+      - listitem:
+        - list:
+          - listitem: Python3
+      - listitem
+    - textbox "코드"
+    - text: "# · 코드 · 실행 · 시 · 제공 · 패키지 · 리스트 · 확인 · 가능 import · pkg_resources · import · pandas · pandas.set_option('display.max_rows', · None) OutputDataSet · = · pandas.DataFrame(sorted([(i.key, · i.version) · for · i · in · pkg_resources.working_set])) · print(OutputDataSet) # · 파이썬 · 제공 · 패키지 · 수 · : · 63개 # · updated · 2026.6.9, · 제12회 · 빅데이터분석기사 · 실기 · 버전 # · Warning · 메세지로 · 인한 · 실행 · 실패 · 안내는 · 실행 · 및 · 결과에 · 영향없음.(가이드 · 3p · 참고)"
+    - list:
+      - listitem:
+        - list:
+          - listitem: 실행 결과
+          - listitem: 제출 결과
+          - listitem: 테스트 케이스
+    - textbox "Terminal input"
+    - button "정지" [disabled]
+    - button "메모장"
+    - button "문제1"
+    - button "문제2"
+    - button "문제3"
+    - button "문제4"
+    - checkbox
+    - text: 문제탭 자동 이동
+    - img
+    - textbox "메모를 작성해보세요."
+  - contentinfo:
+    - navigation "breadcrumb":
+      - list:
+        - listitem: 빅데이터분석기사 실기 체험환경
+    - text: 1/6 다음 문제
+    - img
