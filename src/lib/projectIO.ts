@@ -452,6 +452,11 @@ export function materializeExam(
       for (const bank of banks) {
         submitSeq += 1;
         const files = collectQuizFiles(project, [bank]);
+        const filePaths = files.map((f) => f.path);
+        const bankStarter = bank.starterCode;
+        const hasBankStarter = Boolean(
+          bankStarter?.python?.trim() || bankStarter?.r?.trim(),
+        );
         quizzes.push({
           id: bank.id,
           number: String(submitSeq).padStart(2, '0'),
@@ -463,10 +468,9 @@ export function materializeExam(
           viewMode: 'code',
           markdown: bank.markdown,
           language: bank.language,
-          starterCode: buildStarterCode(
-            2,
-            files.map((f) => f.path),
-          ),
+          starterCode: hasBankStarter
+            ? { ...bankStarter! }
+            : buildStarterCode(2, filePaths),
           answerCode: bank.answerCode ? { ...bank.answerCode } : undefined,
           gradingCode: bank.gradingCode ? { ...bank.gradingCode } : undefined,
           files,
@@ -481,10 +485,30 @@ export function materializeExam(
     }
 
     // Type 1 / 3: practice (code) + short-answer submit page "문제 풀이"
+    // Keep asset order aligned with exam problem order so starter loads
+    // the selected paper's datasets (문제 1 → first file, …).
     const files = collectQuizFiles(project, banks);
+    const orderedPaths: string[] = [];
+    const seenPath = new Set<string>();
+    for (const bank of banks) {
+      for (const f of resolveAssets(project, bank.assetIds)) {
+        if (seenPath.has(f.path)) continue;
+        seenPath.add(f.path);
+        orderedPaths.push(f.path);
+      }
+    }
+    for (const f of files) {
+      if (seenPath.has(f.path)) continue;
+      seenPath.add(f.path);
+      orderedPaths.push(f.path);
+    }
     const lang = banks[0]?.language ?? 'python';
     const practiceId = `${blueprint.id || project.id}-t${taskType}-practice`;
     const submitId = `${blueprint.id || project.id}-t${taskType}-submit`;
+    const firstStarter = banks[0]?.starterCode;
+    const useFirstStarter =
+      banks.length === 1 &&
+      Boolean(firstStarter?.python?.trim() || firstStarter?.r?.trim());
 
     quizzes.push({
       id: practiceId,
@@ -495,10 +519,9 @@ export function materializeExam(
       viewMode: 'code',
       markdown: mergeMarkdown(banks),
       language: lang,
-      starterCode: buildStarterCode(
-        taskType,
-        files.map((f) => f.path),
-      ),
+      starterCode: useFirstStarter
+        ? { ...firstStarter! }
+        : buildStarterCode(taskType, orderedPaths),
       answerCode: banks[0]?.answerCode
         ? { ...banks[0].answerCode }
         : emptyCodePair(),

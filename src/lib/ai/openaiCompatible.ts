@@ -1,5 +1,6 @@
 import {
   chatCompletionsUrl,
+  modelsUrl,
   type AiEndpointSettings,
 } from '@/lib/aiSettings';
 
@@ -111,4 +112,44 @@ export async function testAiConnection(
     temperature: 0,
   });
   return (result.message.content ?? '').trim() || '(empty)';
+}
+
+/** GET /models — OpenAI-compatible model list. */
+export async function listAiModels(
+  settings: Pick<AiEndpointSettings, 'baseUrl' | 'apiKey'>,
+): Promise<string[]> {
+  if (!settings.apiKey.trim()) {
+    throw new Error('AI API 키가 설정되지 않았습니다.');
+  }
+  const res = await fetch(modelsUrl(settings.baseUrl), {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${settings.apiKey}`,
+    },
+  });
+  const text = await res.text();
+  let json: unknown;
+  try {
+    json = JSON.parse(text) as unknown;
+  } catch {
+    throw new Error(
+      `모델 목록 응답이 JSON이 아닙니다 (${res.status}): ${text.slice(0, 240)}`,
+    );
+  }
+  if (!res.ok) {
+    const errObj = json as { error?: { message?: string } };
+    throw new Error(
+      errObj.error?.message ||
+        `모델 목록 요청 실패 (${res.status}): ${text.slice(0, 240)}`,
+    );
+  }
+  const data = (json as { data?: Array<{ id?: string }> }).data;
+  if (!Array.isArray(data)) {
+    throw new Error('모델 목록 형식이 올바르지 않습니다 (data 배열 없음).');
+  }
+  const ids = data
+    .map((m) => String(m?.id ?? '').trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+  return [...new Set(ids)];
 }

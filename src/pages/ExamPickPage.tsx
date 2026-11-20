@@ -2,10 +2,12 @@ import { useId, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import { useProject } from '@/context/ProjectContext';
+import { useExamSession } from '@/context/ExamSessionContext';
 import { ExamBlueprintPicker } from '@/components/exam/ExamBlueprintPicker';
 
 export default function ExamPickPage() {
   const { project, activeExam, selectExam, pushExamToSession } = useProject();
+  const { setExam } = useExamSession();
   const navigate = useNavigate();
   const formTitleId = useId();
   const [selectedId, setSelectedId] = useState(
@@ -20,7 +22,8 @@ export default function ExamPickPage() {
     setMessage('');
     try {
       selectExam(selectedId);
-      await pushExamToSession(selectedId);
+      const next = await pushExamToSession(selectedId);
+      setExam(next);
       navigate('/exam');
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));

@@ -260,10 +260,10 @@ print(nrow(train))
       },
       gradingCode: {
         python: `"""
-Type-2 grading reference
-- Model: RandomForestRegressor(n_estimators=80, random_state=42)
-- Features: drop id + total_purchase; LabelEncode gender
-- Metric: RMSE / MAE between student result.csv["pred"] and reference preds
+Type-2 grading reference (regression / RMSE)
+- Answer model: RandomForestRegressor(n_estimators=80, random_state=42)
+- Test has no labels → compare student pred to answer-model pred
+- Print ML_TYPE / METRIC / STUDENT / REF / Y_SCALE for the app scorer
 """
 import pandas as pd
 import numpy as np
@@ -292,18 +292,26 @@ pred = sub["pred"].to_numpy(dtype=float)
 if len(pred) != len(ref_pred):
     raise SystemExit(f"FAIL: pred length {len(pred)} != {len(ref_pred)}")
 
-rmse = float(np.sqrt(mean_squared_error(ref_pred, pred)))
-mae = float(mean_absolute_error(ref_pred, pred))
+# Error vs answer-model predictions (REF=0 means identical to answer)
+student_rmse = float(np.sqrt(mean_squared_error(ref_pred, pred)))
+student_mae = float(mean_absolute_error(ref_pred, pred))
+y_scale = float(np.std(y, ddof=1)) if len(y) > 1 else float(np.std(ref_pred))
+
+print("ML_TYPE=regression")
+print("METRIC=rmse")
+print(f"STUDENT={student_rmse:.6f}")
+print("REF=0")
+print(f"Y_SCALE={y_scale:.6f}")
+print(f"METRIC_MAE={student_mae:.6f}")
 print(f"REF_MODEL=RandomForestRegressor(n_estimators=80, random_state=42)")
-print(f"METRIC_RMSE={rmse:.6f}")
-print(f"METRIC_MAE={mae:.6f}")
-print("PASS" if rmse < 1e-6 else "SCORE")
 `,
         r: `# Type-2 grading (R sketch): compare result.csv pred length to test rows
 train <- read.csv("data/customer_train.csv")
 test <- read.csv("data/customer_test.csv")
 sub <- read.csv("result.csv")
 stopifnot("pred" %in% names(sub))
+print("ML_TYPE=regression")
+print("METRIC=rmse")
 print(paste("n_test", nrow(test), "n_pred", length(sub$pred)))
 `,
       },

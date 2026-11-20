@@ -1,10 +1,9 @@
 /**
- * Build a local-only AuthoringProject from:
- * - 퇴딴짓 기출 markdown (problem text / solutions)
- * - lovedlim/bigdata_analyst_cert_v2 part4 CSVs
+ * Build a local-only AuthoringProject from 문제복원:
+ * - `N회_기출.md` — problem text
+ * - `codes/chN/*.csv` + `*.ipynb` — datasets and solution notebooks
  *
- * Output is written ONLY under ./private/ (gitignored).
- * Never commit the output or copy 기출 text into src/.
+ * `ch\\d` folder digit = exam round. Output ONLY under ./private/ (gitignored).
  */
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -19,26 +18,23 @@ import {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PRIVATE_DIR = path.join(ROOT, 'private');
-const CACHE_DIR = path.join(PRIVATE_DIR, 'cache', 'part4');
 const OUT_JSON = path.join(PRIVATE_DIR, 'gichul.project.json');
 const OUT_ZIP = path.join(PRIVATE_DIR, 'gichul.project.zip');
 
-const DEFAULT_MD_DIR =
+const DEFAULT_SRC_DIR =
+  process.env.GICHUL_SRC_DIR ||
   process.env.GICHUL_MD_DIR ||
   path.join(
     process.env.USERPROFILE || process.env.HOME || '',
     'Documents',
     '빅데이터분석기사',
     '퇴딴짓_기출',
-    '퇴딴짓',
+    '문제복원',
   );
 
-const REPO = 'lovedlim/bigdata_analyst_cert_v2';
-const RAW = `https://raw.githubusercontent.com/${REPO}/main`;
-
-/** Rounds that have part4/chN upstream. */
-const PART4_ROUNDS = [2, 3, 4, 5, 6, 7, 8, 9] as const;
-/** Extra rounds present only in 퇴딴짓 (CSV may be missing). */
+/** Rounds with codes/chN data. */
+const CODE_ROUNDS = [2, 3, 4, 5, 6, 7, 8, 9] as const;
+/** Extra markdown-only rounds (CSV may be missing). */
 const EXTRA_ROUNDS = [10, 11] as const;
 
 interface CodeByLanguage {
@@ -107,48 +103,115 @@ function assertPrivatePath(p: string): void {
   }
 }
 
-async function listRepoPart4Csvs(): Promise<string[]> {
-  const api = `https://api.github.com/repos/${REPO}/git/trees/main?recursive=1`;
-  const res = await fetch(api, {
-    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'gichul-builder' },
-  });
-  if (!res.ok) throw new Error(`GitHub tree failed: ${res.status}`);
-  const data = (await res.json()) as { tree: Array<{ path: string; type: string }> };
-  return data.tree
-    .filter((t) => t.type === 'blob' && /^part4\/ch\d+\/.+\.csv$/i.test(t.path))
-    .map((t) => t.path);
-}
-
-async function downloadCsvs(paths: string[]): Promise<Map<string, string>> {
-  await mkdir(CACHE_DIR, { recursive: true });
+/** csvMap keys: `ch2/members.csv` (and aliases `part4/ch2/…`). */
+async function loadLocalCsvMap(codesDir: string): Promise<Map<string, string>> {
   const out = new Map<string, string>();
-  for (const rel of paths) {
-    const local = path.join(CACHE_DIR, rel.replace(/^part4\//, ''));
-    await mkdir(path.dirname(local), { recursive: true });
-    let text: string;
-    try {
-      text = await readFile(local, 'utf8');
-    } catch {
-      const url = `${RAW}/${rel}`;
-      const res = await fetch(url);
-      if (!res.ok) {
-        console.warn(`skip missing ${rel}: ${res.status}`);
-        continue;
-      }
-      text = await res.text();
-      await writeFile(local, text, 'utf8');
-      console.log(`cached ${rel}`);
+  let chapters: string[];
+  try {
+    chapters = await readdir(codesDir);
+  } catch {
+    throw new Error(`Cannot read codes dir: ${codesDir}`);
+  }
+  for (const ch of chapters) {
+    if (!/^ch\d+$/i.test(ch)) continue;
+    const dir = path.join(codesDir, ch);
+    const files = await readdir(dir);
+    for (const f of files) {
+      if (!f.toLowerCase().endsWith('.csv')) continue;
+      const text = await readFile(path.join(dir, f), 'utf8');
+      const key = `${ch}/${f}`.replace(/\\/g, '/');
+      out.set(key, text);
+      out.set(`part4/${key}`, text);
     }
-    out.set(rel.replace(/\\/g, '/'), text);
   }
   return out;
 }
 
-function uniqueAssetName(repoRel: string): string {
-  // part4/ch2/members.csv → ch2_members.csv
-  const m = repoRel.match(/^part4\/(ch\d+)\/(.+)$/i);
-  if (!m) return path.basename(repoRel);
-  return `${m[1]}_${m[2]}`.replace(/[^\w.\-]+/g, '_');
+function cellSource(cell: { source?: string | string[] }): string {
+  if (!cell.source) return '';
+  return Array.isArray(cell.source) ? cell.source.join('') : cell.source;
+}
+
+/** Ordered primary CSV basenames from a type1/2/3 solution notebook. */
+async function csvOrderFromIpynb(nbPath: string): Promise<string[]> {
+  let raw: string;
+  try {
+    raw = await readFile(nbPath, 'utf8');
+  } catch {
+    return [];
+  }
+  const nb = JSON.parse(raw) as { cells?: Array<{ cell_type?: string; source?: string | string[] }> };
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  for (const cell of nb.cells ?? []) {
+    if (cell.cell_type !== 'code') continue;
+    const src = cellSource(cell);
+    if (!/read_csv/i.test(src)) continue;
+    const primary = primaryCsvFromCell(src);
+    if (!primary || seen.has(primary)) continue;
+    seen.add(primary);
+    ordered.push(primary);
+  }
+  return ordered;
+}
+
+function primaryCsvFromCell(src: string): string | null {
+  // Prefer local filename in comments: # df = pd.read_csv("data4-1.csv")
+  const commented = [
+    ...src.matchAll(
+      /#\s*(?:df|train|test|X_train|X_test|y_train)\s*=\s*(?:pd\.)?read_csv\(\s*["']([^"']+\.csv)["']/gi,
+    ),
+  ];
+  for (const m of commented) {
+    const base = path.basename(m[1]).toLowerCase();
+    if (base === 'result.csv' || base === 'submission.csv') continue;
+    return path.basename(m[1]);
+  }
+  const active = [
+    ...src.matchAll(/(?:pd\.)?read_csv\(\s*["']([^"']+\.csv)["']/gi),
+  ];
+  for (const m of active) {
+    const ref = m[1];
+    const base = path.basename(ref.split('/').pop() || ref);
+    if (/^result\.csv$|^submission\.csv$/i.test(base)) continue;
+    return base;
+  }
+  return null;
+}
+
+async function loadIpynbAnswer(
+  codesDir: string,
+  round: number,
+  taskType: 1 | 2 | 3,
+): Promise<{ code: string; csvOrder: string[] }> {
+  const ch = `ch${round}`;
+  const candidates = [
+    path.join(codesDir, ch, `p${round}_type${taskType}.ipynb`),
+    path.join(codesDir, ch, `p${round}_type${taskType}_r.ipynb`),
+  ];
+  for (const nbPath of candidates) {
+    try {
+      const raw = await readFile(nbPath, 'utf8');
+      const nb = JSON.parse(raw) as {
+        cells?: Array<{ cell_type?: string; source?: string | string[] }>;
+      };
+      const chunks: string[] = [];
+      for (const cell of nb.cells ?? []) {
+        if (cell.cell_type !== 'code') continue;
+        const src = cellSource(cell).trim();
+        if (!src) continue;
+        // Skip pure URL-loading demo cells that duplicate a later solution
+        chunks.push(src);
+      }
+      const csvOrder = await csvOrderFromIpynb(nbPath);
+      // Prefer the longest non-empty contiguous solution-ish block near the end
+      const code = chunks.length ? `${chunks[chunks.length - 1]}\n` : '';
+      return { code, csvOrder };
+    } catch {
+      /* try next */
+    }
+  }
+  return { code: '', csvOrder: [] };
 }
 
 function detectLang(code: string, fence?: string): 'python' | 'r' {
@@ -167,6 +230,7 @@ function extractCsvRefs(text: string): string[] {
   const patterns = [
     /(?:read_csv|read\.csv|pd\.read_csv)\(\s*["']([^"']+\.csv)["']/gi,
     /["']((?:part4\/|data\/|data2\/|ch\d+\/)?[\w.\-\/]+\.csv)["']/gi,
+    /https?:\/\/[^'"\s]+\/([\w.\-]+\.csv)/gi,
   ];
   for (const re of patterns) {
     let m: RegExpExecArray | null;
@@ -176,6 +240,7 @@ function extractCsvRefs(text: string): string[] {
       // submission / output filenames, not provided data
       if (base === 'result.csv' || base === 'submission.csv') continue;
       refs.add(ref);
+      refs.add(path.basename(ref));
     }
   }
   return [...refs];
@@ -460,71 +525,89 @@ function parseRound(round: number, md: string): ParsedBlock[] {
   return problems;
 }
 
-function resolveRepoPath(
+function resolveCsvKey(
   ref: string,
   round: number,
   csvMap: Map<string, string>,
 ): string | null {
   const norm = ref.replace(/\\/g, '/').replace(/^\.\//, '');
-  if (csvMap.has(norm)) return norm;
-  if (csvMap.has(`part4/${norm}`)) return `part4/${norm}`;
+  if (csvMap.has(norm)) return norm.startsWith('part4/') ? norm.slice(6) : norm;
+  if (csvMap.has(`part4/${norm}`)) return norm;
   const base = path.basename(norm);
-  const ch = `part4/ch${round}/${base}`;
-  if (csvMap.has(ch)) return ch;
-  // search any ch for basename (prefer matching round)
+  const chKey = `ch${round}/${base}`;
+  if (csvMap.has(chKey)) return chKey;
+  if (csvMap.has(`part4/${chKey}`)) return chKey;
   for (const key of csvMap.keys()) {
-    if (key.endsWith(`/${base}`) && key.includes(`/ch${round}/`)) return key;
-  }
-  for (const key of csvMap.keys()) {
-    if (key.endsWith(`/${base}`)) return key;
+    if (key.startsWith('part4/')) continue;
+    if (key.endsWith(`/${base}`) && key.startsWith(`ch${round}/`)) return key;
   }
   return null;
 }
 
 async function buildProject(
-  mdDir: string,
+  srcDir: string,
+  codesDir: string,
   csvMap: Map<string, string>,
 ): Promise<AuthoringProject> {
   const now = new Date().toISOString();
   const assets: ProjectAsset[] = [];
-  const assetIdByRepo = new Map<string, string>();
-  const pathMapGlobal = new Map<string, string>(); // repoRel or alias → data/unique
+  const assetIdByKey = new Map<string, string>();
+  /** alias → runtime mount `data/<basename>` (matches mountPathForAsset). */
+  const pathMapGlobal = new Map<string, string>();
 
-  const ensureAsset = (repoRel: string): string => {
-    const existing = assetIdByRepo.get(repoRel);
+  const ensureAsset = (csvKey: string): string => {
+    const key = csvKey.replace(/^part4\//, '');
+    const existing = assetIdByKey.get(key);
     if (existing) return existing;
-    const content = csvMap.get(repoRel);
-    if (content == null) throw new Error(`missing csv ${repoRel}`);
-    const uniq = uniqueAssetName(repoRel);
-    const id = `asset-${uniq.replace(/\W+/g, '-').slice(0, 40)}`;
-    const mount = `data/${uniq}`;
+    const content = csvMap.get(key) ?? csvMap.get(`part4/${key}`);
+    if (content == null) throw new Error(`missing csv ${key}`);
+    const round = key.match(/^ch(\d+)\//i)?.[1] ?? 'x';
+    const base = path.basename(key);
+    const id = `asset-ch${round}-${base.replace(/\W+/g, '-').slice(0, 40)}`;
+    const mount = `data/${base}`;
     assets.push({
       id,
-      path: `data/ch${repoRel.match(/ch(\d+)/i)?.[1] || 'x'}/${path.basename(repoRel)}`,
-      name: uniq,
+      path: `data/ch${round}/${base}`,
+      name: base,
       encoding: 'utf-8',
       content,
       mimeType: 'text/csv',
     });
-    assetIdByRepo.set(repoRel, id);
-    pathMapGlobal.set(repoRel, mount);
-    pathMapGlobal.set(path.basename(repoRel), mount);
-    // also map without part4/
-    pathMapGlobal.set(repoRel.replace(/^part4\//, ''), mount);
+    assetIdByKey.set(key, id);
+    pathMapGlobal.set(key, mount);
+    pathMapGlobal.set(`part4/${key}`, mount);
+    pathMapGlobal.set(base, mount);
+    pathMapGlobal.set(`data/${base}`, mount);
     return id;
   };
 
-  // Preload all part4 csvs as assets
+  // Preload every codes/chN csv once
   for (const rel of csvMap.keys()) {
+    if (rel.startsWith('part4/')) continue;
     ensureAsset(rel);
   }
 
   const bank: BankProblem[] = [];
   const exams: ExamBlueprint[] = [];
-  const rounds = [...PART4_ROUNDS, ...EXTRA_ROUNDS];
+  const rounds = [...CODE_ROUNDS, ...EXTRA_ROUNDS];
+
+  // Cache ipynb csv order / answer per round+type
+  const ipynbCache = new Map<
+    string,
+    { code: string; csvOrder: string[] }
+  >();
+  const ipynbFor = async (round: number, taskType: 1 | 2 | 3) => {
+    const k = `${round}:${taskType}`;
+    let hit = ipynbCache.get(k);
+    if (!hit) {
+      hit = await loadIpynbAnswer(codesDir, round, taskType);
+      ipynbCache.set(k, hit);
+    }
+    return hit;
+  };
 
   for (const round of rounds) {
-    const mdPath = path.join(mdDir, `${round}회_기출.md`);
+    const mdPath = path.join(srcDir, `${round}회_기출.md`);
     let md: string;
     try {
       md = await readFile(mdPath, 'utf8');
@@ -551,63 +634,99 @@ async function buildProject(
       const seq =
         p.taskType === 1 ? t1 : p.taskType === 2 ? t2 : t3;
 
-      const refs = extractCsvRefs(`${p.prompt}\n${p.code}`);
+      const nb = await ipynbFor(round, p.taskType);
+      const refs = extractCsvRefs(`${p.prompt}\n${p.code}\n${nb.code}`);
       const assetIds: string[] = [];
       const mountFiles: string[] = [];
       const localMap = new Map(pathMapGlobal);
 
-      for (const ref of refs) {
-        const repoRel = resolveRepoPath(ref, round, csvMap);
-        if (!repoRel) {
-          console.warn(`  [${round}회] unresolved csv: ${ref}`);
-          continue;
-        }
-        const id = ensureAsset(repoRel);
+      const attachBase = (baseName: string) => {
+        const csvKey = resolveCsvKey(baseName, round, csvMap);
+        if (!csvKey) return;
+        const id = ensureAsset(csvKey);
         if (!assetIds.includes(id)) assetIds.push(id);
-        const mount = pathMapGlobal.get(repoRel)!;
-        mountFiles.push(mount);
-        localMap.set(ref, mount);
-      }
+        const mount = pathMapGlobal.get(csvKey)!;
+        if (!mountFiles.includes(mount)) mountFiles.push(mount);
+        localMap.set(baseName, mount);
+        localMap.set(path.basename(baseName), mount);
+      };
 
-      // Type1 only: if still no refs, attach chapter CSVs (excluding train/test pairs when possible)
-      if (!assetIds.length && p.taskType === 1) {
-        for (const rel of csvMap.keys()) {
-          if (!rel.includes(`/ch${round}/`)) continue;
-          const base = path.basename(rel).toLowerCase();
-          if (/^(x_|y_)?train\.csv$|^test\.csv$|_(train|test)\.csv$/.test(base)) {
+      // Type1: notebook order — 문제 N ↔ Nth primary csv only
+      if (p.taskType === 1 && nb.csvOrder.length) {
+        const pick =
+          nb.csvOrder[Math.min(seq - 1, nb.csvOrder.length - 1)] ??
+          nb.csvOrder[0];
+        if (pick) attachBase(pick);
+      } else {
+        for (const ref of refs) {
+          const csvKey = resolveCsvKey(ref, round, csvMap);
+          if (!csvKey) {
+            console.warn(`  [${round}회] unresolved csv: ${ref}`);
             continue;
           }
-          const id = ensureAsset(rel);
-          if (!assetIds.includes(id)) assetIds.push(id);
-          mountFiles.push(pathMapGlobal.get(rel)!);
-        }
-      }
-      if (!assetIds.length && (p.taskType === 2 || p.taskType === 3)) {
-        for (const rel of csvMap.keys()) {
-          if (!rel.includes(`/ch${round}/`)) continue;
-          const base = path.basename(rel).toLowerCase();
-          const wantType2 =
-            p.taskType === 2 &&
-            /(train|test|x_train|x_test|y_train)/i.test(base);
-          const wantType3 =
-            p.taskType === 3 &&
-            !/(train|test)/i.test(base);
-          if (p.taskType === 2 ? wantType2 : wantType3) {
-            const id = ensureAsset(rel);
-            if (!assetIds.includes(id)) assetIds.push(id);
-            mountFiles.push(pathMapGlobal.get(rel)!);
-          }
+          attachBase(path.basename(csvKey));
+          localMap.set(ref, pathMapGlobal.get(csvKey)!);
         }
       }
 
-      const lang = detectLang(p.code, p.fence);
-      const rewritten = rewriteCodePaths(p.code, localMap);
+      // Fallbacks by task type when still empty
+      if (!assetIds.length && p.taskType === 1) {
+        for (const rel of csvMap.keys()) {
+          if (rel.startsWith('part4/')) continue;
+          if (!rel.startsWith(`ch${round}/`)) continue;
+          const base = path.basename(rel).toLowerCase();
+          if (
+            /^(x_|y_)?train\.csv$|^test\.csv$|^(x_|y_)?test\.csv$|_(train|test)\.csv$/.test(
+              base,
+            )
+          ) {
+            continue;
+          }
+          attachBase(path.basename(rel));
+        }
+        // If multiple attached via fallback, keep only seq-th
+        if (mountFiles.length > 1) {
+          const keep = mountFiles[Math.min(seq - 1, mountFiles.length - 1)];
+          const keepBase = path.basename(keep);
+          assetIds.length = 0;
+          mountFiles.length = 0;
+          attachBase(keepBase);
+        }
+      }
+      if (!assetIds.length && p.taskType === 2) {
+        for (const rel of csvMap.keys()) {
+          if (rel.startsWith('part4/')) continue;
+          if (!rel.startsWith(`ch${round}/`)) continue;
+          const base = path.basename(rel).toLowerCase();
+          if (/(train|test)/i.test(base)) attachBase(path.basename(rel));
+        }
+      }
+      if (!assetIds.length && p.taskType === 3) {
+        for (const rel of csvMap.keys()) {
+          if (rel.startsWith('part4/')) continue;
+          if (!rel.startsWith(`ch${round}/`)) continue;
+          const base = path.basename(rel).toLowerCase();
+          if (!/(train|test)/i.test(base)) attachBase(path.basename(rel));
+        }
+      }
+
+      const answerSrc = (nb.code.trim() ? nb.code : p.code).trim();
+      const lang = detectLang(answerSrc || p.code, p.fence);
+      const rewritten = rewriteCodePaths(answerSrc || p.code, localMap);
+      // Strip remote URL reads → local mounts when rewrite missed
+      const localized = rewritten.replace(
+        /(?:pd\.)?read_csv\(\s*["']https?:\/\/[^"']+\/([^/"']+\.csv)["']\s*\)/gi,
+        (_m, file: string) => {
+          const mount = pathMapGlobal.get(file) ?? `data/${file}`;
+          return `pd.read_csv("${mount}")`;
+        },
+      );
       const mounts = [...new Set(mountFiles)];
       const starter = starterFor(p.taskType, mounts);
 
       const answerCode = emptyCode();
-      if (lang === 'python') answerCode.python = rewritten;
-      else answerCode.r = rewritten;
+      if (lang === 'python') answerCode.python = localized;
+      else answerCode.r = localized;
 
       const shorts = shortFieldsFor(p.taskType, answerCode, lang);
 
@@ -619,14 +738,14 @@ async function buildProject(
         '',
         assetIds.length
           ? `제공 파일: ${mounts.map((f) => `\`${f}\``).join(', ')}`
-          : '> 주의: 이 회차 CSV가 part4 캐시에 없을 수 있습니다.',
+          : '> 주의: 이 회차 CSV가 codes/ch 폴더에 없을 수 있습니다.',
       ].join('\n');
 
       bank.push({
         id,
         number: String(seq).padStart(2, '0'),
         title: `${round}회 · ${p.title}`,
-        note: `퇴딴짓 ${round}회 기출 복원 · part4/ch${round}`,
+        note: `문제복원 ${round}회 · codes/ch${round}`,
         showNoteOnExam: false,
         taskType: p.taskType,
         kind: 'submit',
@@ -647,7 +766,7 @@ async function buildProject(
     exams.push({
       id: `exam-round-${round}`,
       title: `빅데이터분석기사 실기 제${round}회`,
-      description: `part4/ch${round} · 퇴딴짓 기출 복원`,
+      description: `codes/ch${round} · 문제복원`,
       timeLimitMinutes: 180,
       maxRunSeconds: 60,
       problemIds,
@@ -660,16 +779,16 @@ async function buildProject(
   }
 
   if (!exams.length) {
-    throw new Error('No exams built — check GICHUL_MD_DIR and markdown files');
+    throw new Error('No exams built — check GICHUL_SRC_DIR and markdown files');
   }
 
   return {
     schemaVersion: 1,
     kind: 'project',
-    id: 'bigdata-gichul-part4',
-    title: '빅데이터분석기사 실기 기출 (part4)',
+    id: 'bigdata-gichul-restore',
+    title: '빅데이터분석기사 실기 기출 (문제복원)',
     description:
-      'Local-only package: 퇴딴짓 problem text + lovedlim part4 CSVs. Do not publish.',
+      'Local-only package: 문제복원 markdown + codes/chN CSVs. Do not publish.',
     assets,
     bank,
     exams,
@@ -705,21 +824,24 @@ async function main(): Promise<void> {
   await mkdir(PRIVATE_DIR, { recursive: true });
   assertPrivatePath(PRIVATE_DIR);
 
-  const mdDir = DEFAULT_MD_DIR;
-  console.log(`MD dir: ${mdDir}`);
-  const files = await readdir(mdDir).catch(() => {
-    throw new Error(`Cannot read 퇴딴짓 dir: ${mdDir}`);
+  const srcDir = DEFAULT_SRC_DIR;
+  const codesDir = path.join(srcDir, 'codes');
+  console.log(`SRC dir: ${srcDir}`);
+  console.log(`CODES dir: ${codesDir}`);
+  const files = await readdir(srcDir).catch(() => {
+    throw new Error(`Cannot read 문제복원 dir: ${srcDir}`);
   });
   console.log(
     `found md: ${files.filter((f) => f.endsWith('.md')).join(', ')}`,
   );
 
-  console.log('listing part4 CSVs from GitHub…');
-  const csvPaths = await listRepoPart4Csvs();
-  console.log(`csv count: ${csvPaths.length}`);
-  const csvMap = await downloadCsvs(csvPaths);
+  console.log('loading CSVs from codes/chN…');
+  const csvMap = await loadLocalCsvMap(codesDir);
+  const csvCount = [...csvMap.keys()].filter((k) => !k.startsWith('part4/'))
+    .length;
+  console.log(`csv count: ${csvCount}`);
 
-  const project = await buildProject(mdDir, csvMap);
+  const project = await buildProject(srcDir, codesDir, csvMap);
   assertPrivatePath(OUT_JSON);
   await writeFile(OUT_JSON, JSON.stringify(project, null, 2), 'utf8');
   await writeZip(project);

@@ -11,7 +11,7 @@ interface ResultsPanelProps {
   maxRunSeconds?: number;
 }
 
-type ResultTab = 'run' | 'submit' | 'test';
+type ResultTab = 'run' | 'submit';
 
 type OutputLine = {
   kind: 'system' | 'prompt' | 'stdout' | 'stderr';
@@ -109,13 +109,6 @@ export function ResultsPanel({
           >
             제출 결과
           </button>
-          <button
-            type="button"
-            className={`tab-btn ${tab === 'test' ? 'active' : ''}`}
-            onClick={() => setTab('test')}
-          >
-            테스트 케이스
-          </button>
         </div>
         {durationLabel ? (
           <div className="results-toolbar__duration" title="실행 시간">
@@ -147,11 +140,7 @@ export function ResultsPanel({
           ))}
         </div>
       ) : (
-        <div className="results-body">
-          {tab === 'submit'
-            ? submitBody
-            : '테스트 케이스는 문제 JSON의 testCases.expectIncludes 로 검사합니다.'}
-        </div>
+        <div className="results-body">{submitBody}</div>
       )}
     </div>
   );

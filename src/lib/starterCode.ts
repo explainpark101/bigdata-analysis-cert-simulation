@@ -68,6 +68,37 @@ export function buildStarterCode(
   const data = filePaths.filter(isDataPath);
 
   if (taskType === 2) {
+    const byBase = (re: RegExp) =>
+      data.find((p) => re.test(assetBasename(p).toLowerCase()));
+    const xTrain = byBase(/^x[_-]?train\.csv$/);
+    const yTrain = byBase(/^y[_-]?train\.csv$/);
+    const xTest = byBase(/^x[_-]?test\.csv$/);
+    if (xTrain && xTest) {
+      const yLinePy = yTrain
+        ? `y_train = pd.read_csv("${yTrain}")\n`
+        : '';
+      const yLineR = yTrain ? `y_train = read.csv("${yTrain}")\n` : '';
+      return {
+        python: `${PY_HEADER}
+X_train = pd.read_csv("${xTrain}")
+X_test = pd.read_csv("${xTest}")
+${yLinePy}
+# 사용자 코딩
+
+# 예측 결과는 result.csv 로 저장한 뒤 제출 버튼을 사용하세요
+print(X_train.head())
+`,
+        r: `${R_HEADER}
+X_train = read.csv("${xTrain}")
+X_test = read.csv("${xTest}")
+${yLineR}
+# 사용자 코딩
+
+# 예측 결과는 result.csv 로 저장한 뒤 제출 버튼을 사용하세요
+print(head(X_train))
+`,
+      };
+    }
     const train =
       pickTrainPath(data) ??
       data.find((p) => !/test/i.test(assetBasename(p))) ??
@@ -99,24 +130,44 @@ print(head(train))
     };
   }
 
-  const path = data[0] ?? 'data/data.csv';
+  const paths = data.length ? data : ['data/data.csv'];
+  const multi = paths.length > 1;
+  const pyLoads = paths
+    .map((p, i) => {
+      const name = multi ? `df${i + 1}` : 'df';
+      return `${name} = pd.read_csv("${p}")`;
+    })
+    .join('\n');
+  const rLoads = paths
+    .map((p, i) => {
+      const name = multi ? `df${i + 1}` : 'df';
+      return `${name} = read.csv("${p}")`;
+    })
+    .join('\n');
+  const pyPreview = multi
+    ? paths.map((_, i) => `print(df${i + 1}.head())`).join('\n')
+    : 'print(df.head())';
+  const rPreview = multi
+    ? paths.map((_, i) => `print(head(df${i + 1}))`).join('\n')
+    : 'print(head(df))';
+
   return {
     python: `${PY_HEADER}
-df = pd.read_csv("${path}")
+${pyLoads}
 
 # 사용자 코딩
 
 # 해당 화면에서는 제출하지 않으며, 문제 풀이 후 답안제출에서 결괏값 제출
-print(df.head())
+${pyPreview}
 `,
     // DataQ comment uses print(df.head()); R runtime needs print(head(df)).
     r: `${R_HEADER}
-df = read.csv("${path}")
+${rLoads}
 
 # 사용자 코딩
 
 # 해당 화면에서는 제출하지 않으며, 문제 풀이 후 답안제출에서 결괏값 제출
-print(head(df))
+${rPreview}
 `,
   };
 }

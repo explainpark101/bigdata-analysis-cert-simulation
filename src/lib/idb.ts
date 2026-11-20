@@ -9,7 +9,8 @@ export type IdbKey =
   | 'examSession'
   | 'theme'
   | 'aiSettings'
-  | 'variantChats';
+  | 'variantChats'
+  | 'gradeResult';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 

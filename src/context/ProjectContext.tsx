@@ -28,6 +28,7 @@ import type {
   ExamBlueprint,
   ProjectAsset,
 } from '@/types/project';
+import type { ExamSet } from '@/types/exam';
 import { mountPathForAsset } from '@/lib/assetPaths';
 import {
   classifyAssetImports,
@@ -63,7 +64,7 @@ interface ProjectContextValue {
   /** Materialize + download *.exam.zip for an exam paper */
   exportExamPackage: (examId?: string) => Promise<void>;
   /** Materialize into exam session storage for /exam */
-  pushExamToSession: (examId?: string) => Promise<void>;
+  pushExamToSession: (examId?: string) => Promise<ExamSet>;
   resetSample: () => void;
 }
 
@@ -325,6 +326,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     async (examId?: string) => {
       const exam = materializeExam(project, examId);
       await saveExamSession(exam);
+      return exam;
     },
     [project],
   );

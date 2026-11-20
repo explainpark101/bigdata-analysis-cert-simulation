@@ -1,15 +1,22 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Download,
+  FolderOpen,
   Moon,
   Play,
+  RotateCcw,
   Settings,
   Sun,
+  Upload,
 } from 'lucide-react';
 import { useTheme } from '@/context/ThemeContext';
 import { useProject } from '@/context/ProjectContext';
+import { useExamSession } from '@/context/ExamSessionContext';
 import { GlobalSettingsModal } from '@/components/settings/GlobalSettingsModal';
+import { ConfirmModal } from '@/components/exam/ConfirmModal';
+import { clearGradeResult } from '@/lib/gradeResultStore';
+import { clearActivityEvents } from '@/lib/examActivityLog';
 
 export default function HomePage() {
   const { theme, toggleTheme } = useTheme();
@@ -18,17 +25,24 @@ export default function HomePage() {
     selectExam,
     exportExamPackage,
     pushExamToSession,
+    importProject,
   } = useProject();
+  const { exam, clear, importExamZip, setExam } = useExamSession();
   const navigate = useNavigate();
+  const projectZipRef = useRef<HTMLInputElement>(null);
+  const examZipRef = useRef<HTMLInputElement>(null);
   const [message, setMessage] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  const [clearBusy, setClearBusy] = useState(false);
 
   const openExam = async (examId: string) => {
     setBusyId(examId);
     try {
       selectExam(examId);
-      await pushExamToSession(examId);
+      const next = await pushExamToSession(examId);
+      setExam(next);
       navigate('/exam');
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
@@ -43,6 +57,48 @@ export default function HomePage() {
       const title =
         project.exams.find((e) => e.id === examId)?.title ?? '시험지';
       setMessage(`내보냄: ${title}`);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const resetSession = async () => {
+    setClearBusy(true);
+    try {
+      const examId = exam?.id;
+      clear();
+      await clearGradeResult();
+      if (examId) clearActivityEvents(examId);
+      setClearConfirmOpen(false);
+      setMessage('시험 세션을 초기화했습니다.');
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setClearBusy(false);
+    }
+  };
+
+  const openProjectZip = async (file: File) => {
+    setBusyId('project-zip');
+    try {
+      await importProject(file);
+      setMessage(`프로젝트 로드: ${file.name}`);
+      navigate('/project');
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const openExamZip = async (file: File) => {
+    setBusyId('exam-zip');
+    try {
+      await importExamZip(file);
+      setMessage(`시험지 로드: ${file.name}`);
+      navigate('/exam');
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
     } finally {
@@ -86,6 +142,41 @@ export default function HomePage() {
             시험보기
             <span>.exam.zip 불러오기 · 현재 세션 이어하기</span>
           </Link>
+          <button
+            type="button"
+            className="ghost-btn home-btn"
+            disabled={busyId === 'project-zip'}
+            onClick={() => projectZipRef.current?.click()}
+          >
+            <span className="home-btn__row">
+              <FolderOpen size={16} />
+              다른 프로젝트 열기
+            </span>
+            <span>.project.zip 불러와 프로젝트 화면으로 이동</span>
+          </button>
+          <button
+            type="button"
+            className="ghost-btn home-btn"
+            disabled={busyId === 'exam-zip'}
+            onClick={() => examZipRef.current?.click()}
+          >
+            <span className="home-btn__row">
+              <Upload size={16} />
+              다른 시험지 열기
+            </span>
+            <span>.exam.zip 불러와 시험 세션으로 이동</span>
+          </button>
+          <button
+            type="button"
+            className="danger-btn home-btn"
+            onClick={() => setClearConfirmOpen(true)}
+          >
+            <span className="home-btn__row">
+              <RotateCcw size={16} />
+              세션 초기화
+            </span>
+            <span>현재 시험 세션·채점 리포트 비우기</span>
+          </button>
         </div>
 
         <section className="home-exam-library">
@@ -138,6 +229,45 @@ export default function HomePage() {
 
         {message ? <p className="edit-toast">{message}</p> : null}
       </div>
+
+      <input
+        ref={projectZipRef}
+        className="hidden-file"
+        type="file"
+        accept=".zip,application/zip,.project.zip"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (file) void openProjectZip(file);
+        }}
+      />
+      <input
+        ref={examZipRef}
+        className="hidden-file"
+        type="file"
+        accept=".zip,application/zip,.exam.zip"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (file) void openExamZip(file);
+        }}
+      />
+
+      <ConfirmModal
+        open={clearConfirmOpen}
+        title="세션 초기화"
+        message={
+          '현재 시험 세션을 비울까요?\n진행 중인 답안·제출 상태와 채점 리포트가 사라집니다.'
+        }
+        cancelLabel="취소"
+        confirmLabel="세션 초기화"
+        confirmDanger
+        busy={clearBusy}
+        onCancel={() => {
+          if (!clearBusy) setClearConfirmOpen(false);
+        }}
+        onConfirm={() => void resetSession()}
+      />
 
       <GlobalSettingsModal
         open={settingsOpen}

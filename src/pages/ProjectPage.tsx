@@ -19,6 +19,7 @@ import {
   Upload,
 } from 'lucide-react';
 import { useProject } from '@/context/ProjectContext';
+import { useExamSession } from '@/context/ExamSessionContext';
 import { ProblemMarkdownEditor } from '@/components/problem/ProblemMarkdownEditor';
 import { CodeEditor } from '@/components/editor/CodeEditor';
 import { CsvPreviewPane } from '@/components/project/CsvPreviewPane';
@@ -91,6 +92,7 @@ export default function ProjectPage() {
     pushExamToSession,
     resetSample,
   } = useProject();
+  const { setExam } = useExamSession();
 
   const [tab, setTab] = useState<Tab>('assets');
   const [selectedId, setSelectedId] = useState(project.bank[0]?.id ?? '');
@@ -916,7 +918,7 @@ export default function ProjectPage() {
                 />
               </label>
               <p className="edit-page__sub" style={{ marginTop: -4 }}>
-                실행·테스트 1회당 제한입니다. 기본 60초.
+                코드 실행 1회당 제한입니다. 기본 60초.
               </p>
               <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
                 <button
@@ -934,9 +936,10 @@ export default function ProjectPage() {
                   type="button"
                   className="primary-btn btn-with-icon"
                   onClick={() => {
-                    void pushExamToSession(activeExam.id).then(() =>
-                      navigate('/exam'),
-                    );
+                    void pushExamToSession(activeExam.id).then((next) => {
+                      setExam(next);
+                      navigate('/exam');
+                    });
                   }}
                 >
                   <Play size={15} />

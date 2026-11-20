@@ -38,15 +38,20 @@ import { ResultsPanel } from '@/components/results/ResultsPanel';
 import { ScreenSettingsModal } from '@/components/exam/ScreenSettingsModal';
 import { ShortAnswerPanel } from '@/components/exam/ShortAnswerPanel';
 import { ConfirmModal } from '@/components/exam/ConfirmModal';
-import { GradeResultModal } from '@/components/exam/GradeResultModal';
 import { ExamBlueprintPicker } from '@/components/exam/ExamBlueprintPicker';
 import { CsvPreviewPane } from '@/components/project/CsvPreviewPane';
 import {
   forceSubmitPending,
   gradeExam,
   listUnsubmitted,
-  type GradeReport,
 } from '@/lib/examGrade';
+import {
+  appendActivityEvent,
+  ensureSessionStart,
+  loadActivityEvents,
+  summarizeActivity,
+} from '@/lib/examActivityLog';
+import { saveGradeResult } from '@/lib/gradeResultStore';
 import { materializeExam } from '@/lib/projectIO';
 import { parseProjectZip } from '@/lib/projectZip';
 import { detectZipKind } from '@/lib/zipKind';
@@ -125,8 +130,6 @@ export default function ExamPage() {
   const [workspaceTab, setWorkspaceTab] = useState<string>('code');
   const [gradeConfirmOpen, setGradeConfirmOpen] = useState(false);
   const [gradeBusy, setGradeBusy] = useState(false);
-  const [gradeReport, setGradeReport] = useState<GradeReport | null>(null);
-  const [gradeResultOpen, setGradeResultOpen] = useState(false);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [pendingProject, setPendingProject] = useState<AuthoringProject | null>(
     null,
@@ -169,6 +172,8 @@ export default function ExamPage() {
       setRemainingSec(null);
       return;
     }
+    ensureExamStartMs(exam.id);
+    ensureSessionStart(exam.id, exam.title);
     const limit = exam.timeLimitMinutes;
     if (limit == null || limit <= 0) {
       setRemainingSec(null);
@@ -210,6 +215,35 @@ export default function ExamPage() {
   useEffect(() => {
     setWorkspaceTab('code');
   }, [quiz?.id]);
+
+  useEffect(() => {
+    if (!exam || !quiz) return;
+    appendActivityEvent(exam.id, {
+      type: 'quiz_focus',
+      at: Date.now(),
+      quizId: quiz.id,
+      title: quiz.title,
+    });
+    const tab = quiz.viewMode === 'short' ? 'short' : 'code';
+    appendActivityEvent(exam.id, {
+      type: 'tab_focus',
+      at: Date.now(),
+      quizId: quiz.id,
+      title: quiz.title,
+      tab,
+    });
+  }, [exam?.id, quiz?.id]);
+
+  useEffect(() => {
+    if (!exam || !quiz || isShortView) return;
+    appendActivityEvent(exam.id, {
+      type: 'tab_focus',
+      at: Date.now(),
+      quizId: quiz.id,
+      title: quiz.title,
+      tab: workspaceTab,
+    });
+  }, [exam?.id, quiz?.id, quiz?.title, workspaceTab, isShortView]);
 
   useEffect(() => {
     if (workspaceTab === 'code') return;
@@ -301,7 +335,14 @@ export default function ExamPage() {
   const runTimeoutMs = maxRunTimeoutMs(maxRunSeconds);
 
   const runCode = async () => {
-    if (!quiz || running) return;
+    if (!quiz || running || !exam) return;
+    const started = Date.now();
+    appendActivityEvent(exam.id, {
+      type: 'run_start',
+      at: started,
+      quizId: quiz.id,
+      title: quiz.title,
+    });
     setRunning(true);
     setResult(null);
     try {
@@ -316,64 +357,32 @@ export default function ExamPage() {
           ? await runPython(source, opts)
           : ((await ensureR()), await runR(source, opts));
       setResult(out);
+      appendActivityEvent(exam.id, {
+        type: 'run_end',
+        at: Date.now(),
+        quizId: quiz.id,
+        title: quiz.title,
+        durationMs: out.durationMs || Date.now() - started,
+        ok: out.ok,
+      });
+    } catch (err) {
+      appendActivityEvent(exam.id, {
+        type: 'run_end',
+        at: Date.now(),
+        quizId: quiz.id,
+        title: quiz.title,
+        durationMs: Date.now() - started,
+        ok: false,
+      });
+      setResult({
+        ok: false,
+        stdout: '',
+        stderr: err instanceof Error ? err.message : String(err),
+        durationMs: Date.now() - started,
+      });
     } finally {
       setRunning(false);
     }
-  };
-
-  const runTests = async () => {
-    if (!quiz || running) return;
-    await runCode();
-
-    // Type-2: run author grading script against submitted result.csv
-    const grading = quiz.gradingCode?.[language]?.trim();
-    if (quiz.taskType === 2 && grading) {
-      setRunning(true);
-      try {
-        await mountCurrentFiles();
-        const opts = { timeoutMs: runTimeoutMs };
-        const gradeOut =
-          language === 'python'
-            ? await runPython(grading, opts)
-            : ((await ensureR()), await runR(grading, opts));
-        setResult((prev) => ({
-          ok: Boolean(prev?.ok) && gradeOut.ok,
-          stdout: `${prev?.stdout ?? ''}\n\n[채점]\n${gradeOut.stdout}`.trim(),
-          stderr: [prev?.stderr, gradeOut.stderr].filter(Boolean).join('\n'),
-          durationMs: (prev?.durationMs ?? 0) + gradeOut.durationMs,
-        }));
-      } finally {
-        setRunning(false);
-      }
-      return;
-    }
-
-    const cases = [...(quiz.testCases ?? [])];
-    const short = quiz.shortAnswer?.trim();
-    if (short && !cases.some((c) => c.expectIncludes?.includes(short))) {
-      cases.push({ id: 'short', name: '단답', expectIncludes: [short] });
-    }
-
-    setResult((prev) => {
-      if (!prev) return prev;
-      if (!cases.length) {
-        return {
-          ...prev,
-          stdout: `${prev.stdout}\n\n[테스트] 정의된 테스트 케이스가 없습니다.`,
-        };
-      }
-      const lines = cases.map((tc) => {
-        const ok = (tc.expectIncludes ?? []).every((s) =>
-          prev.stdout.includes(s),
-        );
-        return `${ok ? 'PASS' : 'FAIL'} · ${tc.name}`;
-      });
-      return {
-        ...prev,
-        stdout: `${prev.stdout}\n\n[테스트]\n${lines.join('\n')}`,
-        ok: prev.ok && lines.every((l) => l.startsWith('PASS')),
-      };
-    });
   };
 
   const submitShortAnswers = () => {
@@ -393,6 +402,15 @@ export default function ExamPage() {
       return `${ok ? 'PASS' : 'FAIL'} · ${s.label}: ${draft}${ok ? '' : ` (정답 ${expected})`}`;
     });
     patchQuiz({ submitted: true, shortSlots: slots });
+    if (exam) {
+      appendActivityEvent(exam.id, {
+        type: 'submit',
+        at: Date.now(),
+        quizId: quiz.id,
+        title: quiz.title,
+        tab: 'short',
+      });
+    }
     setResult({
       ok: lines.every((l) => l.startsWith('PASS') || l.includes('제출됨')),
       stdout: `[단답 제출]\n${lines.join('\n')}`,
@@ -411,6 +429,15 @@ export default function ExamPage() {
         throw new Error(`${path} 이 비어 있습니다.`);
       }
       patchQuiz({ submitted: true, submittedCsv: csvText });
+      if (exam) {
+        appendActivityEvent(exam.id, {
+          type: 'submit',
+          at: Date.now(),
+          quizId: quiz.id,
+          title: quiz.title,
+          tab: 'code',
+        });
+      }
       try {
         await downloadPyodideFile(path, path);
       } catch {
@@ -496,33 +523,61 @@ export default function ExamPage() {
             });
           }
         }
+        appendActivityEvent(exam.id, {
+          type: 'grade',
+          at: Date.now(),
+          title: exam.title,
+        });
         const report = await gradeExam(gradingExam, {
           timeoutMs: maxRunTimeoutMs(gradingExam.maxRunSeconds),
         });
-        setGradeReport(report);
-        setGradeResultOpen(true);
-      } catch (err) {
-        setGradeReport({
-          items: [
-            {
-              quizId: 'error',
-              title: '채점 오류',
-              status: 'fail',
-              detail: err instanceof Error ? err.message : String(err),
-              earned: 0,
-              max: 0,
-            },
-          ],
-          earned: 0,
-          max: 0,
-          unsubmittedCount: 0,
+        const gradedAtMs = Date.now();
+        const startMs = ensureExamStartMs(exam.id);
+        const events = loadActivityEvents(exam.id);
+        const activity = summarizeActivity(events, gradedAtMs);
+        await saveGradeResult({
+          examId: exam.id,
+          examTitle: exam.title,
+          gradedAt: new Date(gradedAtMs).toISOString(),
+          elapsedMs: Math.max(0, gradedAtMs - startMs),
+          report,
+          activity,
+          rawEvents: events,
         });
-        setGradeResultOpen(true);
+        navigate('/exam/result');
+      } catch (err) {
+        const gradedAtMs = Date.now();
+        const startMs = ensureExamStartMs(exam.id);
+        const events = loadActivityEvents(exam.id);
+        await saveGradeResult({
+          examId: exam.id,
+          examTitle: exam.title,
+          gradedAt: new Date(gradedAtMs).toISOString(),
+          elapsedMs: Math.max(0, gradedAtMs - startMs),
+          report: {
+            items: [
+              {
+                quizId: 'error',
+                title: '채점 오류',
+                status: 'fail',
+                detail: err instanceof Error ? err.message : String(err),
+                earned: 0,
+                max: 0,
+              },
+            ],
+            earned: 0,
+            max: 0,
+            unsubmittedCount: 0,
+          },
+          activity: summarizeActivity(events, gradedAtMs),
+          rawEvents: events,
+        });
+        navigate('/exam/result');
       } finally {
         setGradeBusy(false);
       }
     },
-    [exam, gradeBusy, updateQuiz],
+    [exam, gradeBusy, navigate, updateQuiz],
   );
 
   const requestGrade = useCallback(() => {
@@ -935,14 +990,6 @@ export default function ExamPage() {
                       maxRunSeconds,
                     )}
                   </span>
-                  <button
-                    type="button"
-                    className="tool-btn"
-                    disabled={running}
-                    onClick={() => void runTests()}
-                  >
-                    테스트
-                  </button>
                   {quiz.taskType === 2 && quiz.kind === 'submit' && (
                     <button
                       type="button"
@@ -1108,12 +1155,6 @@ export default function ExamPage() {
           setClearConfirmOpen(false);
           clear();
         }}
-      />
-
-      <GradeResultModal
-        open={gradeResultOpen}
-        report={gradeReport}
-        onClose={() => setGradeResultOpen(false)}
       />
     </div>
   );

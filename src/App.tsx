@@ -7,29 +7,26 @@ import HomePage from '@/pages/HomePage';
 import ProjectPage from '@/pages/ProjectPage';
 import ExamPickPage from '@/pages/ExamPickPage';
 import ExamPage from '@/pages/ExamPage';
+import GradeResultPage from '@/pages/GradeResultPage';
 
 export default function App() {
   return (
     <ThemeProvider>
       <RuntimeProvider>
         <ProjectProvider>
-          <BrowserRouter>
-            <Routes>
-              <Route path="/" element={<HomePage />} />
-              <Route path="/project" element={<ProjectPage />} />
-              <Route path="/project/exam-pick" element={<ExamPickPage />} />
-              <Route
-                path="/exam"
-                element={
-                  <ExamSessionProvider>
-                    <ExamPage />
-                  </ExamSessionProvider>
-                }
-              />
-              <Route path="/edit" element={<Navigate to="/project" replace />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </BrowserRouter>
+          <ExamSessionProvider>
+            <BrowserRouter>
+              <Routes>
+                <Route path="/" element={<HomePage />} />
+                <Route path="/project" element={<ProjectPage />} />
+                <Route path="/project/exam-pick" element={<ExamPickPage />} />
+                <Route path="/exam" element={<ExamPage />} />
+                <Route path="/exam/result" element={<GradeResultPage />} />
+                <Route path="/edit" element={<Navigate to="/project" replace />} />
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Routes>
+            </BrowserRouter>
+          </ExamSessionProvider>
         </ProjectProvider>
       </RuntimeProvider>
     </ThemeProvider>
