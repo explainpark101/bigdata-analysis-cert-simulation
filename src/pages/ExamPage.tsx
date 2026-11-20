@@ -21,6 +21,7 @@ import { useTheme } from '@/context/ThemeContext';
 import { useRuntime } from '@/context/RuntimeContext';
 import { maxRunTimeoutMs } from '@/lib/runTimeout';
 import { formatRunClock, useRunElapsed } from '@/hooks/useRunElapsed';
+import { useMediaQuery } from '@/hooks/useMediaQuery';
 import {
   loadExamUiSettings,
   saveExamUiSettings,
@@ -39,7 +40,16 @@ import { ScreenSettingsModal } from '@/components/exam/ScreenSettingsModal';
 import { ShortAnswerPanel } from '@/components/exam/ShortAnswerPanel';
 import { ConfirmModal } from '@/components/exam/ConfirmModal';
 import { ExamBlueprintPicker } from '@/components/exam/ExamBlueprintPicker';
+import {
+  ExamPaneNavigator,
+  type ExamPaneId,
+  type ExamPaneOption,
+} from '@/components/exam/ExamPaneNavigator';
 import { CsvPreviewPane } from '@/components/project/CsvPreviewPane';
+
+/** Portrait / narrow phones: 3 columns become swipeable pages. */
+const EXAM_PAGED_MQ =
+  '(orientation: portrait) and (max-width: 1100px), (max-width: 720px)';
 import {
   forceSubmitPending,
   gradeExam,
@@ -138,6 +148,9 @@ export default function ExamPage() {
   const [zipBusy, setZipBusy] = useState(false);
   const [zipMessage, setZipMessage] = useState('');
   const emptyZipTitleId = useId();
+  const pagedLayout = useMediaQuery(EXAM_PAGED_MQ);
+  const [examPane, setExamPane] = useState<ExamPaneId>('workspace');
+  const [paneNavExpanded, setPaneNavExpanded] = useState(false);
 
   const patchUiSettings = useCallback(
     (next: ExamUiSettings) => {
@@ -215,6 +228,39 @@ export default function ExamPage() {
   useEffect(() => {
     setWorkspaceTab('code');
   }, [quiz?.id]);
+
+  const examPanes: ExamPaneOption[] = useMemo(() => {
+    if (isShortView) {
+      return [
+        { id: 'list', label: '문제 목록', shortLabel: '목록' },
+        {
+          id: 'workspace',
+          label: '답안 작성',
+          shortLabel: '답안',
+          workspaceVariant: 'short',
+        },
+      ];
+    }
+    return [
+      { id: 'list', label: '문제 목록', shortLabel: '목록' },
+      { id: 'problem', label: '문제', shortLabel: '문제' },
+      {
+        id: 'workspace',
+        label: '코드 · 실행',
+        shortLabel: '코드',
+        workspaceVariant: 'code',
+      },
+    ];
+  }, [isShortView]);
+
+  useEffect(() => {
+    if (examPanes.some((p) => p.id === examPane)) return;
+    setExamPane(examPanes[0]?.id ?? 'workspace');
+  }, [examPanes, examPane]);
+
+  useEffect(() => {
+    if (!pagedLayout) setPaneNavExpanded(false);
+  }, [pagedLayout]);
 
   useEffect(() => {
     if (!exam || !quiz) return;
@@ -743,7 +789,10 @@ export default function ExamPage() {
   }
 
   return (
-    <div className="app-shell">
+    <div
+      className={`app-shell${pagedLayout ? ' app-shell--paged' : ''}`}
+      data-exam-pane={pagedLayout ? examPane : undefined}
+    >
       <header className="exam-header">
         <div className="exam-header__title">시험 {exam.title}</div>
         <div className="exam-header__meta">
@@ -876,7 +925,12 @@ export default function ExamPage() {
       <div className="exam-body">
         <div
           className="quiz-sidebar-pane"
-          style={{ width: sidebarWidth, flexBasis: sidebarWidth }}
+          data-pane="list"
+          style={
+            pagedLayout
+              ? undefined
+              : { width: sidebarWidth, flexBasis: sidebarWidth }
+          }
         >
           <QuizSidebar
             exam={exam}
@@ -884,38 +938,52 @@ export default function ExamPage() {
             onSelect={(id) => {
               setActiveId(id);
               setResult(null);
+              if (pagedLayout) {
+                setExamPane(isShortView ? 'workspace' : 'problem');
+              }
             }}
           />
-          <EdgeResizeHandle
-            axis="x"
-            value={sidebarWidth}
-            onChange={setSidebarWidth}
-            min={SIDEBAR_W_MIN}
-            max={maxSidebarWidth}
-            label="문제 목록 너비 조절"
-          />
+          {!pagedLayout ? (
+            <EdgeResizeHandle
+              axis="x"
+              value={sidebarWidth}
+              onChange={setSidebarWidth}
+              min={SIDEBAR_W_MIN}
+              max={maxSidebarWidth}
+              label="문제 목록 너비 조절"
+            />
+          ) : null}
         </div>
 
         {!isShortView && (
-          <div className="problem-pane" style={{ width: problemWidth }}>
+          <div
+            className="problem-pane"
+            data-pane="problem"
+            style={pagedLayout ? undefined : { width: problemWidth }}
+          >
             <ProblemPanel
               quiz={quiz}
               zoomPct={uiSettings.contentZoomPct}
               lineHeightPct={uiSettings.contentLineHeightPct}
               onZoomChange={setContentZoom}
             />
-            <EdgeResizeHandle
-              axis="x"
-              value={problemWidth}
-              onChange={setProblemWidth}
-              min={280}
-              max={maxProblemWidth}
-              label="문제 패널 너비 조절"
-            />
+            {!pagedLayout ? (
+              <EdgeResizeHandle
+                axis="x"
+                value={problemWidth}
+                onChange={setProblemWidth}
+                min={280}
+                max={maxProblemWidth}
+                label="문제 패널 너비 조절"
+              />
+            ) : null}
           </div>
         )}
 
-        <section className={`workspace-panel ${isShortView ? 'workspace-panel--short' : ''}`}>
+        <section
+          className={`workspace-panel ${isShortView ? 'workspace-panel--short' : ''}`}
+          data-pane="workspace"
+        >
           {isShortView ? (
             <div className="editor-main short-answer-workspace">
               <ShortAnswerPanel
@@ -1069,6 +1137,16 @@ export default function ExamPage() {
           )}
         </section>
       </div>
+
+      {pagedLayout ? (
+        <ExamPaneNavigator
+          panes={examPanes}
+          active={examPane}
+          expanded={paneNavExpanded}
+          onExpandedChange={setPaneNavExpanded}
+          onSelect={setExamPane}
+        />
+      ) : null}
 
       <ScreenSettingsModal
         open={settingsOpen}
