@@ -48,10 +48,39 @@ const installedPackages = new Set<string>();
 let sessionConfigured = false;
 
 /**
+ * Collapse Rd/man overstrike used for bold/underline in text help:
+ *   "P\\bP" / "*\\bP" / "_\\bv" → "P" / "P" / "v"
+ * Without this, browsers show garbled sequences like "*P*i_v_o_t".
+ */
+export function stripRHelpOverstrike(text: string): string {
+  if (!text.includes('\b')) return text;
+  let prev = '';
+  let out = text;
+  // Repeat: overstrike can nest / chain (e.g. *\\b*\\bX\\bX).
+  while (out !== prev) {
+    prev = out;
+    out = out.replace(/.\u0008./gs, (m) => m.charAt(2));
+  }
+  // Drop any leftover backspaces.
+  return out.replace(/\u0008/g, '');
+}
+
+/**
  * Text-mode help + stdout pager so `?fn` / `help(fn)` show in captureR output.
  * (Default pager uses system() which is a no-op under WASM.)
+ * Strips nroff-style backspace overstrike so titles are readable in the UI.
  */
 const HELP_PAGER_SETUP = `
+.bks_strip_overstrike <- function(x) {
+  x <- as.character(x)
+  bs <- rawToChar(as.raw(8L))
+  pat <- paste0("(.)", bs, "(.)")
+  for (i in seq_len(8L)) {
+    if (!any(grepl(bs, x, fixed = TRUE))) break
+    x <- gsub(pat, "\\\\2", x)
+  }
+  gsub(bs, "", x, fixed = TRUE)
+}
 options(help_type = "text")
 options(browser = function(url) {
   cat("[help] ", as.character(url)[1], "\\n", sep = "")
@@ -64,9 +93,9 @@ options(pager = function(files, header, title, delete.file) {
   delete.file <- isTRUE(delete.file)
   for (f in files) {
     if (!nzchar(f) || !file.exists(f)) next
-    if (nzchar(title)) cat(title, "\\n", sep = "")
-    if (nzchar(header)) cat(header, "\\n", sep = "")
-    writeLines(readLines(f, warn = FALSE))
+    if (nzchar(title)) cat(.bks_strip_overstrike(title), "\\n", sep = "")
+    if (nzchar(header)) cat(.bks_strip_overstrike(header), "\\n", sep = "")
+    writeLines(.bks_strip_overstrike(readLines(f, warn = FALSE)))
     cat("\\n")
     if (delete.file) try(unlink(f), silent = TRUE)
   }
@@ -351,17 +380,18 @@ export async function runR(
       for (const item of cap.output) {
         // stdout/stderr are plain strings; conditions are RObject proxies.
         if (item.type === 'stdout' || item.type === 'stderr') {
-          const text =
+          const raw =
             typeof item.data === 'string'
               ? item.data
               : await formatCaptureData(item.data);
+          const text = stripRHelpOverstrike(raw);
           if (!text) continue;
           if (item.type === 'stdout') stdout.push(text);
           else stderr.push(text);
           continue;
         }
 
-        const text = await formatCaptureData(item.data);
+        const text = stripRHelpOverstrike(await formatCaptureData(item.data));
         if (!text || /^\[object RObject/i.test(text)) continue;
         if (item.type === 'error') {
           hadError = true;
