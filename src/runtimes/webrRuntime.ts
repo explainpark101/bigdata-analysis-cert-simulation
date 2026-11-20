@@ -43,7 +43,120 @@ type WebRInstance = {
 };
 
 let webrPromise: Promise<WebRInstance> | null = null;
+/** Packages known installed (and preferably already attached). */
 const installedPackages = new Set<string>();
+let sessionConfigured = false;
+
+/**
+ * Text-mode help + stdout pager so `?fn` / `help(fn)` show in captureR output.
+ * (Default pager uses system() which is a no-op under WASM.)
+ */
+const HELP_PAGER_SETUP = `
+options(help_type = "text")
+options(browser = function(url) {
+  cat("[help] ", as.character(url)[1], "\\n", sep = "")
+  invisible(NULL)
+})
+options(pager = function(files, header, title, delete.file) {
+  files <- as.character(files)
+  title <- if (missing(title) || is.null(title)) "" else paste(as.character(title), collapse = " ")
+  header <- if (missing(header) || is.null(header)) "" else paste(as.character(header), collapse = "\\n")
+  delete.file <- isTRUE(delete.file)
+  for (f in files) {
+    if (!nzchar(f) || !file.exists(f)) next
+    if (nzchar(title)) cat(title, "\\n", sep = "")
+    if (nzchar(header)) cat(header, "\\n", sep = "")
+    writeLines(readLines(f, warn = FALSE))
+    cat("\\n")
+    if (delete.file) try(unlink(f), silent = TRUE)
+  }
+  invisible(NULL)
+})
+`;
+
+/**
+ * Attach every already-installed package (except base priority) so later
+ * library()/require() calls are cheap during exam runs.
+ */
+const PRELOAD_INSTALLED_LIBS = `
+local({
+  ip <- tryCatch(installed.packages(), error = function(e) NULL)
+  if (is.null(ip) || !nrow(ip)) return(invisible(NULL))
+  pkgs <- rownames(ip)
+  priority <- ip[, "Priority"]
+  base_pkgs <- pkgs[!is.na(priority) & priority == "base"]
+  skip <- unique(c(base_pkgs, "tools", "translations"))
+  to_load <- setdiff(pkgs, skip)
+  attached <- character(0)
+  for (p in to_load) {
+    ok <- tryCatch({
+      suppressPackageStartupMessages(
+        library(p, character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)
+      )
+      TRUE
+    }, error = function(e) FALSE, warning = function(w) TRUE)
+    if (isTRUE(ok)) attached <- c(attached, p)
+  }
+  invisible(attached)
+})
+`;
+
+async function captureStdoutLines(
+  webR: WebRInstance,
+  code: string,
+): Promise<string[]> {
+  const shelter = await new webR.Shelter();
+  try {
+    const cap = await shelter.captureR(code, {
+      throwJsException: false,
+      captureGraphics: false,
+      captureStreams: true,
+      captureConditions: true,
+      withAutoprint: false,
+    });
+    const lines: string[] = [];
+    for (const item of cap.output) {
+      if (item.type !== 'stdout') continue;
+      const text =
+        typeof item.data === 'string'
+          ? item.data
+          : await formatCaptureData(item.data);
+      if (!text) continue;
+      for (const line of text.split(/\r?\n/)) {
+        if (line.trim()) lines.push(line.trim());
+      }
+    }
+    return lines;
+  } finally {
+    await shelter.purge();
+  }
+}
+
+async function configureWebRSession(webR: WebRInstance): Promise<void> {
+  if (sessionConfigured) return;
+  await webR.evalRVoid(HELP_PAGER_SETUP);
+
+  // Seed installed set + attach packages already on the image / VFS.
+  try {
+    const listed = await captureStdoutLines(
+      webR,
+      `writeLines(rownames(installed.packages()))`,
+    );
+    for (const name of listed) {
+      if (/^[A-Za-z][A-Za-z0-9.]*$/.test(name)) installedPackages.add(name);
+    }
+  } catch {
+    /* listing failed — still try preload */
+  }
+
+  try {
+    await webR.evalRVoid(PRELOAD_INSTALLED_LIBS);
+  } catch {
+    /* individual library() failures are swallowed in R */
+  }
+
+  sessionConfigured = true;
+}
 
 async function loadWebR(): Promise<WebRInstance> {
   const { WebR } = await import('webr');
@@ -51,6 +164,7 @@ async function loadWebR(): Promise<WebRInstance> {
     baseUrl: `https://webr.r-wasm.org/v${WEBR_VERSION}/`,
   }) as unknown as WebRInstance;
   await webR.init();
+  await configureWebRSession(webR);
   return webR;
 }
 
@@ -122,6 +236,24 @@ function detectLibraryCalls(code: string): string[] {
   return [...names];
 }
 
+async function attachPackages(
+  webR: WebRInstance,
+  packages: string[],
+): Promise<void> {
+  if (!packages.length) return;
+  const vec = packages.map((p) => `"${p.replace(/"/g, '')}"`).join(', ');
+  await webR.evalRVoid(`
+for (p in c(${vec})) {
+  tryCatch(
+    suppressPackageStartupMessages(
+      library(p, character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)
+    ),
+    error = function(e) invisible(NULL)
+  )
+}
+`);
+}
+
 /** Install packages referenced by library()/require() via webr::install. */
 async function ensurePackages(
   webR: WebRInstance,
@@ -133,10 +265,9 @@ async function ensurePackages(
   const notes: string[] = [];
   const pkgVec = wanted.map((p) => `"${p}"`).join(', ');
   try {
-    await webR.evalRVoid(
-      `webr::install(c(${pkgVec}), quiet = TRUE)`,
-    );
+    await webR.evalRVoid(`webr::install(c(${pkgVec}), quiet = TRUE)`);
     for (const p of wanted) installedPackages.add(p);
+    await attachPackages(webR, wanted);
     notes.push(`[webR] installed: ${wanted.join(', ')}`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

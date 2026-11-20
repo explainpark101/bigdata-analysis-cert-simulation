@@ -29,7 +29,7 @@ type VerifyState =
 function expectedShorts(problem: BankProblem): string[] {
   if (problem.taskType === 2 || problem.submitFormat === 'csv') return [];
   if (problem.shortAnswers?.length) {
-    return problem.shortAnswers.map((s) => s.trim()).filter(Boolean);
+    return problem.shortAnswers.map((s) => String(s ?? '').trim());
   }
   const one = problem.shortAnswer?.trim();
   return one ? [one] : [];

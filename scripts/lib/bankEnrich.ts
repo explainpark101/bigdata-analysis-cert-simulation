@@ -204,16 +204,18 @@ export function extractShortAnswers(code: string): string[] {
 
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const line = lines[i];
+    // Skip section headers like `#1`, `#2-1` (not answer keys).
+    if (/^\s*#\s*\d+([-.]\d+)?\s*$/.test(line)) continue;
+    const hashAnswer = line.match(
+      /#\s*정답\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?|[A-Za-z][A-Za-z0-9._-]*)\s*$/,
+    );
+    if (hashAnswer) {
+      push(hashAnswer[1]);
+      continue;
+    }
     const hashNum = line.match(/#\s*([0-9]+(?:\.[0-9]+)?)\s*$/);
     if (hashNum) {
       push(hashNum[1]);
-      continue;
-    }
-    const hashToken = line.match(
-      /#\s*(정답\s*[:：]?\s*)?([0-9]+(?:\.[0-9]+)?|[A-Za-z])\s*$/,
-    );
-    if (hashToken) {
-      push(hashToken[2]);
       continue;
     }
     const printLit = line.match(
@@ -234,6 +236,30 @@ export function extractShortAnswers(code: string): string[] {
   return found;
 }
 
+/**
+ * When literal keys are missing, infer how many short-answer slots a solution
+ * expects (e.g. `#1-1` / `print("2-1 답:"` style sub-questions).
+ */
+export function inferShortSlotCount(code: string): number {
+  const markers = new Set<string>();
+  for (const m of code.matchAll(/#\s*(\d+[-.]\d+)/g)) {
+    markers.add(m[1].replace('.', '-'));
+  }
+  for (const m of code.matchAll(/["'`](\d+-\d+)\s*[:：]/g)) {
+    markers.add(m[1]);
+  }
+  for (const m of code.matchAll(/\b(\d+-\d+)\s*답/g)) {
+    markers.add(m[1]);
+  }
+  if (markers.size > 0) return markers.size;
+
+  const prints = code.match(/^\s*print\s*\(/gm);
+  if (prints && prints.length >= 1 && prints.length <= 8) {
+    return prints.length;
+  }
+  return 1;
+}
+
 export function shortFieldsFor(
   taskType: TaskType,
   answerCode: CodeByLanguage,
@@ -245,7 +271,9 @@ export function shortFieldsFor(
   const code = language === 'python' ? answerCode.python : answerCode.r;
   const answers = extractShortAnswers(code);
   if (!answers.length) {
-    return { shortAnswer: '', shortAnswers: [''] };
+    const n = Math.max(1, inferShortSlotCount(code));
+    const blanks = Array.from({ length: n }, () => '');
+    return { shortAnswer: '', shortAnswers: blanks };
   }
   return {
     shortAnswer: answers[0] ?? '',

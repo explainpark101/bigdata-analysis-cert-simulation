@@ -366,12 +366,19 @@ function collectQuizFiles(
   return files;
 }
 
+/**
+ * Expected short answers for one bank item.
+ * Keep empty strings — they still need an input slot on the 문제 풀이 page.
+ * (Filtering blanks previously dropped all slots when keys were unknown.)
+ */
 function bankExpectedAnswers(bank: BankProblem): string[] {
-  if (bank.shortAnswers?.length) {
-    return bank.shortAnswers.map((s) => s.trim()).filter(Boolean);
+  if (Array.isArray(bank.shortAnswers) && bank.shortAnswers.length > 0) {
+    return bank.shortAnswers.map((s) => String(s ?? '').trim());
   }
-  const one = bank.shortAnswer?.trim();
-  return one ? [one] : [''];
+  if (bank.shortAnswer != null && String(bank.shortAnswer).length > 0) {
+    return [String(bank.shortAnswer).trim()];
+  }
+  return [''];
 }
 
 function buildShortSlots(banks: BankProblem[]): ShortAnswerSlot[] {
