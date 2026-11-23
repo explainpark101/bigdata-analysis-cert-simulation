@@ -1,0 +1,4 @@
+# Stable channel for local + CI. Windows hosts should use the MSVC toolchain
+# (`rustup default stable-x86_64-pc-windows-msvc`) — GNU needs dlltool.exe.
+[toolchain]
+channel = "stable"

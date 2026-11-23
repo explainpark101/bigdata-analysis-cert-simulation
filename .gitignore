@@ -10,6 +10,10 @@ dist-ssr
 # Keep bun.lock committed; ignore only local caches
 *.tsbuildinfo
 
+# Tauri / Rust
+src-tauri/target
+src-tauri/gen/schemas
+
 # =============================================================================
 # PRIVATE past-exam (기출) content — NEVER commit / push to GitHub
 # Includes: 퇴딴짓 problem text, part4 CSV cache, generated project packages

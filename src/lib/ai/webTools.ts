@@ -94,7 +94,11 @@ async function fetchText(
   }
 }
 
-/** CORS-friendly proxy for HTML/JSON that blocks browser origins. */
+/**
+ * Browser-only CORS fallback. In Tauri, `globalThis.fetch` is already
+ * routed through the Rust HTTP plugin, so the first direct fetch usually
+ * succeeds and this path is unused.
+ */
 async function viaAllOrigins(targetUrl: string): Promise<string | null> {
   const proxied = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
   const res = await fetchText(proxied);
