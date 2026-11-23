@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useId, useRef } from 'react';
 
 interface ConfirmModalProps {
   open: boolean;
@@ -29,34 +29,39 @@ export function ConfirmModal({
   onCancel,
   onSecondary,
 }: ConfirmModalProps) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !busy) onCancel();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open, busy, onCancel]);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
 
-  if (!open) return null;
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (open) {
+      if (!dialog.open) dialog.showModal();
+    } else if (dialog.open) {
+      dialog.close();
+    }
+  }, [open]);
 
   return (
-    <div
-      className="modal-backdrop"
-      role="presentation"
-      onClick={() => {
+    <dialog
+      ref={dialogRef}
+      className="confirm-dialog"
+      aria-labelledby={titleId}
+      onCancel={(e) => {
+        e.preventDefault();
         if (!busy) onCancel();
       }}
+      onClose={() => {
+        if (open && !busy) onCancel();
+      }}
+      onClick={(e) => {
+        // Light-dismiss: click on backdrop (dialog itself), not children.
+        if (e.target === e.currentTarget && !busy) onCancel();
+      }}
     >
-      <div
-        className="modal asset-conflict-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="confirm-modal-title"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <div className="confirm-dialog__panel">
         <header className="modal__header">
-          <h2 id="confirm-modal-title">{title}</h2>
+          <h2 id={titleId}>{title}</h2>
         </header>
         <div className="modal__body">
           <p style={{ margin: 0, lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>
@@ -68,6 +73,7 @@ export function ConfirmModal({
             type="button"
             className="ghost-btn"
             disabled={busy}
+            autoFocus
             onClick={onCancel}
           >
             {cancelLabel}
@@ -92,6 +98,6 @@ export function ConfirmModal({
           </button>
         </footer>
       </div>
-    </div>
+    </dialog>
   );
 }

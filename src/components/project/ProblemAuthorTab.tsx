@@ -1,7 +1,8 @@
-import { useMemo, useRef, useState } from 'react';
-import { Upload } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Eye, Upload, X } from 'lucide-react';
 import { AuthorChatDock } from '@/components/project/AuthorChatDock';
 import { ProblemMarkdownEditor } from '@/components/problem/ProblemMarkdownEditor';
+import { ProblemPanel } from '@/components/problem/ProblemPanel';
 import { DataAssetPicker } from '@/components/project/DataAssetPicker';
 import { EdgeResizeHandle } from '@/components/layout/EdgeResizeHandle';
 import { SelectField } from '@/components/ui/SelectField';
@@ -10,6 +11,7 @@ import {
   emptyAuthorDraft,
   type AuthorDraft,
 } from '@/lib/ai/authorChatStore';
+import { bankToPreviewQuiz } from '@/lib/bankPreview';
 import { mountPathForAsset } from '@/lib/assetPaths';
 import { buildStarterCode } from '@/lib/starterCode';
 import type {
@@ -19,8 +21,10 @@ import type {
   TaskType,
 } from '@/types/project';
 
-const REF_SIDEBAR_W_MIN = 220;
-const REF_SIDEBAR_W_DEFAULT = 280;
+const REF_SIDEBAR_W_MIN = 240;
+const REF_SIDEBAR_W_DEFAULT = 300;
+const PREVIEW_W_MIN = 280;
+const PREVIEW_W_DEFAULT = 360;
 const AUTHOR_DOCK_W_MIN = 300;
 const AUTHOR_DOCK_W_DEFAULT = 400;
 
@@ -54,19 +58,32 @@ export function ProblemAuthorTab({
   onSavedNavigate,
 }: ProblemAuthorTabProps) {
   const [referenceIds, setReferenceIds] = useState<string[]>([]);
+  const [previewId, setPreviewId] = useState<string | null>(null);
   const [draft, setDraft] = useState<AuthorDraft>(() => emptyAuthorDraft(1));
   const [refSidebarWidth, setRefSidebarWidth] = useState(REF_SIDEBAR_W_DEFAULT);
+  const [previewWidth, setPreviewWidth] = useState(PREVIEW_W_DEFAULT);
   const [dockWidth, setDockWidth] = useState(AUTHOR_DOCK_W_DEFAULT);
+  const [previewZoom, setPreviewZoom] = useState(100);
+  const [listUnread, setListUnread] = useState(0);
+  const [listAnnounced, setListAnnounced] = useState(0);
   const zipRef = useRef<HTMLInputElement>(null);
+  const listScrollRef = useRef<HTMLDivElement>(null);
+  const prevBankCount = useRef(project.bank.length);
+  const pinnedTop = useRef(true);
 
   const refSidebarMax = useMemo(() => {
     if (typeof window === 'undefined') return 420;
-    return Math.max(REF_SIDEBAR_W_MIN, Math.floor(window.innerWidth * 0.35));
+    return Math.max(REF_SIDEBAR_W_MIN, Math.floor(window.innerWidth * 0.32));
+  }, []);
+
+  const previewMax = useMemo(() => {
+    if (typeof window === 'undefined') return 640;
+    return Math.max(PREVIEW_W_MIN, Math.floor(window.innerWidth * 0.42));
   }, []);
 
   const dockMax = useMemo(() => {
     if (typeof window === 'undefined') return 560;
-    return Math.max(AUTHOR_DOCK_W_MIN, Math.floor(window.innerWidth * 0.45));
+    return Math.max(AUTHOR_DOCK_W_MIN, Math.floor(window.innerWidth * 0.42));
   }, []);
 
   const bankByType = useMemo(() => {
@@ -75,15 +92,74 @@ export function ProblemAuthorTab({
     return groups;
   }, [project.bank]);
 
+  const previewProblem = useMemo(() => {
+    if (!previewId) return null;
+    return project.bank.find((b) => b.id === previewId) ?? null;
+  }, [project.bank, previewId]);
+
+  const previewQuiz = useMemo(() => {
+    if (!previewProblem) return null;
+    return bankToPreviewQuiz(project, previewProblem);
+  }, [project, previewProblem]);
+
+  useEffect(() => {
+    const added = project.bank.length - prevBankCount.current;
+    prevBankCount.current = project.bank.length;
+    if (added <= 0) return;
+    if (pinnedTop.current) {
+      listScrollRef.current?.scrollTo({ top: 0 });
+      setListUnread(0);
+      return;
+    }
+    setListUnread((n) => n + added);
+  }, [project.bank.length]);
+
+  useEffect(() => {
+    if (listUnread === 0) {
+      setListAnnounced(0);
+      return;
+    }
+    const t = window.setTimeout(() => setListAnnounced(listUnread), 700);
+    return () => window.clearTimeout(t);
+  }, [listUnread]);
+
   const toggleRef = (id: string) => {
     setReferenceIds((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
     );
   };
 
+  const isTypeFullySelected = (tt: TaskType) => {
+    const list = bankByType[tt];
+    return list.length > 0 && list.every((b) => referenceIds.includes(b.id));
+  };
+
+  const toggleTypeSelection = (tt: TaskType) => {
+    const list = bankByType[tt];
+    if (!list.length) return;
+    const ids = list.map((b) => b.id);
+    if (isTypeFullySelected(tt)) {
+      const drop = new Set(ids);
+      setReferenceIds((prev) => prev.filter((id) => !drop.has(id)));
+    } else {
+      setReferenceIds((prev) => [...new Set([...prev, ...ids])]);
+    }
+  };
+
+  const jumpToNewItems = () => {
+    const el = listScrollRef.current;
+    if (!el) return;
+    pinnedTop.current = true;
+    setListUnread(0);
+    el.focus({ preventScroll: true });
+    el.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   const patchDraft = (p: Partial<AuthorDraft>) => {
     setDraft((prev) => ({ ...prev, ...p }));
   };
+
+  const selectedCount = referenceIds.length;
 
   return (
     <div className="edit-page__body edit-page__body--with-dock author-tab">
@@ -93,14 +169,19 @@ export function ProblemAuthorTab({
       >
         <aside className="edit-sidebar author-tab__refs">
           <div className="author-tab__refs-head">
-            <strong>참고 문제</strong>
+            <div className="author-tab__refs-title">
+              <strong>참고 문제</strong>
+              <span className="author-tab__refs-count">
+                {selectedCount}/{project.bank.length}
+              </span>
+            </div>
             <button
               type="button"
               className="ghost-btn btn-with-icon"
               onClick={() => zipRef.current?.click()}
             >
               <Upload size={14} />
-              ZIP 추가
+              ZIP
             </button>
             <input
               ref={zipRef}
@@ -126,47 +207,70 @@ export function ProblemAuthorTab({
               }}
             />
           </div>
-          <p className="edit-page__sub author-tab__refs-hint">
-            여러 <code>.project.zip</code> / <code>.exam.zip</code> 을 불러와
-            합친 뒤, 참고로 쓸 문항을 체크하세요.
-          </p>
-          {([1, 2, 3] as TaskType[]).map((tt) => (
-            <div key={tt} className="bank-type-group">
-              <div className="bank-type-group__head">
-                <strong>{TASK_LABELS[tt]}</strong>
-                <span className="badge">{bankByType[tt].length}</span>
-              </div>
-              <div className="quiz-list">
-                {bankByType[tt].map((b) => {
-                  const checked = referenceIds.includes(b.id);
-                  return (
-                    <label
-                      key={b.id}
-                      className={`quiz-item author-tab__ref-item ${checked ? 'active' : ''}`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleRef(b.id)}
-                      />
-                      <span className="author-tab__ref-body">
-                        <span className="quiz-item__top">
-                          <span>{b.number || '·'}</span>
-                          <span className="badge">{b.assetIds.length} files</span>
-                        </span>
-                        <span className="quiz-item__title">{b.title}</span>
-                      </span>
-                    </label>
-                  );
-                })}
-                {!bankByType[tt].length ? (
-                  <p className="edit-page__sub" style={{ margin: '4px 0 10px' }}>
-                    문제 없음
-                  </p>
-                ) : null}
-              </div>
+
+          <div className="author-tab__list-shell">
+            <div
+              ref={listScrollRef}
+              className="author-tab__list-scroll"
+              role="region"
+              aria-label="참고 문제 목록"
+              tabIndex={0}
+              onScroll={(e) => {
+                const el = e.currentTarget;
+                const atTop = el.scrollTop <= 24;
+                pinnedTop.current = atTop;
+                if (atTop) setListUnread(0);
+              }}
+            >
+              {([1, 2, 3] as TaskType[]).map((tt) => (
+                <TypeGroup
+                  key={tt}
+                  taskType={tt}
+                  list={bankByType[tt]}
+                  referenceIds={referenceIds}
+                  previewId={previewId}
+                  allOn={isTypeFullySelected(tt)}
+                  onToggleType={() => toggleTypeSelection(tt)}
+                  onToggleRef={toggleRef}
+                  onPreview={(id) => setPreviewId(id)}
+                />
+              ))}
             </div>
-          ))}
+
+            <div className="author-tab__new-pill-wrap" aria-hidden={listUnread === 0}>
+              {listUnread > 0 ? (
+                <button
+                  type="button"
+                  className="author-tab__new-pill"
+                  onClick={jumpToNewItems}
+                  aria-label={
+                    listUnread > 99
+                      ? '99+ new items'
+                      : `${listUnread} new ${listUnread === 1 ? 'item' : 'items'}`
+                  }
+                  onBlur={(e) => {
+                    if (e.relatedTarget) return;
+                    listScrollRef.current?.focus({ preventScroll: true });
+                  }}
+                >
+                  <span className="author-tab__new-pill-arrow" aria-hidden="true">
+                    ↑
+                  </span>
+                  <span className="author-tab__new-pill-text">
+                    {listUnread > 99 ? '99+' : listUnread} new
+                    {listUnread === 1 ? ' item' : ' items'}
+                  </span>
+                </button>
+              ) : null}
+              <span role="status" aria-live="polite" className="visually-hidden">
+                {listAnnounced > 0
+                  ? listAnnounced > 99
+                    ? '99+ new items'
+                    : `${listAnnounced} new ${listAnnounced === 1 ? 'item' : 'items'}`
+                  : ''}
+              </span>
+            </div>
+          </div>
         </aside>
         <EdgeResizeHandle
           axis="x"
@@ -177,6 +281,42 @@ export function ProblemAuthorTab({
           label="참고 문제 사이드바 너비 조절"
         />
       </div>
+
+      {previewQuiz ? (
+        <div
+          className="author-tab__preview-pane problem-pane"
+          style={{ width: previewWidth, flexBasis: previewWidth }}
+        >
+          <header className="author-tab__preview-head">
+            <div className="author-tab__preview-head-text">
+              <strong>미리보기</strong>
+              <span>{previewQuiz.title}</span>
+            </div>
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label="미리보기 닫기"
+              onClick={() => setPreviewId(null)}
+            >
+              <X size={16} />
+            </button>
+          </header>
+          <ProblemPanel
+            quiz={previewQuiz}
+            zoomPct={previewZoom}
+            lineHeightPct={150}
+            onZoomChange={setPreviewZoom}
+          />
+          <EdgeResizeHandle
+            axis="x"
+            value={previewWidth}
+            onChange={setPreviewWidth}
+            min={PREVIEW_W_MIN}
+            max={previewMax}
+            label="문제 미리보기 너비 조절"
+          />
+        </div>
+      ) : null}
 
       <main className="edit-main">
         <section className="edit-card form-grid">
@@ -261,11 +401,102 @@ export function ProblemAuthorTab({
             starterCode: buildStarterCode(taskType, paths),
           });
         }}
-        onSaved={(created) => {
+        onSaved={(created, opts) => {
           onMessage(`문제 저장: ${created.title}`);
-          onSavedNavigate(created);
+          if (opts?.navigate !== false) onSavedNavigate(created);
         }}
       />
     </div>
+  );
+}
+
+function TypeGroup({
+  taskType,
+  list,
+  referenceIds,
+  previewId,
+  allOn,
+  onToggleType,
+  onToggleRef,
+  onPreview,
+}: {
+  taskType: TaskType;
+  list: BankProblem[];
+  referenceIds: string[];
+  previewId: string | null;
+  allOn: boolean;
+  onToggleType: () => void;
+  onToggleRef: (id: string) => void;
+  onPreview: (id: string) => void;
+}) {
+  const typeCheckRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const el = typeCheckRef.current;
+    if (!el) return;
+    const some = list.some((b) => referenceIds.includes(b.id)) && !allOn;
+    el.indeterminate = some;
+  }, [list, referenceIds, allOn]);
+
+  return (
+    <section className="author-tab__section">
+      <header className="author-tab__section-head">
+        <label className="author-tab__type-select">
+          <input
+            ref={typeCheckRef}
+            type="checkbox"
+            checked={allOn}
+            disabled={!list.length}
+            onChange={onToggleType}
+          />
+          <span className="author-tab__section-title">{TASK_LABELS[taskType]}</span>
+        </label>
+        <span className="author-tab__section-meta">{list.length}</span>
+      </header>
+
+      {list.length === 0 ? (
+        <p className="author-tab__empty-row">문제 없음</p>
+      ) : (
+        <div className="author-tab__item-list" role="group" aria-label={TASK_LABELS[taskType]}>
+          {list.map((b) => {
+            const checked = referenceIds.includes(b.id);
+            const previewing = previewId === b.id;
+            const checkId = `ref-check-${b.id}`;
+            return (
+              <div
+                key={b.id}
+                className={`author-tab__item ${checked ? 'is-checked' : ''} ${previewing ? 'is-previewing' : ''}`}
+              >
+                <input
+                  id={checkId}
+                  className="author-tab__item-input"
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => onToggleRef(b.id)}
+                />
+                <label htmlFor={checkId} className="author-tab__item-body">
+                  <span className="author-tab__item-title">{b.title}</span>
+                  <span className="author-tab__item-sub">
+                    {b.number ? `${b.number} · ` : ''}
+                    {b.assetIds.length} files
+                    {b.note?.trim() ? ` · ${b.note.trim().slice(0, 48)}` : ''}
+                  </span>
+                </label>
+                <button
+                  type="button"
+                  className={`author-tab__preview-btn ${previewing ? 'is-active' : ''}`}
+                  aria-label={`${b.title} 미리보기`}
+                  aria-pressed={previewing}
+                  onClick={() => onPreview(b.id)}
+                >
+                  <Eye size={14} aria-hidden />
+                  <span>미리보기</span>
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }

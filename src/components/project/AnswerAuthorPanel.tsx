@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Copy, Play, Plus, Trash2 } from 'lucide-react';
 import { CodeEditor } from '@/components/editor/CodeEditor';
+import { ConfirmModal } from '@/components/exam/ConfirmModal';
 import { resolveAssets } from '@/lib/projectIO';
 import { mountAssetsToPyodide } from '@/runtimes/fsMount';
 import { preloadPyodide, runPython } from '@/runtimes/pyodideRuntime';
@@ -34,6 +35,9 @@ export function AnswerAuthorPanel({
   const [codeLang, setCodeLang] = useState<ExamLanguage>(problem.language);
   const [running, setRunning] = useState(false);
   const [preview, setPreview] = useState<RunResult | null>(null);
+  const [pendingRemoveIndex, setPendingRemoveIndex] = useState<number | null>(
+    null,
+  );
 
   const answerPython = problem.answerCode?.python ?? '';
   const answerR = problem.answerCode?.r ?? '';
@@ -227,7 +231,7 @@ export function AnswerAuthorPanel({
                   type="button"
                   className="ghost-btn btn-with-icon"
                   title="칸 삭제"
-                  onClick={() => removeShort(index)}
+                  onClick={() => setPendingRemoveIndex(index)}
                   disabled={shortAnswers.length <= 1}
                 >
                   <Trash2 size={14} />
@@ -277,6 +281,26 @@ export function AnswerAuthorPanel({
             : ''}
         </pre>
       )}
+
+      <ConfirmModal
+        open={pendingRemoveIndex != null}
+        title="단답 칸 삭제"
+        message={
+          pendingRemoveIndex != null
+            ? `답안 ${pendingRemoveIndex + 1} 칸을 삭제할까요?`
+            : ''
+        }
+        cancelLabel="취소"
+        confirmLabel="삭제"
+        confirmDanger
+        onCancel={() => setPendingRemoveIndex(null)}
+        onConfirm={() => {
+          if (pendingRemoveIndex != null) {
+            removeShort(pendingRemoveIndex);
+          }
+          setPendingRemoveIndex(null);
+        }}
+      />
     </section>
   );
 }

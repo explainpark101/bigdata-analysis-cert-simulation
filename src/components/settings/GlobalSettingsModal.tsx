@@ -17,6 +17,7 @@ import { FilterableSelectField } from '@/components/ui/FilterableSelectField';
 import { SelectField } from '@/components/ui/SelectField';
 import { TextField } from '@/components/ui/TextField';
 import { SecretField } from '@/components/ui/SecretField';
+import { ConfirmModal } from '@/components/exam/ConfirmModal';
 
 interface GlobalSettingsModalProps {
   open: boolean;
@@ -65,6 +66,7 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
   );
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const pressedOutsideRef = useRef(false);
 
   const requestClose = () => {
@@ -269,6 +271,7 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
   };
 
   return (
+    <>
     <dialog
       ref={dialogRef}
       className="screen-settings-modal global-settings-modal"
@@ -342,7 +345,7 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
                   type="button"
                   className="danger-btn btn-with-icon"
                   disabled={busy || state.profiles.length <= 1}
-                  onClick={removeActive}
+                  onClick={() => setConfirmRemove(true)}
                 >
                   <Trash2 size={15} />
                   삭제
@@ -452,6 +455,22 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
           </footer>
         </>
       )}
+
     </dialog>
+
+    <ConfirmModal
+      open={confirmRemove}
+      title="Provider 삭제"
+      message={`「${active?.label ?? 'Provider'}」 프로필을 삭제할까요?\n저장된 API Key·모델 설정도 함께 사라집니다.`}
+      cancelLabel="취소"
+      confirmLabel="삭제"
+      confirmDanger
+      onCancel={() => setConfirmRemove(false)}
+      onConfirm={() => {
+        removeActive();
+        setConfirmRemove(false);
+      }}
+    />
+    </>
   );
 }

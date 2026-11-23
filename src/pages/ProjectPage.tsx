@@ -42,6 +42,7 @@ import { ExamAssemblePreview } from '@/components/project/ExamAssemblePreview';
 import { VariantChatDock } from '@/components/project/VariantChatDock';
 import { ProblemAuthorTab } from '@/components/project/ProblemAuthorTab';
 import { GlobalSettingsModal } from '@/components/settings/GlobalSettingsModal';
+import { ConfirmModal } from '@/components/exam/ConfirmModal';
 import type { ExamLanguage, QuizKind, SubmitFormat } from '@/types/exam';
 import type { BankProblem, TaskType } from '@/types/project';
 import { mountPathForAsset } from '@/lib/assetPaths';
@@ -52,6 +53,12 @@ interface PendingImportSession {
   conflicts: AssetNameConflict[];
   identicalCount: number;
 }
+
+type PendingDanger =
+  | { kind: 'resetSample' }
+  | { kind: 'removeAsset'; id: string; name: string }
+  | { kind: 'removeProblem'; id: string; title: string }
+  | { kind: 'removeExam'; id: string; title: string };
 
 const PREVIEW_W_MIN = 260;
 const PREVIEW_W_DEFAULT = 400;
@@ -112,6 +119,7 @@ export default function ProjectPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [variantOpen, setVariantOpen] = useState(false);
   const [message, setMessage] = useState('');
+  const [pendingDanger, setPendingDanger] = useState<PendingDanger | null>(null);
   const [importSession, setImportSession] = useState<PendingImportSession | null>(
     null,
   );
@@ -303,7 +311,7 @@ export default function ProjectPage() {
           <button
             type="button"
             className="danger-btn btn-with-icon"
-            onClick={resetSample}
+            onClick={() => setPendingDanger({ kind: 'resetSample' })}
           >
             <RotateCcw size={16} />
             샘플 초기화
@@ -449,12 +457,12 @@ export default function ProjectPage() {
                 onSelect={setSelectedAssetId}
                 onUpdatePath={(id, path) => updateAsset(id, { path })}
                 onRemove={(id) => {
-                  removeAsset(id);
-                  if (selectedAssetId === id) {
-                    setSelectedAssetId(
-                      project.assets.find((x) => x.id !== id)?.id ?? '',
-                    );
-                  }
+                  const asset = project.assets.find((x) => x.id === id);
+                  setPendingDanger({
+                    kind: 'removeAsset',
+                    id,
+                    name: asset?.name || asset?.path || id,
+                  });
                 }}
               />
             </section>
@@ -562,13 +570,13 @@ export default function ProjectPage() {
                       <button
                         type="button"
                         className="danger-btn btn-with-icon"
-                        onClick={() => {
-                          removeBankProblem(problem.id);
-                          setSelectedId(
-                            project.bank.find((b) => b.id !== problem.id)?.id ?? '',
-                          );
-                          setVariantOpen(false);
-                        }}
+                        onClick={() =>
+                          setPendingDanger({
+                            kind: 'removeProblem',
+                            id: problem.id,
+                            title: problem.title,
+                          })
+                        }
                       >
                         <Trash2 size={16} />
                         삭제
@@ -862,11 +870,11 @@ export default function ProjectPage() {
                       disabled={project.exams.length <= 1}
                       onClick={() => {
                         if (project.exams.length <= 1) return;
-                        if (!window.confirm(`「${ex.title}」 시험지를 삭제할까요?`)) {
-                          return;
-                        }
-                        const ok = removeExam(ex.id);
-                        if (ok) setMessage(`삭제: ${ex.title}`);
+                        setPendingDanger({
+                          kind: 'removeExam',
+                          id: ex.id,
+                          title: ex.title,
+                        });
                       }}
                     >
                       <Trash2 size={14} />
@@ -1105,6 +1113,66 @@ export default function ProjectPage() {
       <GlobalSettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+      />
+
+      <ConfirmModal
+        open={Boolean(pendingDanger)}
+        title={
+          pendingDanger?.kind === 'resetSample'
+            ? '샘플 초기화'
+            : pendingDanger?.kind === 'removeAsset'
+              ? '파일 제거'
+              : pendingDanger?.kind === 'removeProblem'
+                ? '문제 삭제'
+                : pendingDanger?.kind === 'removeExam'
+                  ? '시험지 삭제'
+                  : '확인'
+        }
+        message={
+          pendingDanger?.kind === 'resetSample'
+            ? '프로젝트를 샘플 상태로 되돌릴까요?\n현재 문제은행·시험지·라이브러리 변경이 사라집니다.'
+            : pendingDanger?.kind === 'removeAsset'
+              ? `「${pendingDanger.name}」 파일을 라이브러리에서 제거할까요?`
+              : pendingDanger?.kind === 'removeProblem'
+                ? `「${pendingDanger.title}」 문제를 삭제할까요?`
+                : pendingDanger?.kind === 'removeExam'
+                  ? `「${pendingDanger.title}」 시험지를 삭제할까요?`
+                  : ''
+        }
+        cancelLabel="취소"
+        confirmLabel={
+          pendingDanger?.kind === 'resetSample' ? '초기화' : '삭제'
+        }
+        confirmDanger
+        onCancel={() => setPendingDanger(null)}
+        onConfirm={() => {
+          if (!pendingDanger) return;
+          if (pendingDanger.kind === 'resetSample') {
+            resetSample();
+            setMessage('샘플 프로젝트로 초기화했습니다.');
+          } else if (pendingDanger.kind === 'removeAsset') {
+            const { id } = pendingDanger;
+            removeAsset(id);
+            if (selectedAssetId === id) {
+              setSelectedAssetId(
+                project.assets.find((x) => x.id !== id)?.id ?? '',
+              );
+            }
+            setMessage(`파일 제거: ${pendingDanger.name}`);
+          } else if (pendingDanger.kind === 'removeProblem') {
+            const { id, title } = pendingDanger;
+            removeBankProblem(id);
+            setSelectedId(
+              project.bank.find((b) => b.id !== id)?.id ?? '',
+            );
+            setVariantOpen(false);
+            setMessage(`문제 삭제: ${title}`);
+          } else if (pendingDanger.kind === 'removeExam') {
+            const ok = removeExam(pendingDanger.id);
+            if (ok) setMessage(`삭제: ${pendingDanger.title}`);
+          }
+          setPendingDanger(null);
+        }}
       />
     </div>
   );

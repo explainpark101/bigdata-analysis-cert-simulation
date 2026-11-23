@@ -44,6 +44,11 @@ export interface AuthorAgentResult {
   savedProblem: BankProblem | null;
 }
 
+export type AuthorAgentProgress =
+  | { kind: 'status'; text: string }
+  | { kind: 'assistant_delta'; text: string }
+  | { kind: 'tool'; name: string; phase: 'start' | 'done' };
+
 function systemPrompt(): string {
   return [
     'You are an exam-authoring agent for 빅데이터분석기사 실기 (DataQ-style).',
@@ -287,8 +292,11 @@ export async function runAuthorAgentTurn(opts: {
   userImages?: Array<{ dataUrl: string; name?: string }>;
   onDraft?: (draft: AuthorDraft) => void;
   onSave?: (problem: Partial<BankProblem>) => BankProblem;
+  onProgress?: (event: AuthorAgentProgress) => void;
+  signal?: AbortSignal;
 }): Promise<AuthorAgentResult> {
-  const { onDraft, onSave } = opts;
+  const { onDraft, onSave, onProgress, signal } = opts;
+  const report = (event: AuthorAgentProgress) => onProgress?.(event);
   const ctx: AuthorAgentContext = {
     ...opts.ctx,
     project: {
@@ -346,13 +354,38 @@ export async function runAuthorAgentTurn(opts: {
   let assistantText = '';
   let savedProblem: BankProblem | null = null;
 
+  const throwIfAborted = () => {
+    if (!signal?.aborted) return;
+    const reason = signal.reason;
+    if (reason instanceof Error) throw reason;
+    throw new DOMException('Generation aborted', 'AbortError');
+  };
+
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    throwIfAborted();
+    report({
+      kind: 'status',
+      text: `모델 응답 생성 중… (${round + 1}/${MAX_TOOL_ROUNDS})`,
+    });
     const completion = await createChatCompletion({
       settings: ctx.settings,
       messages,
       tools: TOOLS,
       toolChoice: 'auto',
+      signal,
+      onDelta: (delta) => {
+        if (delta.content) {
+          report({ kind: 'assistant_delta', text: delta.content });
+        }
+        if (delta.toolCallNames?.length) {
+          report({
+            kind: 'status',
+            text: `도구 준비: ${delta.toolCallNames.join(', ')}`,
+          });
+        }
+      },
     });
+    throwIfAborted();
     const msg = completion.message;
     messages.push({
       role: 'assistant',
@@ -366,7 +399,10 @@ export async function runAuthorAgentTurn(opts: {
     if (!calls.length) break;
 
     for (const call of calls) {
+      throwIfAborted();
       const name = call.function.name;
+      report({ kind: 'tool', name, phase: 'start' });
+      report({ kind: 'status', text: `도구 실행: ${name}` });
       const args = parseArgs(call.function.arguments);
       let toolResult = '';
 
@@ -600,8 +636,11 @@ export async function runAuthorAgentTurn(opts: {
         tool_call_id: call.id,
         content: toolResult,
       });
+      report({ kind: 'tool', name, phase: 'done' });
     }
   }
+
+  report({ kind: 'status', text: '응답 정리 중…' });
 
   const uiMessages = messages.filter(
     (m, i) =>

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, Save, Sparkles, X } from 'lucide-react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Loader2, RefreshCw, Save, Sparkles, X } from 'lucide-react';
 import { loadAiSettings } from '@/lib/aiSettings';
 import { runVariantAgentTurn } from '@/lib/ai/variantAgent';
 import {
@@ -16,6 +16,7 @@ import {
 import type { AuthoringProject, BankProblem, ProjectAsset } from '@/types/project';
 import { EdgeResizeHandle } from '@/components/layout/EdgeResizeHandle';
 import { ChatComposer } from '@/components/ui/ChatComposer';
+import { CopyButton } from '@/components/ui/CopyButton';
 
 interface VariantChatDockProps {
   open: boolean;
@@ -28,6 +29,10 @@ interface VariantChatDockProps {
   addProjectAssets: (assets: ProjectAsset[]) => ProjectAsset[];
   onSaveVariant: (partial: Partial<BankProblem>) => BankProblem;
   onSaved: (problem: BankProblem) => void;
+}
+
+function buildUserMessage(text: string): ChatMessage {
+  return { role: 'user', content: text.trim() || '(empty)' };
 }
 
 function visibleContent(m: ChatMessage): string {
@@ -69,6 +74,11 @@ export function VariantChatDock({
   const [error, setError] = useState('');
   const [ready, setReady] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const draftRef = useRef(draft);
+  const messagesRef = useRef(messages);
+  const bodyIdPrefix = useId();
+  draftRef.current = draft;
+  messagesRef.current = messages;
 
   useEffect(() => {
     if (!open) return;
@@ -112,14 +122,18 @@ export function VariantChatDock({
     return '1·3유형: 동일 데이터로 문항을 바꾸고, 정답은 연산 코드 실행으로 채웁니다.';
   }, [source.taskType]);
 
-  if (!open) return null;
-
-  const send = async (text: string) => {
-    const trimmed = text.trim();
+  const send = async (opts?: { text?: string; clearComposer?: boolean }) => {
+    const clearComposer = opts?.clearComposer ?? opts?.text == null;
+    const trimmed = (opts?.text ?? input).trim();
     if (!trimmed || busy) return;
+
+    const historyBefore = messagesRef.current;
+    const userMsg = buildUserMessage(trimmed);
+    setMessages([...historyBefore, userMsg]);
+    if (clearComposer) setInput('');
     setBusy(true);
     setError('');
-    setInput('');
+
     try {
       const settings = await loadAiSettings();
       const result = await runVariantAgentTurn({
@@ -127,10 +141,10 @@ export function VariantChatDock({
           settings,
           project,
           source,
-          draft,
+          draft: draftRef.current,
           addProjectAssets,
         },
-        history: messages,
+        history: historyBefore,
         userText: trimmed,
         onDraft: setDraft,
         onSave: onSaveVariant,
@@ -148,11 +162,7 @@ export function VariantChatDock({
     }
   };
 
-  const saveNow = () => {
-    void send(
-      '초안을 검토하고 save_variant(confirm=true)로 문제은행에 저장해 주세요.',
-    );
-  };
+  if (!open) return null;
 
   return (
     <aside className="variant-dock" style={{ width }} aria-label="변형 문제 AI">
@@ -202,21 +212,55 @@ export function VariantChatDock({
                   m.role === 'assistant' ||
                   m.role === 'tool',
               )
-              .map((m, i) => (
-                <div
-                  key={`${m.role}-${i}`}
-                  className={`variant-msg variant-msg--${m.role}`}
-                >
-                  <span className="variant-msg__role">
-                    {m.role === 'user'
-                      ? '나'
-                      : m.role === 'assistant'
-                        ? 'Agent'
-                        : 'Tool'}
-                  </span>
-                  <pre className="variant-msg__body">{visibleContent(m)}</pre>
-                </div>
-              ))
+              .map((m, i) => {
+                const bodyId = `${bodyIdPrefix}-body-${i}`;
+                return (
+                  <div
+                    key={`${m.role}-${i}`}
+                    className={`variant-msg variant-msg--${m.role}`}
+                  >
+                    <div className="variant-msg__top">
+                      <span className="variant-msg__role">
+                        {m.role === 'user'
+                          ? '나'
+                          : m.role === 'assistant'
+                            ? 'Agent'
+                            : 'Tool'}
+                      </span>
+                      {m.role === 'user' ? (
+                        <div
+                          className="variant-msg__actions"
+                          role="group"
+                          aria-label="메시지 작업"
+                        >
+                          <button
+                            type="button"
+                            className="variant-msg__action"
+                            aria-label="메시지 재전송"
+                            disabled={busy}
+                            onClick={() =>
+                              void send({
+                                text: chatContentToText(m.content),
+                                clearComposer: false,
+                              })
+                            }
+                          >
+                            <RefreshCw size={14} aria-hidden />
+                          </button>
+                          <CopyButton
+                            targetId={bodyId}
+                            label="메시지 내용 복사"
+                            className="variant-msg__copy"
+                          />
+                        </div>
+                      ) : null}
+                    </div>
+                    <pre id={bodyId} className="variant-msg__body">
+                      {visibleContent(m)}
+                    </pre>
+                  </div>
+                );
+              })
           )}
           {busy ? (
             <div className="variant-dock__busy">
@@ -239,7 +283,7 @@ export function VariantChatDock({
             onChange={setInput}
             attachments={[]}
             onAttachmentsChange={() => {}}
-            onSubmit={() => void send(input)}
+            onSubmit={() => void send()}
             disabled={busy}
             allowImages={false}
             placeholder="변형 요청 · Enter 전송 · Shift+Enter 줄바꿈"
@@ -249,7 +293,12 @@ export function VariantChatDock({
               type="button"
               className="ghost-btn btn-with-icon"
               disabled={busy}
-              onClick={saveNow}
+              onClick={() =>
+                void send({
+                  text: '초안을 검토하고 save_variant(confirm=true)로 문제은행에 저장해 주세요.',
+                  clearComposer: false,
+                })
+              }
             >
               <Save size={14} />
               저장 요청

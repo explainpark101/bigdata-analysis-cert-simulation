@@ -141,6 +141,7 @@ export default function ExamPage() {
   const [gradeConfirmOpen, setGradeConfirmOpen] = useState(false);
   const [gradeBusy, setGradeBusy] = useState(false);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  const [codeResetConfirmOpen, setCodeResetConfirmOpen] = useState(false);
   const [pendingProject, setPendingProject] = useState<AuthoringProject | null>(
     null,
   );
@@ -1031,10 +1032,7 @@ export default function ExamPage() {
                   <button
                     type="button"
                     className="tool-btn"
-                    onClick={() => {
-                      patchQuiz({ answerDraft: quiz.starterCode[language] });
-                      setResult(null);
-                    }}
+                    onClick={() => setCodeResetConfirmOpen(true)}
                   >
                     초기화
                   </button>
@@ -1232,6 +1230,23 @@ export default function ExamPage() {
         onConfirm={() => {
           setClearConfirmOpen(false);
           clear();
+        }}
+      />
+
+      <ConfirmModal
+        open={codeResetConfirmOpen}
+        title="코드 초기화"
+        message={
+          '편집 중인 코드를 시작 코드로 되돌릴까요?\n작성한 내용이 사라집니다.'
+        }
+        cancelLabel="취소"
+        confirmLabel="초기화"
+        confirmDanger
+        onCancel={() => setCodeResetConfirmOpen(false)}
+        onConfirm={() => {
+          patchQuiz({ answerDraft: quiz.starterCode[language] });
+          setResult(null);
+          setCodeResetConfirmOpen(false);
         }}
       />
     </div>
