@@ -50,9 +50,17 @@ export default defineConfig({
     },
   },
   build: {
+    // safari13 cannot downlevel modern destructuring used by @tauri-apps/plugin-http.
+    // Tauri webviews are Chromium (Windows) / recent WebKit (macOS/Linux) — use modern floors.
     target:
-      process.env.TAURI_ENV_PLATFORM === 'windows' ? 'chrome105' : 'safari13',
+      process.env.TAURI_ENV_PLATFORM === 'windows'
+        ? 'chrome105'
+        : process.env.TAURI_ENV_PLATFORM === 'macos' ||
+            process.env.TAURI_ENV_PLATFORM === 'darwin'
+          ? 'safari15'
+          : 'es2022',
     minify: process.env.TAURI_ENV_DEBUG ? false : 'esbuild',
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
   },
 });
+

@@ -85,6 +85,12 @@ jobs:
           - platform: windows-latest
             args: ''
     runs-on: ${{ matrix.platform }}
+    env:
+      # Cap parallel rustc / linker memory; disable incremental to cut peak RSS.
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TERM_COLOR: always
+      NODE_OPTIONS: --max-old-space-size=6144
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -143,6 +149,9 @@ jobs:
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_INCREMENTAL: "0"
+          CARGO_BUILD_JOBS: "2"
+          NODE_OPTIONS: --max-old-space-size=6144
         with:
           tagName: ${{ needs.prepare.outputs.tag }}
           releaseName: Bigdata Knight Simulation ${{ needs.prepare.outputs.tag }}
