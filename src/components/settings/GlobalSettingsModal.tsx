@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Plus, Trash2, X } from 'lucide-react';
 import {
   PROVIDER_PRESETS,
@@ -14,32 +14,101 @@ import {
 import { listAiModels, testAiConnection } from '@/lib/ai/openaiCompatible';
 import { ComboboxField } from '@/components/ui/ComboboxField';
 import { SearchableSelect } from '@/components/ui/SearchableSelect';
+import { SelectField } from '@/components/ui/SelectField';
+import { TextField } from '@/components/ui/TextField';
+import { SecretField } from '@/components/ui/SecretField';
 
 interface GlobalSettingsModalProps {
   open: boolean;
   onClose: () => void;
 }
 
+function hasExpandedOverlay(root: HTMLElement | null): boolean {
+  return Boolean(root?.querySelector('[data-ce-expanded="true"]'));
+}
+
+function clickOnOverlay(e: Event): boolean {
+  return e
+    .composedPath()
+    .some(
+      (n) =>
+        n instanceof Element &&
+        (n.hasAttribute('data-ce-overlay') ||
+          n.closest('[data-ce-overlay]') != null),
+    );
+}
+
+function pointerOutsideDialog(
+  e: PointerEvent,
+  dialog: HTMLDialogElement,
+): boolean {
+  if (clickOnOverlay(e)) return false;
+  const r = dialog.getBoundingClientRect();
+  return (
+    e.clientX < r.left ||
+    e.clientX > r.right ||
+    e.clientY < r.top ||
+    e.clientY > r.bottom
+  );
+}
+
+function collapseOverlays(root: HTMLElement | null) {
+  root
+    ?.querySelectorAll('[data-ce-expanded="true"]')
+    .forEach((node) => node.dispatchEvent(new Event('ce-collapse')));
+}
+
 export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
   const [state, setState] = useState<AiSettingsState>(() =>
     normalizeAiSettingsState(null),
   );
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
+  const pressedOutsideRef = useRef(false);
 
   useEffect(() => {
-    if (!open) return;
-    void loadAiSettingsState().then(setState);
-    setStatus('');
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+
+    // closerequest = Esc / platform back; light dismiss is custom so fixed
+    // overlay lists outside the dialog box do not close the modal.
+    dialog.setAttribute('closedby', 'closerequest');
+
+    if (open) {
+      void loadAiSettingsState().then(setState);
+      setStatus('');
+      if (!dialog.open) dialog.showModal();
+    } else if (dialog.open) {
+      dialog.close();
+    }
   }, [open]);
 
   useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+    const dialog = dialogRef.current;
+    if (!dialog || !open) return;
+
+    const onPointerDown = (e: PointerEvent) => {
+      pressedOutsideRef.current = pointerOutsideDialog(e, dialog);
     };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
+    const onPointerUp = (e: PointerEvent) => {
+      if (pressedOutsideRef.current && pointerOutsideDialog(e, dialog)) {
+        if (hasExpandedOverlay(dialog)) {
+          collapseOverlays(dialog);
+        } else {
+          onClose();
+        }
+      }
+      pressedOutsideRef.current = false;
+    };
+
+    // Listen on document so clicks on ::backdrop / fixed overlays are seen.
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('pointerup', onPointerUp, true);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('pointerup', onPointerUp, true);
+    };
   }, [open, onClose]);
 
   const active = useMemo(
@@ -58,7 +127,25 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
     [],
   );
 
-  if (!open || !active) return null;
+  const profileOptions = useMemo(
+    () =>
+      state.profiles.map((p) => ({
+        value: p.id,
+        label: p.label,
+        description: p.kind,
+      })),
+    [state.profiles],
+  );
+
+  const kindOptions = useMemo(
+    () =>
+      PROVIDER_PRESETS.map((p) => ({
+        value: p.kind,
+        label: p.label,
+        description: p.baseUrl,
+      })),
+    [],
+  );
 
   const patchActive = (p: Partial<AiProviderProfile>) => {
     setState((prev) => ({
@@ -93,10 +180,13 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
 
   const applyKind = (kind: AiProviderKind) => {
     const preset = PROVIDER_PRESETS.find((p) => p.kind === kind);
-    if (!preset) return;
+    if (!preset || !active) return;
     patchActive({
       kind,
-      label: active.label === active.kind || !active.label ? preset.label : active.label,
+      label:
+        active.label === active.kind || !active.label
+          ? preset.label
+          : active.label,
       baseUrl: preset.baseUrl,
       model: active.model || preset.model,
     });
@@ -118,6 +208,7 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
   };
 
   const test = async () => {
+    if (!active) return;
     setBusy(true);
     setStatus('연결 테스트 중…');
     try {
@@ -137,6 +228,7 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
   };
 
   const fetchModels = async () => {
+    if (!active) return;
     setBusy(true);
     setStatus('모델 목록 불러오는 중…');
     try {
@@ -156,170 +248,176 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
   };
 
   return (
-    <div className="screen-settings-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="screen-settings-modal global-settings-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="global-settings-title"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <header className="screen-settings-modal__head">
-          <h2 id="global-settings-title">전역 설정</h2>
-          <button
-            type="button"
-            className="icon-btn screen-settings-modal__close"
-            aria-label="닫기"
-            onClick={onClose}
+    <dialog
+      ref={dialogRef}
+      className="screen-settings-modal global-settings-modal"
+      aria-labelledby="global-settings-title"
+      onCancel={(e) => {
+        e.preventDefault();
+        if (hasExpandedOverlay(dialogRef.current)) {
+          collapseOverlays(dialogRef.current);
+          return;
+        }
+        onClose();
+      }}
+      onClose={() => {
+        if (open) onClose();
+      }}
+    >
+      {!active ? null : (
+        <>
+          <header className="screen-settings-modal__head">
+            <h2 id="global-settings-title">전역 설정</h2>
+            <button
+              type="button"
+              className="icon-btn screen-settings-modal__close"
+              aria-label="닫기"
+              onClick={onClose}
+            >
+              <X size={18} />
+            </button>
+          </header>
+
+          <form
+            className="screen-settings-modal__body global-settings-modal__body"
+            aria-labelledby="global-settings-title"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void save();
+            }}
           >
-            <X size={18} />
-          </button>
-        </header>
+            <section className="screen-settings-col" style={{ gridColumn: '1 / -1' }}>
+              <h3>AI Provider</h3>
+              <p className="edit-page__sub">
+                Provider별로 엔드포인트·키·모델을 저장합니다. OpenAI 호환{' '}
+                <code>/v1/chat/completions</code> · <code>/v1/models</code> 를
+                사용하며, 브라우저 CORS가 허용되어야 합니다. API Key는 로컬
+                서버 등에서 비워 둘 수 있습니다.
+              </p>
 
-        <div className="screen-settings-modal__body global-settings-modal__body">
-          <section className="screen-settings-col" style={{ gridColumn: '1 / -1' }}>
-            <h3>AI Provider</h3>
-            <p className="edit-page__sub">
-              Provider별로 엔드포인트·키·모델을 저장합니다. OpenAI 호환{' '}
-              <code>/v1/chat/completions</code> · <code>/v1/models</code> 를
-              사용하며, 브라우저 CORS가 허용되어야 합니다.
-            </p>
-
-            <div className="ai-provider-bar">
-              <label className="screen-settings-field ai-provider-bar__select">
-                <span>활성 Provider</span>
-                <select
-                  value={state.activeProfileId}
+              <div className="ai-provider-bar">
+                <div className="ai-provider-bar__select">
+                  <SelectField
+                    label="활성 Provider"
+                    value={state.activeProfileId}
+                    options={profileOptions}
+                    disabled={busy}
+                    onChange={(activeProfileId) =>
+                      setState((prev) => ({ ...prev, activeProfileId }))
+                    }
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="ghost-btn btn-with-icon"
                   disabled={busy}
-                  onChange={(e) =>
-                    setState((prev) => ({
-                      ...prev,
-                      activeProfileId: e.target.value,
-                    }))
-                  }
+                  onClick={addProfile}
                 >
-                  {state.profiles.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="button"
-                className="ghost-btn btn-with-icon"
-                disabled={busy}
-                onClick={addProfile}
-              >
-                <Plus size={15} />
-                추가
-              </button>
-              <button
-                type="button"
-                className="danger-btn btn-with-icon"
-                disabled={busy || state.profiles.length <= 1}
-                onClick={removeActive}
-              >
-                <Trash2 size={15} />
-                삭제
-              </button>
-            </div>
+                  <Plus size={15} />
+                  추가
+                </button>
+                <button
+                  type="button"
+                  className="danger-btn btn-with-icon"
+                  disabled={busy || state.profiles.length <= 1}
+                  onClick={removeActive}
+                >
+                  <Trash2 size={15} />
+                  삭제
+                </button>
+              </div>
 
-            <label className="screen-settings-field">
-              <span>표시 이름</span>
-              <input
+              <TextField
+                label="표시 이름"
+                name="provider_label"
                 value={active.label}
                 disabled={busy}
-                onChange={(e) => patchActive({ label: e.target.value })}
                 autoComplete="off"
+                autoFocus
+                onChange={(label) => patchActive({ label })}
               />
-            </label>
 
-            <label className="screen-settings-field">
-              <span>종류</span>
-              <select
+              <SelectField
+                label="종류"
                 value={active.kind}
+                options={kindOptions}
                 disabled={busy}
-                onChange={(e) => applyKind(e.target.value as AiProviderKind)}
-              >
-                {PROVIDER_PRESETS.map((p) => (
-                  <option key={p.kind} value={p.kind}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+                onChange={(kind) => applyKind(kind as AiProviderKind)}
+              />
 
-            <ComboboxField
-              label="Base URL"
-              value={active.baseUrl}
-              options={baseUrlOptions}
-              placeholder="https://api.openai.com/v1"
-              disabled={busy}
-              onChange={(baseUrl) => patchActive({ baseUrl })}
-            />
+              <ComboboxField
+                label="Base URL"
+                value={active.baseUrl}
+                options={baseUrlOptions}
+                placeholder="https://api.openai.com/v1"
+                disabled={busy}
+                hint="프리셋을 고르거나 OpenAI 호환 루트 URL을 직접 입력하세요"
+                onChange={(baseUrl) => patchActive({ baseUrl })}
+              />
 
-            <label className="screen-settings-field">
-              <span>API Key</span>
-              <input
-                type="password"
+              <SecretField
+                label="API Key"
+                name="api_key"
                 value={active.apiKey}
                 disabled={busy}
-                onChange={(e) => patchActive({ apiKey: e.target.value })}
-                placeholder="sk-…"
-                autoComplete="off"
+                optional
+                placeholder="sk-… (선택)"
+                hint="선택 사항 — 키가 필요 없는 로컬 서버는 비워 두세요"
+                onChange={(apiKey) => patchActive({ apiKey })}
               />
-            </label>
 
-            <div className="ai-model-row">
-              <SearchableSelect
-                label="Model"
-                value={active.model}
-                options={active.modelOptions ?? []}
-                placeholder="gpt-4o-mini"
-                disabled={busy}
-                onChange={(model) => patchActive({ model })}
-              />
-              <button
-                type="button"
-                className="ghost-btn"
-                disabled={busy}
-                onClick={() => void fetchModels()}
-              >
-                /models 불러오기
-              </button>
-            </div>
+              <div className="ai-model-row">
+                <SearchableSelect
+                  label="Model"
+                  value={active.model}
+                  options={active.modelOptions ?? []}
+                  placeholder="gpt-4o-mini"
+                  disabled={busy}
+                  emptyHint="옵션 없음 — 직접 입력하거나 /models 로 불러오세요"
+                  hint="직접 입력하거나 불러온 목록에서 선택하세요"
+                  onChange={(model) => patchActive({ model })}
+                />
+                <button
+                  type="button"
+                  className="ghost-btn"
+                  disabled={busy}
+                  onClick={() => void fetchModels()}
+                >
+                  /models 불러오기
+                </button>
+              </div>
 
-            {status ? (
-              <p className="global-settings-status" role="status">
-                {status}
-              </p>
-            ) : null}
-          </section>
-        </div>
+              {status ? (
+                <p className="global-settings-status" role="status">
+                  {status}
+                </p>
+              ) : null}
+            </section>
+          </form>
 
-        <footer className="screen-settings-modal__foot">
-          <button
-            type="button"
-            className="ghost-btn"
-            disabled={busy}
-            onClick={() => void test()}
-          >
-            연결 테스트
-          </button>
-          <button
-            type="button"
-            className="primary-btn"
-            disabled={busy}
-            onClick={() => void save()}
-          >
-            저장
-          </button>
-          <button type="button" className="ghost-btn" onClick={onClose}>
-            닫기
-          </button>
-        </footer>
-      </div>
-    </div>
+          <footer className="screen-settings-modal__foot">
+            <button
+              type="button"
+              className="ghost-btn"
+              disabled={busy}
+              onClick={() => void test()}
+            >
+              연결 테스트
+            </button>
+            <button
+              type="button"
+              className="primary-btn"
+              disabled={busy}
+              onClick={() => void save()}
+            >
+              저장
+            </button>
+            <button type="button" className="ghost-btn" onClick={onClose}>
+              닫기
+            </button>
+          </footer>
+        </>
+      )}
+    </dialog>
   );
 }

@@ -40,9 +40,6 @@ export async function createChatCompletion(opts: {
   temperature?: number;
 }): Promise<ChatCompletionResult> {
   const { settings, messages, tools, toolChoice, temperature } = opts;
-  if (!settings.apiKey.trim()) {
-    throw new Error('AI API 키가 설정되지 않았습니다. 전역 설정에서 입력하세요.');
-  }
   if (!settings.model.trim()) {
     throw new Error('모델명이 비어 있습니다.');
   }
@@ -57,12 +54,17 @@ export async function createChatCompletion(opts: {
     body.tool_choice = toolChoice ?? 'auto';
   }
 
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  const apiKey = settings.apiKey.trim();
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
+  }
+
   const res = await fetch(chatCompletionsUrl(settings.baseUrl), {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${settings.apiKey}`,
-    },
+    headers,
     body: JSON.stringify(body),
   });
 
@@ -118,14 +120,14 @@ export async function testAiConnection(
 export async function listAiModels(
   settings: Pick<AiEndpointSettings, 'baseUrl' | 'apiKey'>,
 ): Promise<string[]> {
-  if (!settings.apiKey.trim()) {
-    throw new Error('AI API 키가 설정되지 않았습니다.');
+  const headers: Record<string, string> = {};
+  const apiKey = settings.apiKey.trim();
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
   }
   const res = await fetch(modelsUrl(settings.baseUrl), {
     method: 'GET',
-    headers: {
-      Authorization: `Bearer ${settings.apiKey}`,
-    },
+    headers,
   });
   const text = await res.text();
   let json: unknown;
