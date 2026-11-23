@@ -4,12 +4,32 @@ import {
   type AiEndpointSettings,
 } from '@/lib/aiSettings';
 
+/** OpenAI-compatible multimodal content parts (vision). */
+export type ChatContentPart =
+  | { type: 'text'; text: string }
+  | {
+      type: 'image_url';
+      image_url: { url: string; detail?: 'auto' | 'low' | 'high' };
+    };
+
+export type ChatContent = string | null | ChatContentPart[];
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
+  content: ChatContent;
   tool_call_id?: string;
   tool_calls?: ToolCall[];
   name?: string;
+}
+
+/** Flatten message content to plain text (ignores image parts). */
+export function chatContentToText(content: ChatContent): string {
+  if (content == null) return '';
+  if (typeof content === 'string') return content;
+  return content
+    .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+    .map((p) => p.text)
+    .join('\n');
 }
 
 export interface ToolCall {
@@ -113,7 +133,7 @@ export async function testAiConnection(
     ],
     temperature: 0,
   });
-  return (result.message.content ?? '').trim() || '(empty)';
+  return chatContentToText(result.message.content).trim() || '(empty)';
 }
 
 /** GET /models — OpenAI-compatible model list. */

@@ -22,6 +22,7 @@ import {
 } from '@/lib/projectIO';
 import { exportExamZip } from '@/lib/examZip';
 import { exportProjectZip, parseProjectZip } from '@/lib/projectZip';
+import { mergeBankFromZips } from '@/lib/mergeBankZip';
 import type {
   AuthoringProject,
   BankProblem,
@@ -61,6 +62,12 @@ interface ProjectContextValue {
   updateExamMeta: (patch: Partial<ExamBlueprint>) => void;
   exportProject: () => Promise<void>;
   importProject: (file: File) => Promise<void>;
+  /** Merge one or more .project.zip / .exam.zip banks into the current project */
+  mergeBankZips: (files: FileList | File[]) => Promise<{
+    addedProblems: number;
+    addedAssets: number;
+    labels: string[];
+  }>;
   /** Materialize + download *.exam.zip for an exam paper */
   exportExamPackage: (examId?: string) => Promise<void>;
   /** Materialize into exam session storage for /exam */
@@ -314,6 +321,22 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setProjectState({ ...next, updatedAt: new Date().toISOString() });
   }, []);
 
+  const mergeBankZips = useCallback(async (files: FileList | File[]) => {
+    const list = Array.from(files);
+    if (!list.length) {
+      return { addedProblems: 0, addedAssets: 0, labels: [] as string[] };
+    }
+    let snapshot = project;
+    // Read latest via functional update after merge
+    const result = await mergeBankFromZips(snapshot, list);
+    setProjectState(result.project);
+    return {
+      addedProblems: result.addedProblems,
+      addedAssets: result.addedAssets,
+      labels: result.labels,
+    };
+  }, [project]);
+
   const exportExamPackage = useCallback(
     async (examId?: string) => {
       const exam = materializeExam(project, examId);
@@ -359,6 +382,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       updateExamMeta,
       exportProject,
       importProject,
+      mergeBankZips,
       exportExamPackage,
       pushExamToSession,
       resetSample,
@@ -384,6 +408,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       updateExamMeta,
       exportProject,
       importProject,
+      mergeBankZips,
       exportExamPackage,
       pushExamToSession,
       resetSample,

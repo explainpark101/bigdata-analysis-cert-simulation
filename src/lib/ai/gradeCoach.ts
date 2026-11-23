@@ -1,5 +1,8 @@
 import { loadAiSettings } from '@/lib/aiSettings';
-import { createChatCompletion } from '@/lib/ai/openaiCompatible';
+import {
+  chatContentToText,
+  createChatCompletion,
+} from '@/lib/ai/openaiCompatible';
 import type { GradeItem } from '@/lib/examGrade';
 
 export async function askGradeCoach(item: GradeItem): Promise<string> {
@@ -58,5 +61,5 @@ export async function askGradeCoach(item: GradeItem): Promise<string> {
     ],
   });
 
-  return (result.message.content ?? '').trim() || '(빈 응답)';
+  return chatContentToText(result.message.content).trim() || '(빈 응답)';
 }

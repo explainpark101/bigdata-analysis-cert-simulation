@@ -1,10 +1,16 @@
 import {
+  chatContentToText,
   createChatCompletion,
   type ChatMessage,
   type ChatToolDef,
 } from '@/lib/ai/openaiCompatible';
 import type { AiEndpointSettings } from '@/lib/aiSettings';
 import type { VariantDraft } from '@/lib/ai/variantChatStore';
+import {
+  isWebToolName,
+  runWebTool,
+  WEB_TOOL_DEFS,
+} from '@/lib/ai/webTools';
 import { resolveAssets, createProjectAsset } from '@/lib/projectIO';
 import { mountAssetsToPyodide } from '@/runtimes/fsMount';
 import {
@@ -15,7 +21,7 @@ import {
 import { preloadWebR, runR } from '@/runtimes/webrRuntime';
 import type { AuthoringProject, BankProblem, ProjectAsset } from '@/types/project';
 
-const MAX_TOOL_ROUNDS = 8;
+const MAX_TOOL_ROUNDS = 12;
 
 export interface VariantAgentContext {
   settings: AiEndpointSettings;
@@ -60,6 +66,7 @@ function systemPrompt(source: BankProblem): string {
         ].join('\n'),
     '',
     'Always explain briefly in natural language what you changed.',
+    'When you need docs, formulas, or examples from the web: use web_search then fetch_url.',
     'Call save_variant only when the user asks to save or the draft is complete.',
   ].join('\n');
 }
@@ -205,7 +212,7 @@ function toolsFor(source: BankProblem): ChatToolDef[] {
     );
   }
 
-  return common;
+  return [...WEB_TOOL_DEFS, ...common];
 }
 
 function parseArgs(raw: string): Record<string, unknown> {
@@ -320,8 +327,9 @@ export async function runVariantAgentTurn(opts: {
       content: msg.content,
       tool_calls: msg.tool_calls,
     });
-    if (msg.content?.trim()) {
-      assistantText = msg.content.trim();
+    {
+      const text = chatContentToText(msg.content).trim();
+      if (text) assistantText = text;
     }
 
     const calls = msg.tool_calls ?? [];
@@ -506,6 +514,8 @@ export async function runVariantAgentTurn(opts: {
               title: savedProblem.title,
             });
           }
+        } else if (isWebToolName(name)) {
+          toolResult = await runWebTool(name, args);
         } else {
           toolResult = JSON.stringify({ ok: false, error: `unknown tool ${name}` });
         }

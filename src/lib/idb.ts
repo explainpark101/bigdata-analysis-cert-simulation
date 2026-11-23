@@ -10,6 +10,7 @@ export type IdbKey =
   | 'theme'
   | 'aiSettings'
   | 'variantChats'
+  | 'authorChats'
   | 'gradeResult';
 
 let dbPromise: Promise<IDBDatabase> | null = null;

@@ -9,6 +9,7 @@ import {
   Home,
   Library,
   ListChecks,
+  PenLine,
   Play,
   Plus,
   RotateCcw,
@@ -39,6 +40,7 @@ import {
 import { AnswerAuthorPanel } from '@/components/project/AnswerAuthorPanel';
 import { ExamAssemblePreview } from '@/components/project/ExamAssemblePreview';
 import { VariantChatDock } from '@/components/project/VariantChatDock';
+import { ProblemAuthorTab } from '@/components/project/ProblemAuthorTab';
 import { GlobalSettingsModal } from '@/components/settings/GlobalSettingsModal';
 import type { ExamLanguage, QuizKind, SubmitFormat } from '@/types/exam';
 import type { BankProblem, TaskType } from '@/types/project';
@@ -58,7 +60,7 @@ const BANK_SIDEBAR_W_DEFAULT = 260;
 const VARIANT_DOCK_W_MIN = 300;
 const VARIANT_DOCK_W_DEFAULT = 380;
 
-type Tab = 'assets' | 'bank' | 'exam';
+type Tab = 'assets' | 'bank' | 'author' | 'exam';
 
 const TASK_LABELS: Record<TaskType, string> = {
   1: '작업형 1유형',
@@ -88,6 +90,7 @@ export default function ProjectPage() {
     updateExamMeta,
     exportProject,
     importProject,
+    mergeBankZips,
     exportExamPackage,
     pushExamToSession,
     resetSample,
@@ -341,6 +344,14 @@ export default function ProjectPage() {
         >
           <ListChecks size={15} />
           문제은행 ({project.bank.length})
+        </button>
+        <button
+          type="button"
+          className={`tab-btn btn-with-icon ${tab === 'author' ? 'active' : ''}`}
+          onClick={() => setTab('author')}
+        >
+          <PenLine size={15} />
+          문제 제작
         </button>
         <button
           type="button"
@@ -783,6 +794,21 @@ export default function ProjectPage() {
             />
           ) : null}
         </div>
+      )}
+
+      {tab === 'author' && (
+        <ProblemAuthorTab
+          project={project}
+          addProjectAssets={addProjectAssets}
+          addAssetsFromFiles={addAssetsFromFiles}
+          addBankProblem={addBankProblem}
+          mergeBankZips={mergeBankZips}
+          onMessage={setMessage}
+          onSavedNavigate={(created) => {
+            setSelectedId(created.id);
+            setTab('bank');
+          }}
+        />
       )}
 
       {tab === 'exam' && (

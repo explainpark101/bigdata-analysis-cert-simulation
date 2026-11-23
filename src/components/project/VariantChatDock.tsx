@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, Save, Send, Sparkles, X } from 'lucide-react';
+import { Loader2, Save, Sparkles, X } from 'lucide-react';
 import { loadAiSettings } from '@/lib/aiSettings';
 import { runVariantAgentTurn } from '@/lib/ai/variantAgent';
-import type { ChatMessage } from '@/lib/ai/openaiCompatible';
+import {
+  chatContentToText,
+  type ChatMessage,
+} from '@/lib/ai/openaiCompatible';
 import {
   clearVariantSession,
   emptyVariantDraft,
@@ -12,6 +15,7 @@ import {
 } from '@/lib/ai/variantChatStore';
 import type { AuthoringProject, BankProblem, ProjectAsset } from '@/types/project';
 import { EdgeResizeHandle } from '@/components/layout/EdgeResizeHandle';
+import { ChatComposer } from '@/components/ui/ChatComposer';
 
 interface VariantChatDockProps {
   open: boolean;
@@ -29,7 +33,8 @@ interface VariantChatDockProps {
 function visibleContent(m: ChatMessage): string {
   if (m.role === 'assistant') {
     const parts: string[] = [];
-    if (m.content?.trim()) parts.push(m.content.trim());
+    const text = chatContentToText(m.content).trim();
+    if (text) parts.push(text);
     if (m.tool_calls?.length) {
       parts.push(
         `⟪tools: ${m.tool_calls.map((t) => t.function.name).join(', ')}⟫`,
@@ -37,9 +42,9 @@ function visibleContent(m: ChatMessage): string {
     }
     return parts.join('\n') || '(…)';
   }
-  if (m.role === 'user') return m.content ?? '';
+  if (m.role === 'user') return chatContentToText(m.content);
   if (m.role === 'tool') {
-    const raw = m.content ?? '';
+    const raw = chatContentToText(m.content);
     return raw.length > 280 ? `${raw.slice(0, 280)}…` : raw;
   }
   return '';
@@ -144,7 +149,9 @@ export function VariantChatDock({
   };
 
   const saveNow = () => {
-    void send('초안을 검토하고 save_variant(confirm=true)로 문제은행에 저장해 주세요.');
+    void send(
+      '초안을 검토하고 save_variant(confirm=true)로 문제은행에 저장해 주세요.',
+    );
   };
 
   return (
@@ -227,19 +234,15 @@ export function VariantChatDock({
         ) : null}
 
         <footer className="variant-dock__foot">
-          <textarea
-            className="variant-dock__input"
-            rows={3}
+          <ChatComposer
             value={input}
+            onChange={setInput}
+            attachments={[]}
+            onAttachmentsChange={() => {}}
+            onSubmit={() => void send(input)}
             disabled={busy}
-            placeholder="변형 요청을 입력하세요"
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                void send(input);
-              }
-            }}
+            allowImages={false}
+            placeholder="변형 요청 · Enter 전송 · Shift+Enter 줄바꿈"
           />
           <div className="variant-dock__actions">
             <button
@@ -250,15 +253,6 @@ export function VariantChatDock({
             >
               <Save size={14} />
               저장 요청
-            </button>
-            <button
-              type="button"
-              className="primary-btn btn-with-icon"
-              disabled={busy || !input.trim()}
-              onClick={() => void send(input)}
-            >
-              <Send size={14} />
-              전송
             </button>
           </div>
         </footer>

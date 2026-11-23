@@ -13,7 +13,7 @@ import {
 } from '@/lib/aiSettings';
 import { listAiModels, testAiConnection } from '@/lib/ai/openaiCompatible';
 import { ComboboxField } from '@/components/ui/ComboboxField';
-import { SearchableSelect } from '@/components/ui/SearchableSelect';
+import { FilterableSelectField } from '@/components/ui/FilterableSelectField';
 import { SelectField } from '@/components/ui/SelectField';
 import { TextField } from '@/components/ui/TextField';
 import { SecretField } from '@/components/ui/SecretField';
@@ -67,6 +67,16 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
   const [status, setStatus] = useState('');
   const pressedOutsideRef = useRef(false);
 
+  const requestClose = () => {
+    const dialog = dialogRef.current;
+    if (dialog?.open) {
+      // Close the native dialog immediately so CSS [open] hides it even
+      // before the parent re-renders with open=false.
+      dialog.close();
+    }
+    onClose();
+  };
+
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
@@ -78,7 +88,9 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
     if (open) {
       void loadAiSettingsState().then(setState);
       setStatus('');
-      if (!dialog.open) dialog.showModal();
+      if (!dialog.open) {
+        dialog.showModal();
+      }
     } else if (dialog.open) {
       dialog.close();
     }
@@ -96,7 +108,7 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
         if (hasExpandedOverlay(dialog)) {
           collapseOverlays(dialog);
         } else {
-          onClose();
+          requestClose();
         }
       }
       pressedOutsideRef.current = false;
@@ -145,6 +157,15 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
         description: p.baseUrl,
       })),
     [],
+  );
+
+  const modelListOptions = useMemo(
+    () =>
+      (active?.modelOptions ?? []).map((id) => ({
+        value: id,
+        label: id,
+      })),
+    [active?.modelOptions],
   );
 
   const patchActive = (p: Partial<AiProviderProfile>) => {
@@ -258,9 +279,10 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
           collapseOverlays(dialogRef.current);
           return;
         }
-        onClose();
+        requestClose();
       }}
       onClose={() => {
+        // Native dialog closed (Esc / close()) — sync React state if still open.
         if (open) onClose();
       }}
     >
@@ -272,7 +294,7 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
               type="button"
               className="icon-btn screen-settings-modal__close"
               aria-label="닫기"
-              onClick={onClose}
+              onClick={requestClose}
             >
               <X size={18} />
             </button>
@@ -366,15 +388,27 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
                 onChange={(apiKey) => patchActive({ apiKey })}
               />
 
+              <TextField
+                label="Model"
+                name="model"
+                value={active.model}
+                disabled={busy}
+                placeholder="gpt-4o-mini"
+                autoComplete="off"
+                hint="현재 사용할 모델 id (직접 입력 가능)"
+                onChange={(model) => patchActive({ model })}
+              />
+
               <div className="ai-model-row">
-                <SearchableSelect
-                  label="Model"
+                <FilterableSelectField
+                  label="모델 목록"
                   value={active.model}
-                  options={active.modelOptions ?? []}
-                  placeholder="gpt-4o-mini"
+                  options={modelListOptions}
                   disabled={busy}
-                  emptyHint="옵션 없음 — 직접 입력하거나 /models 로 불러오세요"
-                  hint="직접 입력하거나 불러온 목록에서 선택하세요"
+                  placeholder="불러온 목록에서 검색·선택"
+                  searchPlaceholder="모델 id 검색…"
+                  emptyHint="옵션 없음 — /models 로 불러오세요"
+                  hint="검색은 목록 필터만 하며, 고른 항목이 위 Model 값으로 들어갑니다"
                   onChange={(model) => patchActive({ model })}
                 />
                 <button
@@ -412,7 +446,7 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
             >
               저장
             </button>
-            <button type="button" className="ghost-btn" onClick={onClose}>
+            <button type="button" className="ghost-btn" onClick={requestClose}>
               닫기
             </button>
           </footer>
