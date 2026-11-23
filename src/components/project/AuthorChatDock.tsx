@@ -1,7 +1,16 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { Layers, Loader2, RefreshCw, Save, Sparkles, Square } from 'lucide-react';
+import {
+  Eraser,
+  Layers,
+  Loader2,
+  RefreshCw,
+  Save,
+  Sparkles,
+  Square,
+} from 'lucide-react';
 import { loadAiSettings } from '@/lib/aiSettings';
 import {
+  isDraftReadyForSave,
   runAuthorAgentTurn,
   type AuthorAgentProgress,
 } from '@/lib/ai/authorAgent';
@@ -24,6 +33,7 @@ import type {
   ProjectAsset,
   TaskType,
 } from '@/types/project';
+import { ConfirmModal } from '@/components/exam/ConfirmModal';
 import { EdgeResizeHandle } from '@/components/layout/EdgeResizeHandle';
 import {
   ChatComposer,
@@ -46,6 +56,8 @@ interface AuthorChatDockProps {
     problem: BankProblem,
     opts?: { navigate?: boolean },
   ) => void;
+  /** After 1·2·3 auto-gen succeeds, assemble an exam paper from the new problems. */
+  onAssembleExam?: (problems: BankProblem[]) => void;
 }
 
 type UserImage = { dataUrl: string; name: string };
@@ -119,12 +131,26 @@ function visibleContent(m: ChatMessage): string {
 
 function autoPromptForType(taskType: TaskType, refCount: number): string {
   return [
-    `선택된 참고 문제 ${refCount}개 전체를 바탕으로 작업형 ${taskType}유형 새 문항을 처음부터 작성하세요.`,
+    `선택된 참고 문제 ${refCount}개를 분석한 뒤, 빅데이터분석기사 실기에 나올 법한 작업형 ${taskType}유형 새 문항을 작성·저장하세요.`,
+    '',
+    '## 참고 분석',
+    '- list_references → get_reference 로 참고 문항의 도메인·스키마·요구 스킬·답안 형식을 파악하세요.',
+    '- 같은 스킬군/시험 의도를 유지하되, 스토리·컬럼명·시드·분포·문구는 완전히 새로 만드세요. 베끼지 마세요.',
+    '',
+    '## 실전형 난이도',
+    '- 단순 사칙/한 줄 집계 장난감 문제는 금지합니다.',
+    '- 결측·형변환·그룹집계·피처/인코딩·모델지표·가설검정 등 실기에서 쓰는 다단계 파이프라인을 포함하세요.',
     `- update_draft로 task_type=${taskType} 를 먼저 설정하세요.`,
-    '- 참고 문제는 스타일·스킬·난이도만 참고하고 문구·데이터·정답을 베끼지 마세요.',
-    '- 1·3유형: set_answer_code → run_answer_code → set_short_answers 로 정답을 확정하세요.',
-    '- 2유형: set_dataset_code → run_dataset_code → save_generated_assets 후 grading을 채우세요.',
-    '- 초안이 완성되면 save_problem(confirm=true)로 문제은행에 저장하세요.',
+    '',
+    '## 데이터 = CSV만',
+    '- 제공 데이터는 반드시 .csv 로 생성하세요 (set_dataset_code → run_dataset_code → save_generated_assets).',
+    '- xlsx/parquet/json/txt 테이블 금지. 문제 본문에 CSV 파일명을 명시하세요.',
+    '',
+    '## 유형별 마무리',
+    taskType === 2
+      ? '- 2유형: grading 코드를 채우고 제출 CSV 규칙을 본문에 적으세요.'
+      : '- 1·3유형: set_answer_code → run_answer_code → set_short_answers 로 정답을 확정하세요.',
+    '- 마지막에 반드시 save_problem(confirm=true). 저장 없이 끝내면 실패입니다.',
     '- 이번 턴에서는 해당 유형 하나만 작업·저장하세요.',
   ].join('\n');
 }
@@ -147,6 +173,7 @@ export function AuthorChatDock({
   addProjectAssets,
   onSaveProblem,
   onSaved,
+  onAssembleExam,
 }: AuthorChatDockProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -157,6 +184,7 @@ export function AuthorChatDock({
   const [liveStatus, setLiveStatus] = useState('');
   const [liveStream, setLiveStream] = useState('');
   const [liveTools, setLiveTools] = useState<string[]>([]);
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const draftRef = useRef(draft);
   const messagesRef = useRef(messages);
@@ -292,6 +320,7 @@ export function AuthorChatDock({
     history: ChatMessage[];
     draftOverride?: AuthorDraft;
     signal: AbortSignal;
+    requireSave?: boolean;
   }) => {
     setLiveStatus('요청 준비 중…');
     setStream('');
@@ -313,6 +342,7 @@ export function AuthorChatDock({
       onSave: onSaveProblem,
       onProgress: handleProgress,
       signal: opts.signal,
+      requireSave: opts.requireSave,
     });
     return result;
   };
@@ -390,7 +420,7 @@ export function AuthorChatDock({
     setBusy(true);
     setError('');
     let history = messagesRef.current;
-    const savedTitles: string[] = [];
+    const savedProblems: BankProblem[] = [];
 
     try {
       for (const taskType of [1, 2, 3] as TaskType[]) {
@@ -407,12 +437,72 @@ export function AuthorChatDock({
         setStream('');
         setLiveTools([]);
 
-        const result = await runTurn({
+        let result = await runTurn({
           userText: prompt,
           history: historyBefore,
           draftOverride: emptyAuthorDraft(taskType),
           signal: ctrl.signal,
+          requireSave: true,
         });
+
+        // If still unsaved, one explicit save-only follow-up turn.
+        if (!result.savedProblem) {
+          ctrl.signal.throwIfAborted();
+          setLiveStatus(`${taskType}유형 저장 재시도…`);
+          const savePrompt =
+            '추가 수정 없이 지금 초안으로 save_problem(confirm=true)만 호출하세요.';
+          const saveUser = buildUserMessage(savePrompt, []);
+          history = [...result.messages, saveUser];
+          setMessages(history);
+          result = await runTurn({
+            userText: savePrompt,
+            history: result.messages,
+            draftOverride: result.draft,
+            signal: ctrl.signal,
+            requireSave: true,
+          });
+        }
+
+        // Last resort: persist a filled draft from the client.
+        if (!result.savedProblem && isDraftReadyForSave(result.draft)) {
+          setLiveStatus(`${taskType}유형 초안 직접 저장…`);
+          const created = onSaveProblem({
+            title: result.draft.title,
+            note: result.draft.note,
+            showNoteOnExam: false,
+            taskType: result.draft.taskType,
+            kind: 'submit',
+            language: result.draft.language,
+            markdown: result.draft.markdown,
+            answerCode: result.draft.answerCode,
+            gradingCode: result.draft.gradingCode,
+            datasetCode: result.draft.datasetCode || undefined,
+            assetIds: result.draft.assetIds,
+            sourceProblemId: referenceIds[0],
+            submitFormat: result.draft.taskType === 2 ? 'csv' : 'short',
+            submitFile:
+              result.draft.taskType === 2 ? 'result.csv' : undefined,
+            shortAnswers:
+              result.draft.taskType === 2
+                ? undefined
+                : result.draft.shortAnswers,
+            shortAnswer:
+              result.draft.taskType === 2
+                ? ''
+                : (result.draft.shortAnswers[0] ?? ''),
+          });
+          result = {
+            ...result,
+            savedProblem: created,
+            messages: [
+              ...result.messages,
+              {
+                role: 'assistant',
+                content: `클라이언트가 초안을 저장했습니다: ${created.title}`,
+              },
+            ],
+          };
+        }
 
         history = result.messages;
         setMessages(history);
@@ -420,7 +510,7 @@ export function AuthorChatDock({
         draftRef.current = result.draft;
 
         if (result.savedProblem) {
-          savedTitles.push(result.savedProblem.title);
+          savedProblems.push(result.savedProblem);
           onSaved(result.savedProblem, { navigate: false });
           const nextDraft = emptyAuthorDraft(
             taskType < 3 ? ((taskType + 1) as TaskType) : 1,
@@ -429,7 +519,7 @@ export function AuthorChatDock({
           draftRef.current = nextDraft;
         } else {
           setError(
-            `${taskType}유형 저장에 실패했습니다. 에이전트가 save_problem을 호출하지 않았을 수 있습니다.`,
+            `${taskType}유형 저장에 실패했습니다. 초안(본문·정답)이 충분히 채워지지 않았을 수 있습니다. 채팅에서 이어서 저장하거나 다시 시도하세요.`,
           );
           break;
         }
@@ -437,12 +527,41 @@ export function AuthorChatDock({
 
       clearLive();
       void playCompletionSound();
-      if (savedTitles.length) {
+
+      let summary =
+        savedProblems.length > 0
+          ? `자동 생성 완료 (${savedProblems.length}/3):\n${savedProblems
+              .map((p, i) => `${i + 1}. [제${p.taskType}유형] ${p.title}`)
+              .join('\n')}`
+          : '';
+
+      if (savedProblems.length === 3 && onAssembleExam) {
+        setLiveStatus('시험지 조립 중…');
+        try {
+          onAssembleExam(
+            [...savedProblems].sort((a, b) => a.taskType - b.taskType),
+          );
+          summary +=
+            '\n\n시험 조립 완료: 1·2·3유형 문항을 새 시험지에 넣었습니다.';
+        } catch (assembleErr) {
+          setError(
+            assembleErr instanceof Error
+              ? assembleErr.message
+              : String(assembleErr),
+          );
+          summary += '\n\n시험 조립에 실패했습니다.';
+        }
+      } else if (savedProblems.length > 0 && savedProblems.length < 3) {
+        summary +=
+          '\n\n3유형이 모두 저장되지 않아 시험 조립은 건너뛰었습니다.';
+      }
+
+      if (summary) {
         history = [
           ...history,
           {
             role: 'assistant',
-            content: `자동 생성 완료 (${savedTitles.length}/3):\n${savedTitles.map((t, i) => `${i + 1}. ${t}`).join('\n')}`,
+            content: summary,
           },
         ];
         setMessages(history);
@@ -454,6 +573,7 @@ export function AuthorChatDock({
       setBusy(false);
       setStream('');
       setLiveTools([]);
+      setLiveStatus('');
     }
   };
 
@@ -461,6 +581,34 @@ export function AuthorChatDock({
     const { text, images } = extractUserPayload(m);
     void send({ text, images, clearComposer: false });
   };
+
+  const clearChat = async () => {
+    abortRef.current?.abort(
+      new DOMException('Generation aborted', 'AbortError'),
+    );
+    abortRef.current = null;
+    setMessages([]);
+    setInput('');
+    setAttachments([]);
+    setError('');
+    clearLive();
+    setBusy(false);
+    setClearConfirmOpen(false);
+    await clearAuthorSession(project.id);
+    void saveAuthorSession({
+      projectId: project.id,
+      referenceIds,
+      messages: [],
+      draft: draftRef.current,
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
+  const canClearChat =
+    messages.some((m) => m.role === 'user' || m.role === 'assistant') ||
+    Boolean(input.trim()) ||
+    attachments.length > 0 ||
+    Boolean(error);
 
   return (
     <aside
@@ -477,6 +625,17 @@ export function AuthorChatDock({
             </strong>
             <p className="variant-dock__sub">{hint}</p>
           </div>
+          <button
+            type="button"
+            className="ghost-btn btn-with-icon"
+            disabled={!canClearChat && !busy}
+            title="채팅 메시지 비우기"
+            aria-label="채팅 비우기"
+            onClick={() => setClearConfirmOpen(true)}
+          >
+            <Eraser size={14} aria-hidden />
+            비우기
+          </button>
         </header>
 
         <div className="variant-dock__draft">
@@ -641,13 +800,13 @@ export function AuthorChatDock({
               disabled={busy || !referenceIds.length}
               title={
                 referenceIds.length
-                  ? '선택 참고 문제로 1·2·3유형을 순서대로 생성·저장'
+                  ? '선택 참고 문제로 1·2·3유형 생성·저장 후 시험지까지 조립'
                   : '참고 문제를 먼저 선택하세요'
               }
               onClick={() => void generateAllTypes()}
             >
               <Layers size={14} />
-              1·2·3 자동 생성
+              1·2·3 자동 생성·조립
             </button>
             <button
               type="button"
@@ -675,6 +834,19 @@ export function AuthorChatDock({
         max={maxWidth}
         invert
         label="문제 제작 채팅 Dock 너비 조절"
+      />
+      <ConfirmModal
+        open={clearConfirmOpen}
+        title="채팅 비우기"
+        message={
+          busy
+            ? '진행 중인 생성을 중지하고 채팅 메시지를 모두 지울까요? 제작 초안·참고 선택은 유지됩니다.'
+            : '채팅 메시지를 모두 지울까요? 제작 초안·참고 선택은 유지됩니다.'
+        }
+        confirmLabel="비우기"
+        confirmDanger
+        onConfirm={() => void clearChat()}
+        onCancel={() => setClearConfirmOpen(false)}
       />
     </aside>
   );

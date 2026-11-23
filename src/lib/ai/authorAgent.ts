@@ -28,6 +28,7 @@ import type {
 } from '@/types/project';
 
 const MAX_TOOL_ROUNDS = 12;
+const MAX_TOOL_ROUNDS_REQUIRE_SAVE = 16;
 
 export interface AuthorAgentContext {
   settings: AiEndpointSettings;
@@ -49,20 +50,92 @@ export type AuthorAgentProgress =
   | { kind: 'assistant_delta'; text: string }
   | { kind: 'tool'; name: string; phase: 'start' | 'done' };
 
-function systemPrompt(): string {
-  return [
-    'You are an exam-authoring agent for 빅데이터분석기사 실기 (DataQ-style).',
-    'Create NEW problems. Use selected REFERENCE problems as style/skill inspiration — do not copy them verbatim.',
-    'Never invent final numeric answers yourself. Write executable code, run tools, then set answers from stdout.',
+function systemPrompt(requireSave: boolean): string {
+  const lines = [
+    'You are an exam-authoring agent for 빅데이터분석기사 실기 (DataQ / 한국데이터산업진흥원 style).',
+    'Your job is to author ORIGINAL exam items that a real candidate could meet on the practical test — not toy drills.',
     '',
-    'Type 1/3: short-answer; set_answer_code → run_answer_code → set_short_answers.',
-    'Type 2: synthesize NEW CSVs via set_dataset_code (seeded rules under out/), run_dataset_code, save_generated_assets; grading via update_draft.',
-    'Call list_references / get_reference when you need details from selected references.',
-    'When you need external facts, library docs, formulas, or examples: use web_search, then fetch_url on the best links.',
-    'Do not invent API signatures or numeric exam keys — look them up or compute with tools.',
-    'Call save_problem only when the user asks to save or the draft is complete.',
-    'Respond briefly in Korean about what you changed.',
-  ].join('\n');
+    '## Reference analysis (mandatory when references are selected)',
+    '1) Call list_references, then get_reference for each selected id (or the most relevant ones per target task type).',
+    '2) Analyze: task type, narrative domain, data schema (columns/dtypes), required skills (groupby, missing, encoding, model metrics, hypothesis tests, etc.), answer format, and difficulty.',
+    '3) Infer a NEW problem: same skill family / exam intent, but different story, different column names, different seed/distribution, and different wording.',
+    '4) NEVER copy reference markdown, filenames, column names, numbers, or answers verbatim.',
+    '',
+    '## Exam realism (anti-toy)',
+    '- Prefer multi-step pipelines: cleaning → transform/feature → aggregate or model/test → report a formatted value.',
+    '- Avoid one-liner arithmetic on a tiny hand-typed table with no CSV (e.g. "3+5 평균").',
+    '- Type 1: preprocessing / aggregation / ranking / missing / datetime / string handling on tabular CSV; short numeric or string answers.',
+    '- Type 2: train/test (or similar) CSVs, modeling or scoring workflow, submit a result CSV; include clear submission column/file rules.',
+    '- Type 3: statistical inference on CSV (tests, CI, correlation, etc.) with exam-like reporting precision.',
+    '- Write problem markdown in clear Korean exam tone: given files, what to compute, rounding/format rules, submission notes.',
+    '',
+    '## Data files = CSV only',
+    '- Every data file attached to the draft MUST be a .csv (UTF-8). No xlsx, parquet, json, txt tables, or images-as-data.',
+    '- For NEW items: generate CSVs with set_dataset_code (fixed seed) → run_dataset_code → save_generated_assets.',
+    '- use_project_assets may only attach existing .csv assets; non-csv ids are rejected.',
+    '- Mention the exact CSV filenames in the problem markdown.',
+    '',
+    '## Workflow',
+    'Type 1/3: CSV ready → update_draft → set_answer_code → run_answer_code → set_short_answers.',
+    'Type 2: set_dataset_code → run_dataset_code → save_generated_assets → update_draft (incl. grading) → verify.',
+    'Never invent final numeric answers yourself — compute via tools, then set answers from stdout.',
+    'When you need external facts/docs: web_search then fetch_url. Do not invent API signatures.',
+  ];
+  if (requireSave) {
+    lines.push(
+      'MANDATORY: Before you finish this turn you MUST call save_problem(confirm=true).',
+      'Do not end with only a text reply. Saving is required.',
+    );
+  } else {
+    lines.push(
+      'Call save_problem only when the user asks to save or the draft is complete.',
+    );
+  }
+  lines.push('Respond briefly in Korean about what you changed and which skills the new item targets.');
+  return lines.join('\n');
+}
+
+function draftToBankPartial(
+  draft: AuthorDraft,
+  referenceIds: string[],
+): Partial<BankProblem> {
+  return {
+    title: draft.title,
+    note: draft.note,
+    showNoteOnExam: false,
+    taskType: draft.taskType,
+    kind: 'submit',
+    language: draft.language,
+    markdown: draft.markdown,
+    answerCode: draft.answerCode,
+    gradingCode: draft.gradingCode,
+    datasetCode: draft.datasetCode || undefined,
+    assetIds: draft.assetIds,
+    sourceProblemId: referenceIds[0],
+    submitFormat: draft.taskType === 2 ? 'csv' : 'short',
+    submitFile: draft.taskType === 2 ? 'result.csv' : undefined,
+    shortAnswers: draft.taskType === 2 ? undefined : draft.shortAnswers,
+    shortAnswer: draft.taskType === 2 ? '' : (draft.shortAnswers[0] ?? ''),
+  };
+}
+
+/** Heuristic: draft has been filled beyond the empty template. */
+export function isDraftReadyForSave(draft: AuthorDraft): boolean {
+  const md = draft.markdown.trim();
+  if (md.length < 80) return false;
+  if (md.includes('문제 내용을 작성하세요')) return false;
+  if (draft.taskType === 2) {
+    return (
+      draft.assetIds.length > 0 ||
+      draft.datasetCode.trim().length > 40 ||
+      md.length > 200
+    );
+  }
+  const hasAnswer = draft.shortAnswers.some((s) => s.trim().length > 0);
+  const hasCode =
+    draft.answerCode.python.trim().length > 0 ||
+    draft.answerCode.r.trim().length > 0;
+  return hasAnswer || hasCode || md.length > 200;
 }
 
 const TOOLS: ChatToolDef[] = [
@@ -153,7 +226,7 @@ const TOOLS: ChatToolDef[] = [
     function: {
       name: 'set_dataset_code',
       description:
-        'Type 2: Python that writes new CSVs under out/ with a fixed seed.',
+        'Python that writes NEW exam CSVs under out/ (fixed seed). Filenames must end with .csv only.',
       parameters: {
         type: 'object',
         properties: { code: { type: 'string' } },
@@ -165,7 +238,7 @@ const TOOLS: ChatToolDef[] = [
     type: 'function',
     function: {
       name: 'run_dataset_code',
-      description: 'Run datasetCode in Pyodide and list out/*.csv.',
+      description: 'Run datasetCode in Pyodide and list out/*.csv only.',
       parameters: { type: 'object', properties: {} },
     },
   },
@@ -173,7 +246,8 @@ const TOOLS: ChatToolDef[] = [
     type: 'function',
     function: {
       name: 'save_generated_assets',
-      description: 'Persist out/*.csv into the project library and draft.assetIds.',
+      description:
+        'Persist out/*.csv into the project library and draft.assetIds. Non-csv paths are rejected.',
       parameters: {
         type: 'object',
         properties: {
@@ -188,7 +262,8 @@ const TOOLS: ChatToolDef[] = [
     type: 'function',
     function: {
       name: 'use_project_assets',
-      description: 'Attach existing project asset ids to the draft.',
+      description:
+        'Attach existing project CSV asset ids to the draft (.csv only).',
       parameters: {
         type: 'object',
         properties: {
@@ -294,8 +369,10 @@ export async function runAuthorAgentTurn(opts: {
   onSave?: (problem: Partial<BankProblem>) => BankProblem;
   onProgress?: (event: AuthorAgentProgress) => void;
   signal?: AbortSignal;
+  /** Auto-generate / batch: must finish by calling save_problem (with fallbacks). */
+  requireSave?: boolean;
 }): Promise<AuthorAgentResult> {
-  const { onDraft, onSave, onProgress, signal } = opts;
+  const { onDraft, onSave, onProgress, signal, requireSave = false } = opts;
   const report = (event: AuthorAgentProgress) => onProgress?.(event);
   const ctx: AuthorAgentContext = {
     ...opts.ctx,
@@ -331,7 +408,7 @@ export async function runAuthorAgentTurn(opts: {
     .join('\n');
 
   const messages: ChatMessage[] = [
-    { role: 'system', content: systemPrompt() },
+    { role: 'system', content: systemPrompt(requireSave) },
     {
       role: 'user',
       content: [
@@ -339,8 +416,14 @@ export async function runAuthorAgentTurn(opts: {
         `draft=${JSON.stringify(summarizeDraft(draft))}`,
         `selected references (${ctx.referenceIds.length}):`,
         refBrief || '(none)',
-        'Use list_references / get_reference for full text.',
-      ].join('\n'),
+        'Analyze references with list_references / get_reference, then invent a NEW exam-realistic item.',
+        'DATA_POLICY=csv_only — generate or attach .csv files only.',
+        requireSave
+          ? 'REQUIRE_SAVE=true — end this turn with save_problem(confirm=true).'
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n'),
     },
     ...opts.history.filter((m) => m.role !== 'system'),
     {
@@ -361,11 +444,15 @@ export async function runAuthorAgentTurn(opts: {
     throw new DOMException('Generation aborted', 'AbortError');
   };
 
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+  const maxRounds = requireSave
+    ? MAX_TOOL_ROUNDS_REQUIRE_SAVE
+    : MAX_TOOL_ROUNDS;
+
+  for (let round = 0; round < maxRounds; round++) {
     throwIfAborted();
     report({
       kind: 'status',
-      text: `모델 응답 생성 중… (${round + 1}/${MAX_TOOL_ROUNDS})`,
+      text: `모델 응답 생성 중… (${round + 1}/${maxRounds})`,
     });
     const completion = await createChatCompletion({
       settings: ctx.settings,
@@ -491,23 +578,15 @@ export async function runAuthorAgentTurn(opts: {
             toolResult = JSON.stringify({ ok: true, answers: draft.shortAnswers });
           }
         } else if (name === 'set_dataset_code') {
-          if (draft.taskType !== 2) {
-            toolResult = JSON.stringify({
-              ok: false,
-              error: 'dataset code is for type 2 only',
-            });
-          } else {
-            draft.datasetCode = String(args.code ?? '');
-            onDraft?.(draft);
-            toolResult = JSON.stringify({
-              ok: true,
-              bytes: draft.datasetCode.length,
-            });
-          }
+          draft.datasetCode = String(args.code ?? '');
+          onDraft?.(draft);
+          toolResult = JSON.stringify({
+            ok: true,
+            bytes: draft.datasetCode.length,
+            hint: 'Write only .csv under out/ with a fixed seed.',
+          });
         } else if (name === 'run_dataset_code') {
-          if (draft.taskType !== 2) {
-            toolResult = JSON.stringify({ ok: false, error: 'type 2 only' });
-          } else if (!draft.datasetCode.trim()) {
+          if (!draft.datasetCode.trim()) {
             toolResult = JSON.stringify({
               ok: false,
               error: 'datasetCode empty',
@@ -533,19 +612,28 @@ export async function runAuthorAgentTurn(opts: {
             });
           }
         } else if (name === 'save_generated_assets') {
-          if (draft.taskType !== 2) {
-            toolResult = JSON.stringify({ ok: false, error: 'type 2 only' });
+          const files = Array.isArray(args.files)
+            ? args.files.map((f) => String(f))
+            : [];
+          const csvFiles = files.filter((f) =>
+            f.replace(/^out\//, '').toLowerCase().endsWith('.csv'),
+          );
+          const rejected = files.filter((f) => !csvFiles.includes(f));
+          if (!csvFiles.length) {
+            toolResult = JSON.stringify({
+              ok: false,
+              error: 'only .csv files are allowed under out/',
+              rejected,
+            });
           } else {
-            const files = Array.isArray(args.files)
-              ? args.files.map((f) => String(f))
-              : [];
             const folder =
               typeof args.library_folder === 'string' && args.library_folder.trim()
                 ? args.library_folder.trim().replace(/^\/+|\/+$/g, '')
-                : 'authored/type2';
+                : `authored/type${draft.taskType}`;
             const created: ProjectAsset[] = [];
-            for (const raw of files) {
+            for (const raw of csvFiles) {
               const base = raw.replace(/^out\//, '').replace(/^.*\//, '');
+              if (!base.toLowerCase().endsWith('.csv')) continue;
               const content = await readPyodideFileText(`out/${base}`);
               created.push(
                 createProjectAsset(
@@ -571,45 +659,44 @@ export async function runAuthorAgentTurn(opts: {
               ok: true,
               assetIds: draft.assetIds,
               paths: added.map((a) => a.path),
+              rejected,
             });
           }
         } else if (name === 'use_project_assets') {
           const ids = Array.isArray(args.asset_ids)
             ? args.asset_ids.map((x) => String(x))
             : [];
-          const valid = ids.filter((id) =>
-            ctx.project.assets.some((a) => a.id === id),
-          );
-          draft.assetIds = valid;
+          const csvIds: string[] = [];
+          const rejected: string[] = [];
+          for (const id of ids) {
+            const asset = ctx.project.assets.find((a) => a.id === id);
+            if (!asset) {
+              rejected.push(id);
+              continue;
+            }
+            const name = (asset.name || asset.path || '').toLowerCase();
+            if (name.endsWith('.csv')) csvIds.push(id);
+            else rejected.push(id);
+          }
+          draft.assetIds = csvIds;
           onDraft?.(draft);
-          toolResult = JSON.stringify({ ok: true, assetIds: draft.assetIds });
+          toolResult = JSON.stringify({
+            ok: rejected.length === 0,
+            assetIds: draft.assetIds,
+            rejected,
+            error: rejected.length
+              ? 'only .csv assets may be attached'
+              : undefined,
+          });
         } else if (name === 'save_problem') {
           if (!args.confirm) {
             toolResult = JSON.stringify({ ok: false, error: 'confirm=false' });
           } else if (!onSave) {
             toolResult = JSON.stringify({ ok: false, error: 'save unavailable' });
           } else {
-            const partial: Partial<BankProblem> = {
-              title: draft.title,
-              note: draft.note,
-              showNoteOnExam: false,
-              taskType: draft.taskType,
-              kind: 'submit',
-              language: draft.language,
-              markdown: draft.markdown,
-              answerCode: draft.answerCode,
-              gradingCode: draft.gradingCode,
-              datasetCode: draft.datasetCode || undefined,
-              assetIds: draft.assetIds,
-              sourceProblemId: ctx.referenceIds[0],
-              submitFormat: draft.taskType === 2 ? 'csv' : 'short',
-              submitFile: draft.taskType === 2 ? 'result.csv' : undefined,
-              shortAnswers:
-                draft.taskType === 2 ? undefined : draft.shortAnswers,
-              shortAnswer:
-                draft.taskType === 2 ? '' : (draft.shortAnswers[0] ?? ''),
-            };
-            savedProblem = onSave(partial);
+            savedProblem = onSave(
+              draftToBankPartial(draft, ctx.referenceIds),
+            );
             toolResult = JSON.stringify({
               ok: true,
               id: savedProblem.id,
@@ -637,6 +724,81 @@ export async function runAuthorAgentTurn(opts: {
         content: toolResult,
       });
       report({ kind: 'tool', name, phase: 'done' });
+    }
+  }
+
+  // Auto-batch: if the model forgot save_problem, force it once, then fall back.
+  if (requireSave && !savedProblem && onSave) {
+    throwIfAborted();
+    report({ kind: 'status', text: '저장 강제 호출 중…' });
+    messages.push({
+      role: 'user',
+      content:
+        '초안 작업은 끝났습니다. 지금 즉시 save_problem(confirm=true)만 호출하세요. 다른 도구는 쓰지 마세요.',
+    });
+    try {
+      const forced = await createChatCompletion({
+        settings: ctx.settings,
+        messages,
+        tools: TOOLS.filter((t) => t.function.name === 'save_problem'),
+        toolChoice: {
+          type: 'function',
+          function: { name: 'save_problem' },
+        },
+        signal,
+      });
+      messages.push({
+        role: 'assistant',
+        content: forced.message.content,
+        tool_calls: forced.message.tool_calls,
+      });
+      for (const call of forced.message.tool_calls ?? []) {
+        if (call.function.name !== 'save_problem') continue;
+        const args = parseArgs(call.function.arguments);
+        let toolResult = '';
+        // Forced save: treat missing confirm as true (model often omits it).
+        if (args.confirm === false) {
+          toolResult = JSON.stringify({ ok: false, error: 'confirm=false' });
+        } else {
+          report({ kind: 'tool', name: 'save_problem', phase: 'start' });
+          savedProblem = onSave(
+            draftToBankPartial(draft, ctx.referenceIds),
+          );
+          toolResult = JSON.stringify({
+            ok: true,
+            id: savedProblem.id,
+            title: savedProblem.title,
+          });
+          report({ kind: 'tool', name: 'save_problem', phase: 'done' });
+        }
+        messages.push({
+          role: 'tool',
+          tool_call_id: call.id,
+          content: toolResult,
+        });
+      }
+    } catch (err) {
+      // Forced tool_choice may be unsupported by some gateways — fall through.
+      if (
+        !(err instanceof DOMException && err.name === 'AbortError') &&
+        !(err instanceof Error && err.name === 'AbortError')
+      ) {
+        report({
+          kind: 'status',
+          text: '강제 저장 호출 실패 — 초안 직접 저장 시도',
+        });
+      } else {
+        throw err;
+      }
+    }
+
+    if (!savedProblem && isDraftReadyForSave(draft)) {
+      report({ kind: 'status', text: '초안을 직접 저장합니다…' });
+      savedProblem = onSave(draftToBankPartial(draft, ctx.referenceIds));
+      messages.push({
+        role: 'assistant',
+        content: `save_problem이 누락되어 초안을 직접 저장했습니다: ${savedProblem.title}`,
+      });
     }
   }
 

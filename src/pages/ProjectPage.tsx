@@ -816,6 +816,30 @@ export default function ProjectPage() {
             setSelectedId(created.id);
             setTab('bank');
           }}
+          onAssembleExam={(problems) => {
+            const ordered = [...problems].sort(
+              (a, b) => a.taskType - b.taskType || a.title.localeCompare(b.title),
+            );
+            const stamp = new Date().toLocaleString('ko-KR', {
+              month: '2-digit',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+            });
+            const exam = addExam({
+              title: `AI 자동 시험 ${stamp}`,
+              description: `1·2·3유형 자동 생성으로 조립 (${ordered
+                .map((p) => `제${p.taskType}유형`)
+                .join(' · ')})`,
+              problemIds: ordered.map((p) => p.id),
+              timeLimitMinutes: 180,
+              maxRunSeconds: 60,
+            });
+            setMessage(
+              `시험 조립 완료: ${exam.title} · ${ordered.length}문항`,
+            );
+            setTab('exam');
+          }}
         />
       )}
 

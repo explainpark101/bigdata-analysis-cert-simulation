@@ -46,6 +46,7 @@ interface ProblemAuthorTabProps {
   }>;
   onMessage: (msg: string) => void;
   onSavedNavigate: (problem: BankProblem) => void;
+  onAssembleExam?: (problems: BankProblem[]) => void;
 }
 
 export function ProblemAuthorTab({
@@ -56,6 +57,7 @@ export function ProblemAuthorTab({
   mergeBankZips,
   onMessage,
   onSavedNavigate,
+  onAssembleExam,
 }: ProblemAuthorTabProps) {
   const [referenceIds, setReferenceIds] = useState<string[]>([]);
   const [previewId, setPreviewId] = useState<string | null>(null);
@@ -405,6 +407,7 @@ export function ProblemAuthorTab({
           onMessage(`문제 저장: ${created.title}`);
           if (opts?.navigate !== false) onSavedNavigate(created);
         }}
+        onAssembleExam={onAssembleExam}
       />
     </div>
   );

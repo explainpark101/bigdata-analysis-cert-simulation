@@ -72,7 +72,7 @@ function buildCompletionBody(opts: {
   settings: AiEndpointSettings;
   messages: ChatMessage[];
   tools?: ChatToolDef[];
-  toolChoice?: 'auto' | 'none' | 'required';
+  toolChoice?: ChatToolChoice;
   temperature?: number;
   stream: boolean;
 }): Record<string, unknown> {
@@ -142,11 +142,17 @@ function applyToolCallDelta(
  * OpenAI-compatible chat.completions with `stream: true` (SSE).
  * Falls back to non-streaming if the body is not an event stream.
  */
+export type ChatToolChoice =
+  | 'auto'
+  | 'none'
+  | 'required'
+  | { type: 'function'; function: { name: string } };
+
 export async function createChatCompletion(opts: {
   settings: AiEndpointSettings;
   messages: ChatMessage[];
   tools?: ChatToolDef[];
-  toolChoice?: 'auto' | 'none' | 'required';
+  toolChoice?: ChatToolChoice;
   temperature?: number;
   signal?: AbortSignal;
   onDelta?: ChatStreamDeltaHandler;
