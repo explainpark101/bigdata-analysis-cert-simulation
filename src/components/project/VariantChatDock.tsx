@@ -9,6 +9,7 @@ import {
 import {
   clearVariantSession,
   emptyVariantDraft,
+  normalizeVariantDraft,
   loadVariantSession,
   saveVariantSession,
   type VariantDraft,
@@ -88,7 +89,7 @@ export function VariantChatDock({
       if (cancelled) return;
       if (stored) {
         setMessages(stored.messages);
-        setDraft(stored.draft);
+        setDraft(normalizeVariantDraft(stored.draft));
       } else {
         setMessages([]);
         setDraft(emptyVariantDraft(source));

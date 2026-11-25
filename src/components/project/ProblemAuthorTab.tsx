@@ -46,7 +46,10 @@ interface ProblemAuthorTabProps {
   }>;
   onMessage: (msg: string) => void;
   onSavedNavigate: (problem: BankProblem) => void;
-  onAssembleExam?: (problems: BankProblem[]) => void;
+  onAssembleExam?: (
+    problems: BankProblem[],
+    opts?: { navigate?: boolean },
+  ) => void;
 }
 
 export function ProblemAuthorTab({

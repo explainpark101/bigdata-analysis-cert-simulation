@@ -11,6 +11,7 @@ import {
   runWebTool,
   WEB_TOOL_DEFS,
 } from '@/lib/ai/webTools';
+import { mountPathForAsset } from '@/lib/assetPaths';
 import { resolveAssets, createProjectAsset } from '@/lib/projectIO';
 import { mountAssetsToPyodide } from '@/runtimes/fsMount';
 import {
@@ -18,7 +19,13 @@ import {
   runPython,
   readPyodideFileText,
 } from '@/runtimes/pyodideRuntime';
-import { preloadWebR, runR } from '@/runtimes/webrRuntime';
+import {
+  ensureWebRDir,
+  preloadWebR,
+  readWebRFileText,
+  runR,
+  WEBR_HOME,
+} from '@/runtimes/webrRuntime';
 import type { AuthoringProject, BankProblem, ProjectAsset } from '@/types/project';
 
 const MAX_TOOL_ROUNDS = 12;
@@ -57,10 +64,11 @@ function systemPrompt(source: BankProblem): string {
         ].join('\n')
       : [
           'Type 2 rules:',
-          '- You MUST synthesize NEW train/test (and related) CSV data via deterministic rule-based Python code.',
-          '- Do NOT paste CSV rows in chat. Write set_dataset_code that creates DataFrames and saves them under out/ (e.g. out/train.csv, out/test.csv).',
-          '- Use clear generative rules (seeded RNG, formula for target, feature distributions). Document rules briefly in the problem markdown / note.',
-          '- After run_dataset_code succeeds, call save_generated_assets with the out/*.csv basenames to attach them to the draft.',
+          '- At design time choose MUTATE (preferred if source CSVs exist) or SYNTHESIZE.',
+          '- MUTATE: list_project_csvs → preview_csv_asset → set_transform_code (python|r) → run_transform_code(asset_ids=source) → save_generated_assets.',
+          '  Read data/<file>.csv; write NEW out/*.csv (rename columns, resample, shift target — not a verbatim copy).',
+          '- SYNTHESIZE: set_dataset_code (seeded Python) → run_dataset_code → save_generated_assets.',
+          '- Do NOT paste CSV rows in chat.',
           '- Provide gradingCode / answer modeling guidance via update_draft grading fields; no short-answer tools.',
           '- Examinee still submits result.csv; do not invent scores.',
         ].join('\n'),
@@ -165,9 +173,72 @@ function toolsFor(source: BankProblem): ChatToolDef[] {
       {
         type: 'function',
         function: {
+          name: 'list_project_csvs',
+          description:
+            'List project .csv assets; prefer source problem assets for MUTATE.',
+          parameters: {
+            type: 'object',
+            properties: {
+              source_only: {
+                type: 'boolean',
+                description: 'If true, only CSVs on the source problem.',
+              },
+            },
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'preview_csv_asset',
+          description: 'Preview header + first rows of a CSV asset.',
+          parameters: {
+            type: 'object',
+            properties: {
+              asset_id: { type: 'string' },
+              max_rows: { type: 'integer' },
+            },
+            required: ['asset_id'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'set_transform_code',
+          description:
+            'MUTATE path: python and/or r code that reads data/*.csv and writes NEW out/*.csv.',
+          parameters: {
+            type: 'object',
+            properties: {
+              python: { type: 'string' },
+              r: { type: 'string' },
+            },
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'run_transform_code',
+          description:
+            'Mount source CSV asset_ids and run transformCode; lists out/*.csv.',
+          parameters: {
+            type: 'object',
+            properties: {
+              asset_ids: { type: 'array', items: { type: 'string' } },
+              language: { type: 'string', enum: ['python', 'r'] },
+            },
+            required: ['asset_ids'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
           name: 'set_dataset_code',
           description:
-            'Set Python code that synthesizes NEW CSVs under out/ using explicit rules and a fixed random seed. Must write files like out/train.csv, out/test.csv.',
+            'SYNTHESIZE path: Python that creates NEW CSVs under out/ with a fixed seed (e.g. out/train.csv, out/test.csv).',
           parameters: {
             type: 'object',
             properties: {
@@ -223,6 +294,23 @@ function parseArgs(raw: string): Record<string, unknown> {
   }
 }
 
+function isCsvAssetName(nameOrPath: string): boolean {
+  return nameOrPath.toLowerCase().endsWith('.csv');
+}
+
+function csvPreviewLines(
+  content: string,
+  maxRows: number,
+): { header: string; rows: string[]; lineCount: number } {
+  const lines = content.replace(/^\uFEFF/, '').split(/\r?\n/);
+  while (lines.length && lines[lines.length - 1] === '') lines.pop();
+  return {
+    header: lines[0] ?? '',
+    rows: lines.slice(1, 1 + Math.max(1, maxRows)),
+    lineCount: lines.length,
+  };
+}
+
 async function ensureOutDir(): Promise<void> {
   const py = await preloadPyodide();
   if (!py.FS.analyzePath('out').exists) {
@@ -241,6 +329,59 @@ async function listOutFiles(): Promise<string[]> {
     return list.filter((n) => n.toLowerCase().endsWith('.csv'));
   } catch {
     return [];
+  }
+}
+
+async function clearPyodideOutCsvs(): Promise<void> {
+  await ensureOutDir();
+  const prev = await listOutFiles();
+  const py = await preloadPyodide();
+  for (const f of prev) {
+    try {
+      py.FS.unlink(`out/${f}`);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+async function ensureWebROutDir(): Promise<void> {
+  const relHome = WEBR_HOME.replace(/^\//, '');
+  await ensureWebRDir(`${relHome}/out`);
+}
+
+async function listOutFilesWebR(): Promise<string[]> {
+  await preloadWebR();
+  await ensureWebROutDir();
+  const listed = await runR(
+    [
+      'files <- list.files("out", pattern = "\\\\.csv$", ignore.case = TRUE)',
+      'cat(paste(files, collapse = "\\n"))',
+    ].join('\n'),
+  );
+  const text = listed.stdout.trim();
+  if (!text) return [];
+  return text
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter((n) => n.toLowerCase().endsWith('.csv'));
+}
+
+async function clearWebROutCsvs(): Promise<void> {
+  const prev = await listOutFilesWebR();
+  if (!prev.length) return;
+  const quoted = prev
+    .map((f) => `"out/${f.replace(/\\/g, '/').replace(/"/g, '')}"`)
+    .join(', ');
+  await runR(`invisible(file.remove(c(${quoted})))`);
+}
+
+async function syncWebROutToPyodide(files: string[]): Promise<void> {
+  await ensureOutDir();
+  const py = await preloadPyodide();
+  for (const base of files) {
+    const content = await readWebRFileText(`out/${base}`);
+    py.FS.writeFile(`out/${base}`, content, { encoding: 'utf8' });
   }
 }
 
@@ -296,6 +437,11 @@ export async function runVariantAgentTurn(opts: {
     ...ctx.draft,
     answerCode: { ...ctx.draft.answerCode },
     gradingCode: { ...ctx.draft.gradingCode },
+    transformCode: {
+      python: ctx.draft.transformCode?.python ?? '',
+      r: ctx.draft.transformCode?.r ?? '',
+    },
+    datasetCode: ctx.draft.datasetCode ?? '',
     shortAnswers: [...ctx.draft.shortAnswers],
     assetIds: [...ctx.draft.assetIds],
   };
@@ -397,6 +543,191 @@ export async function runVariantAgentTurn(opts: {
             onDraft?.(draft);
             toolResult = JSON.stringify({ ok: true, answers: draft.shortAnswers });
           }
+        } else if (name === 'list_project_csvs') {
+          if (ctx.source.taskType !== 2) {
+            toolResult = JSON.stringify({ ok: false, error: 'type 2 only' });
+          } else {
+            const sourceOnly = Boolean(args.source_only);
+            const sourceIds = new Set(ctx.source.assetIds);
+            const csvs = ctx.project.assets
+              .filter((a) => isCsvAssetName(a.name || a.path))
+              .filter((a) => !sourceOnly || sourceIds.has(a.id))
+              .map((a) => ({
+                id: a.id,
+                name: a.name,
+                path: a.path,
+                mount: mountPathForAsset(a),
+                byteLength: a.byteLength ?? a.content?.length ?? 0,
+                on_source: sourceIds.has(a.id),
+              }));
+            toolResult = JSON.stringify({
+              ok: true,
+              count: csvs.length,
+              csvs,
+              hint: csvs.some((c) => c.on_source)
+                ? 'Prefer MUTATE of source CSVs via set_transform_code.'
+                : 'No source CSVs — use SYNTHESIZE (set_dataset_code).',
+            });
+          }
+        } else if (name === 'preview_csv_asset') {
+          if (ctx.source.taskType !== 2) {
+            toolResult = JSON.stringify({ ok: false, error: 'type 2 only' });
+          } else {
+            const assetId = String(args.asset_id ?? '');
+            const maxRows =
+              typeof args.max_rows === 'number' && args.max_rows > 0
+                ? Math.min(40, Math.floor(args.max_rows))
+                : 12;
+            const meta = ctx.project.assets.find((a) => a.id === assetId);
+            if (!meta || !isCsvAssetName(meta.name || meta.path)) {
+              toolResult = JSON.stringify({
+                ok: false,
+                error: 'csv asset not found',
+              });
+            } else {
+              const { withProjectAssetContents } = await import(
+                '@/lib/assetStore'
+              );
+              const hydrated = await withProjectAssetContents(ctx.project, [
+                assetId,
+              ]);
+              ctx.project.assets = hydrated.assets;
+              const asset = hydrated.assets.find((a) => a.id === assetId);
+              const content = asset?.content ?? '';
+              if (!content) {
+                toolResult = JSON.stringify({
+                  ok: false,
+                  error: 'asset content empty after hydrate',
+                });
+              } else {
+                toolResult = JSON.stringify({
+                  ok: true,
+                  id: assetId,
+                  name: meta.name,
+                  mount: mountPathForAsset(meta),
+                  ...csvPreviewLines(content, maxRows),
+                });
+              }
+            }
+          }
+        } else if (name === 'set_transform_code') {
+          if (ctx.source.taskType !== 2) {
+            toolResult = JSON.stringify({ ok: false, error: 'type 2 only' });
+          } else {
+            draft.transformCode = {
+              python:
+                typeof args.python === 'string'
+                  ? args.python
+                  : draft.transformCode.python,
+              r:
+                typeof args.r === 'string' ? args.r : draft.transformCode.r,
+            };
+            onDraft?.(draft);
+            toolResult = JSON.stringify({
+              ok: true,
+              bytes: {
+                python: draft.transformCode.python.length,
+                r: draft.transformCode.r.length,
+              },
+            });
+          }
+        } else if (name === 'run_transform_code') {
+          if (ctx.source.taskType !== 2) {
+            toolResult = JSON.stringify({ ok: false, error: 'type 2 only' });
+          } else {
+            const ids = Array.isArray(args.asset_ids)
+              ? args.asset_ids.map((x) => String(x))
+              : [];
+            const lang =
+              args.language === 'r' || args.language === 'python'
+                ? args.language
+                : draft.transformCode.r.trim() &&
+                    !draft.transformCode.python.trim()
+                  ? 'r'
+                  : draft.language;
+            const code =
+              lang === 'r'
+                ? draft.transformCode.r
+                : draft.transformCode.python;
+            if (!ids.length) {
+              toolResult = JSON.stringify({
+                ok: false,
+                error: 'asset_ids required',
+              });
+            } else if (!code.trim()) {
+              toolResult = JSON.stringify({
+                ok: false,
+                error: `transformCode.${lang} empty`,
+              });
+            } else {
+              const csvIds: string[] = [];
+              const rejected: string[] = [];
+              for (const id of ids) {
+                const asset = ctx.project.assets.find((a) => a.id === id);
+                if (!asset || !isCsvAssetName(asset.name || asset.path)) {
+                  rejected.push(id);
+                } else {
+                  csvIds.push(id);
+                }
+              }
+              if (!csvIds.length) {
+                toolResult = JSON.stringify({
+                  ok: false,
+                  error: 'no valid csv asset_ids',
+                  rejected,
+                });
+              } else {
+                const { withProjectAssetContents } = await import(
+                  '@/lib/assetStore'
+                );
+                const hydrated = await withProjectAssetContents(
+                  ctx.project,
+                  csvIds,
+                );
+                ctx.project.assets = hydrated.assets;
+                const files = resolveAssets(hydrated, csvIds);
+                const mounted = files.map((f) => f.path);
+                if (lang === 'python') {
+                  await preloadPyodide();
+                  await clearPyodideOutCsvs();
+                  await mountAssetsToPyodide(files);
+                  const out = await runPython(code);
+                  const outFiles = await listOutFiles();
+                  toolResult = JSON.stringify({
+                    ok: out.ok,
+                    language: lang,
+                    stdout: out.stdout,
+                    stderr: out.stderr,
+                    mounted,
+                    files: outFiles,
+                    rejected,
+                  });
+                } else {
+                  await preloadWebR();
+                  await clearWebROutCsvs();
+                  const { mountAssetsToWebR } = await import(
+                    '@/runtimes/fsMount'
+                  );
+                  await mountAssetsToWebR(files);
+                  await ensureWebROutDir();
+                  const out = await runR(code);
+                  const outFiles = await listOutFilesWebR();
+                  if (outFiles.length) {
+                    await syncWebROutToPyodide(outFiles);
+                  }
+                  toolResult = JSON.stringify({
+                    ok: out.ok,
+                    language: lang,
+                    stdout: out.stdout,
+                    stderr: out.stderr,
+                    mounted,
+                    files: outFiles,
+                    rejected,
+                  });
+                }
+              }
+            }
+          }
         } else if (name === 'set_dataset_code') {
           if (ctx.source.taskType !== 2) {
             toolResult = JSON.stringify({
@@ -420,17 +751,7 @@ export async function runVariantAgentTurn(opts: {
               error: 'datasetCode empty',
             });
           } else {
-            await ensureOutDir();
-            // Clear previous out csvs
-            const prev = await listOutFiles();
-            const py = await preloadPyodide();
-            for (const f of prev) {
-              try {
-                py.FS.unlink(`out/${f}`);
-              } catch {
-                /* ignore */
-              }
-            }
+            await clearPyodideOutCsvs();
             const out = await runPython(draft.datasetCode);
             const files = await listOutFiles();
             toolResult = JSON.stringify({
@@ -576,5 +897,7 @@ function summarizeDraft(draft: VariantDraft) {
     assetIds: draft.assetIds,
     hasAnswerPy: Boolean(draft.answerCode.python.trim()),
     hasDatasetCode: Boolean(draft.datasetCode.trim()),
+    hasTransformPy: Boolean(draft.transformCode?.python?.trim()),
+    hasTransformR: Boolean(draft.transformCode?.r?.trim()),
   };
 }

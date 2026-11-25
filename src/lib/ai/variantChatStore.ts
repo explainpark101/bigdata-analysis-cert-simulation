@@ -11,6 +11,8 @@ export interface VariantDraft {
   shortAnswers: string[];
   gradingCode: CodeByLanguage;
   datasetCode: string;
+  /** Mutate source CSVs → out/*.csv (type 2 alternative to datasetCode). */
+  transformCode: CodeByLanguage;
   /** Newly generated asset ids attached to the draft (type 2) */
   assetIds: string[];
 }
@@ -59,6 +61,7 @@ export function emptyVariantDraft(
       r: source.gradingCode?.r ?? '',
     },
     datasetCode: source.datasetCode ?? '',
+    transformCode: { python: '', r: '' },
     assetIds: [...source.assetIds],
   };
 }
@@ -70,6 +73,28 @@ export async function loadVariantChatMap(): Promise<VariantChatMap> {
   } catch {
     return {};
   }
+}
+
+export function normalizeVariantDraft(draft: VariantDraft): VariantDraft {
+  return {
+    ...draft,
+    answerCode: {
+      python: draft.answerCode?.python ?? '',
+      r: draft.answerCode?.r ?? '',
+    },
+    gradingCode: {
+      python: draft.gradingCode?.python ?? '',
+      r: draft.gradingCode?.r ?? '',
+    },
+    transformCode: {
+      python: draft.transformCode?.python ?? '',
+      r: draft.transformCode?.r ?? '',
+    },
+    datasetCode: draft.datasetCode ?? '',
+    shortAnswers:
+      draft.shortAnswers?.length > 0 ? [...draft.shortAnswers] : [''],
+    assetIds: [...(draft.assetIds ?? [])],
+  };
 }
 
 export async function loadVariantSession(

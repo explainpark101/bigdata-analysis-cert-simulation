@@ -12,6 +12,7 @@ import {
   runWebTool,
   WEB_TOOL_DEFS,
 } from '@/lib/ai/webTools';
+import { mountPathForAsset } from '@/lib/assetPaths';
 import { resolveAssets, createProjectAsset } from '@/lib/projectIO';
 import { mountAssetsToPyodide } from '@/runtimes/fsMount';
 import {
@@ -19,7 +20,13 @@ import {
   runPython,
   readPyodideFileText,
 } from '@/runtimes/pyodideRuntime';
-import { preloadWebR, runR } from '@/runtimes/webrRuntime';
+import {
+  ensureWebRDir,
+  preloadWebR,
+  readWebRFileText,
+  runR,
+  WEBR_HOME,
+} from '@/runtimes/webrRuntime';
 import type {
   AuthoringProject,
   BankProblem,
@@ -27,8 +34,8 @@ import type {
   TaskType,
 } from '@/types/project';
 
-const MAX_TOOL_ROUNDS = 12;
-const MAX_TOOL_ROUNDS_REQUIRE_SAVE = 16;
+const MAX_TOOL_ROUNDS = 14;
+const MAX_TOOL_ROUNDS_REQUIRE_SAVE = 20;
 
 export interface AuthorAgentContext {
   settings: AiEndpointSettings;
@@ -71,13 +78,21 @@ function systemPrompt(requireSave: boolean): string {
     '',
     '## Data files = CSV only',
     '- Every data file attached to the draft MUST be a .csv (UTF-8). No xlsx, parquet, json, txt tables, or images-as-data.',
-    '- For NEW items: generate CSVs with set_dataset_code (fixed seed) → run_dataset_code → save_generated_assets.',
-    '- use_project_assets may only attach existing .csv assets; non-csv ids are rejected.',
+    '- use_project_assets may only attach EXISTING .csv as-is (rare). Prefer MUTATE or SYNTHESIZE so the exam file is original.',
     '- Mention the exact CSV filenames in the problem markdown.',
     '',
+    '## Design decision (mandatory before producing data)',
+    'After analyzing references, choose ONE path and state it briefly in Korean:',
+    'A) MUTATE existing CSVs (preferred when project/reference CSVs exist):',
+    '   list_project_csvs → preview_csv_asset → set_transform_code (python or r) → run_transform_code → save_generated_assets.',
+    '   Mounted sources appear as data/<filename>.csv. Transform code MUST write NEW files under out/*.csv',
+    '   (rename columns, inject missingness, resample, shift distributions, re-split train/test — keep skill intent, change content).',
+    'B) SYNTHESIZE from scratch (when no suitable CSV exists):',
+    '   set_dataset_code (fixed seed, Python) → run_dataset_code → save_generated_assets.',
+    '',
     '## Workflow',
-    'Type 1/3: CSV ready → update_draft → set_answer_code → run_answer_code → set_short_answers.',
-    'Type 2: set_dataset_code → run_dataset_code → save_generated_assets → update_draft (incl. grading) → verify.',
+    'Type 1/3: CSV ready (mutate or synthesize) → update_draft → set_answer_code → run_answer_code → set_short_answers.',
+    'Type 2: CSV ready → update_draft (incl. grading) → verify submission rules.',
     'Never invent final numeric answers yourself — compute via tools, then set answers from stdout.',
     'When you need external facts/docs: web_search then fetch_url. Do not invent API signatures.',
   ];
@@ -125,9 +140,13 @@ export function isDraftReadyForSave(draft: AuthorDraft): boolean {
   if (md.length < 80) return false;
   if (md.includes('문제 내용을 작성하세요')) return false;
   if (draft.taskType === 2) {
+    const transformBytes =
+      (draft.transformCode?.python?.trim().length ?? 0) +
+      (draft.transformCode?.r?.trim().length ?? 0);
     return (
       draft.assetIds.length > 0 ||
       draft.datasetCode.trim().length > 40 ||
+      transformBytes > 40 ||
       md.length > 200
     );
   }
@@ -224,9 +243,78 @@ const TOOLS: ChatToolDef[] = [
   {
     type: 'function',
     function: {
+      name: 'list_project_csvs',
+      description:
+        'List project .csv assets (id, name, mount path data/<file>, bytes, used_by reference ids). Use before deciding MUTATE vs SYNTHESIZE.',
+      parameters: {
+        type: 'object',
+        properties: {
+          reference_only: {
+            type: 'boolean',
+            description:
+              'If true, only CSVs attached to selected reference problems.',
+          },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'preview_csv_asset',
+      description:
+        'Hydrate one CSV asset and return header + first rows for transform design.',
+      parameters: {
+        type: 'object',
+        properties: {
+          asset_id: { type: 'string' },
+          max_rows: { type: 'integer' },
+        },
+        required: ['asset_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'set_transform_code',
+      description:
+        'Set Pyodide (python) and/or webR (r) code that reads mounted source CSVs (data/*.csv) and writes NEW exam CSVs under out/*.csv. Prefer this over set_dataset_code when mutating existing data.',
+      parameters: {
+        type: 'object',
+        properties: {
+          python: { type: 'string' },
+          r: { type: 'string' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'run_transform_code',
+      description:
+        'Mount given source CSV asset_ids, run transformCode in python or r, list out/*.csv. Then call save_generated_assets.',
+      parameters: {
+        type: 'object',
+        properties: {
+          asset_ids: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Source CSV asset ids to mount (not the output).',
+          },
+          language: { type: 'string', enum: ['python', 'r'] },
+        },
+        required: ['asset_ids'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'set_dataset_code',
       description:
-        'Python that writes NEW exam CSVs under out/ (fixed seed). Filenames must end with .csv only.',
+        'SYNTHESIZE path: Python that writes NEW exam CSVs under out/ from scratch (fixed seed). No source mounts. Filenames must end with .csv only.',
       parameters: {
         type: 'object',
         properties: { code: { type: 'string' } },
@@ -263,7 +351,7 @@ const TOOLS: ChatToolDef[] = [
     function: {
       name: 'use_project_assets',
       description:
-        'Attach existing project CSV asset ids to the draft (.csv only).',
+        'Attach existing project CSV asset ids to the draft AS-IS (.csv only). Prefer mutate/synthesize for original exam files.',
       parameters: {
         type: 'object',
         properties: {
@@ -306,6 +394,25 @@ function summarizeDraft(draft: AuthorDraft) {
     assetIds: draft.assetIds,
     hasAnswerPy: Boolean(draft.answerCode.python.trim()),
     hasDatasetCode: Boolean(draft.datasetCode.trim()),
+    hasTransformPy: Boolean(draft.transformCode?.python?.trim()),
+    hasTransformR: Boolean(draft.transformCode?.r?.trim()),
+  };
+}
+
+function isCsvAssetName(nameOrPath: string): boolean {
+  return nameOrPath.toLowerCase().endsWith('.csv');
+}
+
+function csvPreviewLines(
+  content: string,
+  maxRows: number,
+): { header: string; rows: string[]; lineCount: number } {
+  const lines = content.replace(/^\uFEFF/, '').split(/\r?\n/);
+  while (lines.length && lines[lines.length - 1] === '') lines.pop();
+  return {
+    header: lines[0] ?? '',
+    rows: lines.slice(1, 1 + Math.max(1, maxRows)),
+    lineCount: lines.length,
   };
 }
 
@@ -327,6 +434,60 @@ async function listOutFiles(): Promise<string[]> {
     return list.filter((n) => n.toLowerCase().endsWith('.csv'));
   } catch {
     return [];
+  }
+}
+
+async function clearPyodideOutCsvs(): Promise<void> {
+  await ensureOutDir();
+  const prev = await listOutFiles();
+  const py = await preloadPyodide();
+  for (const f of prev) {
+    try {
+      py.FS.unlink(`out/${f}`);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+async function ensureWebROutDir(): Promise<void> {
+  const relHome = WEBR_HOME.replace(/^\//, '');
+  await ensureWebRDir(`${relHome}/out`);
+}
+
+async function listOutFilesWebR(): Promise<string[]> {
+  await preloadWebR();
+  await ensureWebROutDir();
+  const listed = await runR(
+    [
+      'files <- list.files("out", pattern = "\\\\.csv$", ignore.case = TRUE)',
+      'cat(paste(files, collapse = "\\n"))',
+    ].join('\n'),
+  );
+  const text = listed.stdout.trim();
+  if (!text) return [];
+  return text
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter((n) => n.toLowerCase().endsWith('.csv'));
+}
+
+async function clearWebROutCsvs(): Promise<void> {
+  const prev = await listOutFilesWebR();
+  if (!prev.length) return;
+  const quoted = prev
+    .map((f) => `"out/${f.replace(/\\/g, '/').replace(/"/g, '')}"`)
+    .join(', ');
+  await runR(`invisible(file.remove(c(${quoted})))`);
+}
+
+/** After R transform, mirror out/*.csv into Pyodide so save_generated_assets stays unchanged. */
+async function syncWebROutToPyodide(files: string[]): Promise<void> {
+  await ensureOutDir();
+  const py = await preloadPyodide();
+  for (const base of files) {
+    const content = await readWebRFileText(`out/${base}`);
+    py.FS.writeFile(`out/${base}`, content, { encoding: 'utf8' });
   }
 }
 
@@ -394,6 +555,11 @@ export async function runAuthorAgentTurn(opts: {
     ...ctx.draft,
     answerCode: { ...ctx.draft.answerCode },
     gradingCode: { ...ctx.draft.gradingCode },
+    transformCode: {
+      python: ctx.draft.transformCode?.python ?? '',
+      r: ctx.draft.transformCode?.r ?? '',
+    },
+    datasetCode: ctx.draft.datasetCode ?? '',
     shortAnswers: [...ctx.draft.shortAnswers],
     assetIds: [...ctx.draft.assetIds],
   };
@@ -426,7 +592,7 @@ export async function runAuthorAgentTurn(opts: {
         `selected references (${ctx.referenceIds.length}):`,
         refBrief || '(none)',
         'Analyze references with list_references / get_reference, then invent a NEW exam-realistic item.',
-        'DATA_POLICY=csv_only — generate or attach .csv files only.',
+        'DATA_POLICY=csv_only — choose MUTATE (list_project_csvs / transform) or SYNTHESIZE (dataset_code) at design time.',
         requireSave
           ? 'REQUIRE_SAVE=true — end this turn with save_problem(confirm=true).'
           : '',
@@ -586,6 +752,192 @@ export async function runAuthorAgentTurn(opts: {
             onDraft?.(draft);
             toolResult = JSON.stringify({ ok: true, answers: draft.shortAnswers });
           }
+        } else if (name === 'list_project_csvs') {
+          const referenceOnly = Boolean(args.reference_only);
+          const refAssetIds = new Set(
+            refsOf(ctx).flatMap((r) => r.assetIds),
+          );
+          const usedBy = new Map<string, string[]>();
+          for (const ref of refsOf(ctx)) {
+            for (const id of ref.assetIds) {
+              const list = usedBy.get(id) ?? [];
+              list.push(ref.id);
+              usedBy.set(id, list);
+            }
+          }
+          const csvs = ctx.project.assets
+            .filter((a) => isCsvAssetName(a.name || a.path))
+            .filter((a) => !referenceOnly || refAssetIds.has(a.id))
+            .map((a) => ({
+              id: a.id,
+              name: a.name,
+              path: a.path,
+              mount: mountPathForAsset(a),
+              byteLength: a.byteLength ?? a.content?.length ?? 0,
+              used_by_references: usedBy.get(a.id) ?? [],
+            }));
+          toolResult = JSON.stringify({
+            ok: true,
+            count: csvs.length,
+            csvs,
+            hint: csvs.length
+              ? 'Prefer MUTATE via set_transform_code / run_transform_code when these fit the skill.'
+              : 'No CSV sources — use SYNTHESIZE (set_dataset_code).',
+          });
+        } else if (name === 'preview_csv_asset') {
+          const assetId = String(args.asset_id ?? '');
+          const maxRows =
+            typeof args.max_rows === 'number' && args.max_rows > 0
+              ? Math.min(40, Math.floor(args.max_rows))
+              : 12;
+          const meta = ctx.project.assets.find((a) => a.id === assetId);
+          if (!meta || !isCsvAssetName(meta.name || meta.path)) {
+            toolResult = JSON.stringify({
+              ok: false,
+              error: 'csv asset not found',
+            });
+          } else {
+            const { withProjectAssetContents } = await import(
+              '@/lib/assetStore'
+            );
+            const hydrated = await withProjectAssetContents(ctx.project, [
+              assetId,
+            ]);
+            ctx.project.assets = hydrated.assets;
+            const asset = hydrated.assets.find((a) => a.id === assetId);
+            const content = asset?.content ?? '';
+            if (!content) {
+              toolResult = JSON.stringify({
+                ok: false,
+                error: 'asset content empty after hydrate',
+              });
+            } else {
+              const preview = csvPreviewLines(content, maxRows);
+              toolResult = JSON.stringify({
+                ok: true,
+                id: assetId,
+                name: meta.name,
+                mount: mountPathForAsset(meta),
+                ...preview,
+              });
+            }
+          }
+        } else if (name === 'set_transform_code') {
+          draft.transformCode = {
+            python:
+              typeof args.python === 'string'
+                ? args.python
+                : draft.transformCode.python,
+            r:
+              typeof args.r === 'string' ? args.r : draft.transformCode.r,
+          };
+          onDraft?.(draft);
+          toolResult = JSON.stringify({
+            ok: true,
+            bytes: {
+              python: draft.transformCode.python.length,
+              r: draft.transformCode.r.length,
+            },
+            hint: 'Read data/<file>.csv; write only out/*.csv with changed content (not a verbatim copy).',
+          });
+        } else if (name === 'run_transform_code') {
+          const ids = Array.isArray(args.asset_ids)
+            ? args.asset_ids.map((x) => String(x))
+            : [];
+          const lang =
+            args.language === 'r' || args.language === 'python'
+              ? args.language
+              : draft.transformCode.r.trim() && !draft.transformCode.python.trim()
+                ? 'r'
+                : draft.language;
+          const code =
+            lang === 'r'
+              ? draft.transformCode.r
+              : draft.transformCode.python;
+          if (!ids.length) {
+            toolResult = JSON.stringify({
+              ok: false,
+              error: 'asset_ids required',
+            });
+          } else if (!code.trim()) {
+            toolResult = JSON.stringify({
+              ok: false,
+              error: `transformCode.${lang} empty — call set_transform_code first`,
+            });
+          } else {
+            const csvIds: string[] = [];
+            const rejected: string[] = [];
+            for (const id of ids) {
+              const asset = ctx.project.assets.find((a) => a.id === id);
+              if (!asset || !isCsvAssetName(asset.name || asset.path)) {
+                rejected.push(id);
+              } else {
+                csvIds.push(id);
+              }
+            }
+            if (!csvIds.length) {
+              toolResult = JSON.stringify({
+                ok: false,
+                error: 'no valid csv asset_ids',
+                rejected,
+              });
+            } else {
+              const { withProjectAssetContents } = await import(
+                '@/lib/assetStore'
+              );
+              const hydrated = await withProjectAssetContents(
+                ctx.project,
+                csvIds,
+              );
+              ctx.project.assets = hydrated.assets;
+              const files = resolveAssets(hydrated, csvIds);
+              const mounted = files.map((f) => f.path);
+              if (lang === 'python') {
+                await preloadPyodide();
+                await clearPyodideOutCsvs();
+                await mountAssetsToPyodide(files);
+                const out = await runPython(code);
+                const outFiles = await listOutFiles();
+                toolResult = JSON.stringify({
+                  ok: out.ok,
+                  language: lang,
+                  stdout: out.stdout,
+                  stderr: out.stderr,
+                  mounted,
+                  files: outFiles,
+                  rejected,
+                  hint: outFiles.length
+                    ? 'Call save_generated_assets with these out/*.csv basenames.'
+                    : 'No out/*.csv written — fix transform code.',
+                });
+              } else {
+                await preloadWebR();
+                await clearWebROutCsvs();
+                const { mountAssetsToWebR } = await import(
+                  '@/runtimes/fsMount'
+                );
+                await mountAssetsToWebR(files);
+                await ensureWebROutDir();
+                const out = await runR(code);
+                const outFiles = await listOutFilesWebR();
+                if (outFiles.length) {
+                  await syncWebROutToPyodide(outFiles);
+                }
+                toolResult = JSON.stringify({
+                  ok: out.ok,
+                  language: lang,
+                  stdout: out.stdout,
+                  stderr: out.stderr,
+                  mounted,
+                  files: outFiles,
+                  rejected,
+                  hint: outFiles.length
+                    ? 'Call save_generated_assets with these out/*.csv basenames.'
+                    : 'No out/*.csv written — fix transform code.',
+                });
+              }
+            }
+          }
         } else if (name === 'set_dataset_code') {
           draft.datasetCode = String(args.code ?? '');
           onDraft?.(draft);
@@ -601,16 +953,7 @@ export async function runAuthorAgentTurn(opts: {
               error: 'datasetCode empty',
             });
           } else {
-            await ensureOutDir();
-            const prev = await listOutFiles();
-            const py = await preloadPyodide();
-            for (const f of prev) {
-              try {
-                py.FS.unlink(`out/${f}`);
-              } catch {
-                /* ignore */
-              }
-            }
+            await clearPyodideOutCsvs();
             const out = await runPython(draft.datasetCode);
             const files = await listOutFiles();
             toolResult = JSON.stringify({

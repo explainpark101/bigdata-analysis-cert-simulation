@@ -12,7 +12,13 @@ export interface AuthorDraft {
   answerCode: CodeByLanguage;
   shortAnswers: string[];
   gradingCode: CodeByLanguage;
+  /** Synthesize-from-scratch Python that writes out/*.csv (no source mounts). */
   datasetCode: string;
+  /**
+   * Mutate existing project CSVs: code reads mounted source paths and writes
+   * new exam CSVs under out/. Prefer over datasetCode when reusable CSVs exist.
+   */
+  transformCode: CodeByLanguage;
   assetIds: string[];
 }
 
@@ -37,7 +43,33 @@ export function emptyAuthorDraft(taskType: TaskType = 1): AuthorDraft {
     shortAnswers: [''],
     gradingCode: { python: '', r: '' },
     datasetCode: '',
+    transformCode: { python: '', r: '' },
     assetIds: [],
+  };
+}
+
+/** Fill missing fields for drafts loaded from older IDB sessions. */
+export function normalizeAuthorDraft(draft: AuthorDraft): AuthorDraft {
+  const base = emptyAuthorDraft(draft.taskType ?? 1);
+  return {
+    ...base,
+    ...draft,
+    answerCode: {
+      python: draft.answerCode?.python ?? '',
+      r: draft.answerCode?.r ?? '',
+    },
+    gradingCode: {
+      python: draft.gradingCode?.python ?? '',
+      r: draft.gradingCode?.r ?? '',
+    },
+    transformCode: {
+      python: draft.transformCode?.python ?? '',
+      r: draft.transformCode?.r ?? '',
+    },
+    datasetCode: draft.datasetCode ?? '',
+    shortAnswers:
+      draft.shortAnswers?.length > 0 ? [...draft.shortAnswers] : [''],
+    assetIds: [...(draft.assetIds ?? [])],
   };
 }
 

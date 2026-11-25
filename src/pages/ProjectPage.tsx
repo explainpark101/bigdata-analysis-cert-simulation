@@ -861,7 +861,7 @@ export default function ProjectPage() {
             setSelectedId(created.id);
             setTab('bank');
           }}
-          onAssembleExam={(problems) => {
+          onAssembleExam={(problems, opts) => {
             const ordered = [...problems].sort(
               (a, b) => a.taskType - b.taskType || a.title.localeCompare(b.title),
             );
@@ -870,6 +870,7 @@ export default function ProjectPage() {
               day: '2-digit',
               hour: '2-digit',
               minute: '2-digit',
+              second: '2-digit',
             });
             const exam = addExam({
               title: `AI 자동 시험 ${stamp}`,
@@ -883,7 +884,8 @@ export default function ProjectPage() {
             setMessage(
               `시험 조립 완료: ${exam.title} · ${ordered.length}문항 (만점 ${OFFICIAL_TOTAL_POINTS}점)`,
             );
-            setTab('exam');
+            // Stay on author tab while multi-paper batch is still running.
+            if (opts?.navigate !== false) setTab('exam');
           }}
         />
       )}
