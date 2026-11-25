@@ -62,7 +62,7 @@ export const WEB_TOOL_DEFS: ChatToolDef[] = [
     function: {
       name: 'lookup_statistic',
       description:
-        'Look up a statistical metric / index / test formula via Wikipedia + web search APIs. Use when designing hard exam items so formulas are not invented. Returns search hits; call fetch_url on the best URL for the full formula.',
+        'Look up a statistical metric / index / test formula via Wikipedia + web search. Optional — if it fails (ok=false), skip and use your own knowledge; do not stall. On success, call fetch_url on suggested_fetch for the full formula.',
       parameters: {
         type: 'object',
         properties: {
@@ -491,26 +491,59 @@ export async function lookupStatistic(
   };
 }
 
-/** Execute web_search / fetch_url / lookup_statistic for the tool channel. */
+/** Execute web_search / fetch_url / lookup_statistic for the tool channel. Never throws. */
 export async function runWebTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<string> {
-  if (name === 'web_search') {
-    const query = String(args.query ?? '');
-    const limit = Number(args.limit ?? 5);
-    return JSON.stringify(await webSearch(query, limit));
+  try {
+    if (name === 'web_search') {
+      const query = String(args.query ?? '');
+      const limit = Number(args.limit ?? 5);
+      const out = await webSearch(query, limit);
+      if (!out.ok) {
+        return JSON.stringify({
+          ...out,
+          skip: true,
+          hint: 'Search failed — continue with your own statistical knowledge; do not retry forever on search.',
+        });
+      }
+      return JSON.stringify(out);
+    }
+    if (name === 'fetch_url') {
+      const url = String(args.url ?? '');
+      const maxChars = Number(args.max_chars ?? MAX_PAGE_CHARS);
+      const out = await fetchUrl(url, maxChars);
+      if (!out.ok) {
+        return JSON.stringify({
+          ...out,
+          skip: true,
+          hint: 'Fetch failed — skip and use prior knowledge / search snippets.',
+        });
+      }
+      return JSON.stringify(out);
+    }
+    if (name === 'lookup_statistic') {
+      const topic = String(args.topic ?? '');
+      const aspect = String(args.aspect ?? 'formula');
+      const limit = Number(args.limit ?? 6);
+      const out = await lookupStatistic(topic, aspect, limit);
+      if (!out.ok) {
+        return JSON.stringify({
+          ...out,
+          skip: true,
+          hint: 'Lookup failed — skip research and author from trained knowledge.',
+        });
+      }
+      return JSON.stringify(out);
+    }
+    return JSON.stringify({ ok: false, error: `unknown web tool ${name}` });
+  } catch (err) {
+    return JSON.stringify({
+      ok: false,
+      skip: true,
+      error: err instanceof Error ? err.message : String(err),
+      hint: 'Web tool crashed — skip and continue without web research.',
+    });
   }
-  if (name === 'fetch_url') {
-    const url = String(args.url ?? '');
-    const maxChars = Number(args.max_chars ?? MAX_PAGE_CHARS);
-    return JSON.stringify(await fetchUrl(url, maxChars));
-  }
-  if (name === 'lookup_statistic') {
-    const topic = String(args.topic ?? '');
-    const aspect = String(args.aspect ?? 'formula');
-    const limit = Number(args.limit ?? 6);
-    return JSON.stringify(await lookupStatistic(topic, aspect, limit));
-  }
-  return JSON.stringify({ ok: false, error: `unknown web tool ${name}` });
 }

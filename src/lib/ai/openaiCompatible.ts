@@ -221,17 +221,8 @@ export type ChatToolChoice =
   | 'required'
   | { type: 'function'; function: { name: string } };
 
-const EMPTY_STREAM_MESSAGES = [
-  'AI 스트림 응답이 비어 있습니다.',
-  'AI 스트림 본문이 비어 있습니다.',
-] as const;
-
-const EMPTY_STREAM_RETRY_MS = 800;
-
-function isEmptyStreamError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return EMPTY_STREAM_MESSAGES.some((m) => msg.includes(m));
-}
+const RETRY_BASE_MS = 800;
+const RETRY_MAX_MS = 20_000;
 
 function isAbortError(err: unknown): boolean {
   if (err instanceof DOMException && err.name === 'AbortError') return true;
@@ -271,8 +262,18 @@ function assertNonEmptyCompletion(result: ChatCompletionResult): void {
   }
 }
 
+function retryDelayMs(attempt: number): number {
+  // Linear-ish backoff capped; attempt starts at 1.
+  return Math.min(RETRY_MAX_MS, RETRY_BASE_MS * Math.min(attempt, 12));
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /**
- * OpenAI-compatible chat.completions. Retries forever on empty stream bodies
+ * OpenAI-compatible chat.completions.
+ * Retries **forever** on any failure (empty stream, HTTP errors, network, …)
  * until a usable message/tool_calls arrives or `signal` aborts.
  */
 export async function createChatCompletion(opts: {
@@ -283,8 +284,10 @@ export async function createChatCompletion(opts: {
   temperature?: number;
   signal?: AbortSignal;
   onDelta?: ChatStreamDeltaHandler;
-  /** Called before each empty-stream retry (attempt starts at 1). */
+  /** @deprecated Use onRetry */
   onEmptyStreamRetry?: (attempt: number) => void;
+  /** Called before each retry (attempt starts at 1). */
+  onRetry?: (attempt: number, error: unknown) => void;
 }): Promise<ChatCompletionResult> {
   let attempt = 0;
   while (true) {
@@ -295,13 +298,16 @@ export async function createChatCompletion(opts: {
       return result;
     } catch (err) {
       if (isAbortError(err)) throw err;
-      if (!isEmptyStreamError(err)) throw err;
       attempt += 1;
+      opts.onRetry?.(attempt, err);
       opts.onEmptyStreamRetry?.(attempt);
-      await sleepAbortable(EMPTY_STREAM_RETRY_MS, opts.signal);
+      await sleepAbortable(retryDelayMs(attempt), opts.signal);
     }
   }
 }
+
+/** Shared abort-aware delay for agent / UI retry loops. */
+export { sleepAbortable, isAbortError, throwIfAborted, errorMessage };
 
 async function createChatCompletionOnce(opts: {
   settings: AiEndpointSettings;

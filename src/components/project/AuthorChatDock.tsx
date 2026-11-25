@@ -25,6 +25,7 @@ import {
 import { playCompletionSound } from '@/lib/ai/completionSound';
 import {
   chatContentToText,
+  sleepAbortable,
   type ChatContentPart,
   type ChatMessage,
 } from '@/lib/ai/openaiCompatible';
@@ -223,15 +224,19 @@ function autoPromptForType(
 ): string {
   const pts = OFFICIAL_POINTS_PER_ITEM[taskType];
   const refLine =
-    refMode === 'auto'
-      ? `문제은행에서 상황에 맞게 가져온 참고 문제 ${refCount}개(제${taskType}유형 우선)를 분석한 뒤, 빅데이터분석기사 실기(제13회 가이드) 작업형 ${taskType}유형 새 문항을 작성·저장하세요.`
-      : `선택된 참고 문제 ${refCount}개를 분석한 뒤, 빅데이터분석기사 실기(제13회 가이드) 작업형 ${taskType}유형 새 문항을 작성·저장하세요.`;
+    refCount === 0
+      ? `참고 문항이 없습니다. SYNTHESIZE로 빅데이터분석기사 실기(제13회 가이드) 작업형 ${taskType}유형 새 문항을 작성·저장하세요.`
+      : refMode === 'auto'
+        ? `문제은행에서 상황에 맞게 가져온 참고 문제 ${refCount}개(제${taskType}유형 우선)를 분석한 뒤, 빅데이터분석기사 실기(제13회 가이드) 작업형 ${taskType}유형 새 문항을 작성·저장하세요.`
+        : `선택된 참고 문제 ${refCount}개를 분석한 뒤, 빅데이터분석기사 실기(제13회 가이드) 작업형 ${taskType}유형 새 문항을 작성·저장하세요.`;
   return [
     refLine,
     `이번 생성은 제${taskType}유형 ${ordinalInType}/${OFFICIAL_COUNTS[taskType]}번째 · 문항 배점 ${pts}점입니다.`,
     '',
     '## 참고 분석',
-    '- list_references → get_reference 로 참고 문항의 도메인·스키마·요구 스킬·답안 형식을 파악하세요.',
+    refCount === 0
+      ? '- 참고가 없으면 list_references를 건너뛰고 SYNTHESIZE로 진행하세요.'
+      : '- list_references → get_reference 로 참고 문항의 도메인·스키마·요구 스킬·답안 형식을 파악하세요.',
     '- 같은 유형 참고를 우선 보고, 다른 유형은 스킬·난이도만 참고하세요.',
     '- 같은 스킬군/시험 의도를 유지하되, 스토리·컬럼명·시드·분포·문구는 완전히 새로 만드세요. 베끼지 마세요.',
     '',
@@ -520,26 +525,45 @@ export function AuthorChatDock({
     setError('');
 
     try {
-      const result = await runTurn({
-        userText,
-        images,
-        history: historyBefore,
-        draftOverride: opts?.draftOverride,
-        signal: ctrl.signal,
-      });
-      setMessages(result.messages);
-      onDraftChange(result.draft);
-      clearLive();
-      void playCompletionSound();
-      if (result.savedProblem) {
-        const navigate = opts?.navigateOnSave !== false;
-        onSaved(result.savedProblem, { navigate });
-        if (navigate) {
-          await clearAuthorSession(project.id);
-          setMessages([]);
-          onDraftChange(emptyAuthorDraft(result.draft.taskType));
-        } else {
-          onDraftChange(emptyAuthorDraft(result.draft.taskType));
+      let attempt = 0;
+      while (true) {
+        throwIfAborted(ctrl.signal);
+        try {
+          const result = await runTurn({
+            userText,
+            images,
+            history: historyBefore,
+            draftOverride: opts?.draftOverride,
+            signal: ctrl.signal,
+          });
+          setMessages(result.messages);
+          onDraftChange(result.draft);
+          clearLive();
+          void playCompletionSound();
+          if (result.savedProblem) {
+            const navigate = opts?.navigateOnSave !== false;
+            onSaved(result.savedProblem, { navigate });
+            if (navigate) {
+              await clearAuthorSession(project.id);
+              setMessages([]);
+              onDraftChange(emptyAuthorDraft(result.draft.taskType));
+            } else {
+              onDraftChange(emptyAuthorDraft(result.draft.taskType));
+            }
+          }
+          break;
+        } catch (err) {
+          if (isAbortError(err)) throw err;
+          attempt += 1;
+          const msg = err instanceof Error ? err.message : String(err);
+          setError('');
+          setLiveStatus(
+            `실패 재시도 중… (${attempt})${msg ? ` · ${msg.slice(0, 80)}` : ''}`,
+          );
+          await sleepAbortable(
+            Math.min(20_000, 800 * Math.min(attempt, 12)),
+            ctrl.signal,
+          );
         }
       }
     } catch (err) {
@@ -561,12 +585,6 @@ export function AuthorChatDock({
 
   const openExamCountPrompt = () => {
     if (busyRef.current) return;
-    if (!projectRef.current.bank.length) {
-      setError(
-        '문제은행이 비어 있습니다. ZIP 병합이나 문제 추가 후 다시 시도하세요.',
-      );
-      return;
-    }
     setExamCountInput('1');
     setExamCountOpen(true);
     window.setTimeout(() => examCountInputRef.current?.select(), 0);
@@ -576,12 +594,6 @@ export function AuthorChatDock({
     if (busyRef.current) return;
     const examCount = clampExamCount(String(examCountIn));
     const preferredIds = [...referenceIdsRef.current];
-    if (!projectRef.current.bank.length) {
-      setError(
-        '문제은행이 비어 있습니다. ZIP 병합이나 문제 추가 후 다시 시도하세요.',
-      );
-      return;
-    }
 
     const ctrl = beginAbortable();
     busyRef.current = true;
@@ -608,10 +620,9 @@ export function AuthorChatDock({
         ];
         setMessages(history);
 
-        for (let i = 0; i < OFFICIAL_AUTOGEN_SEQUENCE.length; i++) {
+        for (let i = 0; i < OFFICIAL_AUTOGEN_SEQUENCE.length; ) {
           const taskType = OFFICIAL_AUTOGEN_SEQUENCE[i];
-          typeOrdinal[taskType] += 1;
-          const ordinalInType = typeOrdinal[taskType];
+          const ordinalInType = typeOrdinal[taskType] + 1;
           throwIfAborted(ctrl.signal);
 
           const bankNow = projectRef.current.bank;
@@ -621,14 +632,12 @@ export function AuthorChatDock({
             preferredIds,
             excludeCreated,
           );
-          if (!turnRefs.length) {
-            setError(
-              `제${taskType}유형 참고 문제를 찾을 수 없습니다. 문제은행에 문항을 추가하세요.`,
-            );
-            break;
-          }
-          const refMode = preferredIds.length ? 'selected' : 'auto';
-          onReferenceIdsChange?.(turnRefs);
+          const refMode = turnRefs.length
+            ? preferredIds.length
+              ? 'selected'
+              : 'auto'
+            : 'auto';
+          if (turnRefs.length) onReferenceIdsChange?.(turnRefs);
 
           const prompt = autoPromptForType(
             taskType,
@@ -648,129 +657,155 @@ export function AuthorChatDock({
           );
           setStream('');
           setLiveTools([]);
+          setError('');
 
-          let result = await runTurn({
-            userText: prompt,
-            history: historyBefore,
-            draftOverride: emptyAuthorDraft(taskType),
-            signal: ctrl.signal,
-            requireSave: true,
-            referenceIds: turnRefs,
-          });
-
-          if (!result.savedProblem) {
-            throwIfAborted(ctrl.signal);
-            setLiveStatus(
-              `시험지 ${paperLabel} · 제${taskType}유형 저장 재시도…`,
-            );
-            const savePrompt =
-              '추가 수정 없이 지금 초안으로 save_problem(confirm=true)만 호출하세요.';
-            const saveUser = buildUserMessage(savePrompt, []);
-            history = [...result.messages, saveUser];
-            setMessages(history);
-            result = await runTurn({
-              userText: savePrompt,
-              history: result.messages,
-              draftOverride: result.draft,
+          try {
+            let result = await runTurn({
+              userText: prompt,
+              history: historyBefore,
+              draftOverride: emptyAuthorDraft(taskType),
               signal: ctrl.signal,
               requireSave: true,
               referenceIds: turnRefs,
             });
-          }
 
-          if (!result.savedProblem && isDraftReadyForSave(result.draft)) {
+            if (!result.savedProblem) {
+              throwIfAborted(ctrl.signal);
+              setLiveStatus(
+                `시험지 ${paperLabel} · 제${taskType}유형 저장 재시도…`,
+              );
+              const savePrompt =
+                '추가 수정 없이 지금 초안으로 save_problem(confirm=true)만 호출하세요.';
+              const saveUser = buildUserMessage(savePrompt, []);
+              history = [...result.messages, saveUser];
+              setMessages(history);
+              result = await runTurn({
+                userText: savePrompt,
+                history: result.messages,
+                draftOverride: result.draft,
+                signal: ctrl.signal,
+                requireSave: true,
+                referenceIds: turnRefs,
+              });
+            }
+
+            if (!result.savedProblem && isDraftReadyForSave(result.draft)) {
+              setLiveStatus(
+                `시험지 ${paperLabel} · 제${taskType}유형 초안 직접 저장…`,
+              );
+              const created = onSaveProblem({
+                title: result.draft.title,
+                note: result.draft.note,
+                showNoteOnExam: false,
+                taskType: result.draft.taskType,
+                kind: 'submit',
+                language: result.draft.language,
+                markdown: result.draft.markdown,
+                answerCode: result.draft.answerCode,
+                gradingCode: result.draft.gradingCode,
+                datasetCode: result.draft.datasetCode || undefined,
+                assetIds: result.draft.assetIds,
+                sourceProblemId: turnRefs[0],
+                submitFormat: result.draft.taskType === 2 ? 'csv' : 'short',
+                submitFile:
+                  result.draft.taskType === 2 ? 'result.csv' : undefined,
+                shortAnswers:
+                  result.draft.taskType === 2
+                    ? undefined
+                    : result.draft.shortAnswers,
+                shortAnswer:
+                  result.draft.taskType === 2
+                    ? ''
+                    : (result.draft.shortAnswers[0] ?? ''),
+              });
+              result = {
+                ...result,
+                savedProblem: created,
+                messages: [
+                  ...result.messages,
+                  {
+                    role: 'assistant',
+                    content: `클라이언트가 초안을 저장했습니다: ${created.title}`,
+                  },
+                ],
+              };
+            }
+
+            history = result.messages;
+            setMessages(history);
+            onDraftChange(result.draft);
+            draftRef.current = result.draft;
+
+            if (result.savedProblem) {
+              typeOrdinal[taskType] += 1;
+              savedProblems.push(result.savedProblem);
+              excludeCreated.add(result.savedProblem.id);
+              onSaved(result.savedProblem, { navigate: false });
+              const nextType =
+                OFFICIAL_AUTOGEN_SEQUENCE[i + 1] ??
+                (taskType < 3 ? ((taskType + 1) as TaskType) : 1);
+              const nextDraft = emptyAuthorDraft(nextType);
+              onDraftChange(nextDraft);
+              draftRef.current = nextDraft;
+              i += 1;
+            } else {
+              setLiveStatus(
+                `시험지 ${paperLabel} · 제${taskType}유형 미저장 — 같은 문항 재시도…`,
+              );
+              await sleepAbortable(800, ctrl.signal);
+            }
+          } catch (itemErr) {
+            if (isAbortError(itemErr)) throw itemErr;
+            const msg =
+              itemErr instanceof Error ? itemErr.message : String(itemErr);
             setLiveStatus(
-              `시험지 ${paperLabel} · 제${taskType}유형 초안 직접 저장…`,
+              `시험지 ${paperLabel} · 제${taskType}유형 실패 재시도… · ${msg.slice(0, 80)}`,
             );
-            const created = onSaveProblem({
-              title: result.draft.title,
-              note: result.draft.note,
-              showNoteOnExam: false,
-              taskType: result.draft.taskType,
-              kind: 'submit',
-              language: result.draft.language,
-              markdown: result.draft.markdown,
-              answerCode: result.draft.answerCode,
-              gradingCode: result.draft.gradingCode,
-              datasetCode: result.draft.datasetCode || undefined,
-              assetIds: result.draft.assetIds,
-              sourceProblemId: turnRefs[0],
-              submitFormat: result.draft.taskType === 2 ? 'csv' : 'short',
-              submitFile:
-                result.draft.taskType === 2 ? 'result.csv' : undefined,
-              shortAnswers:
-                result.draft.taskType === 2
-                  ? undefined
-                  : result.draft.shortAnswers,
-              shortAnswer:
-                result.draft.taskType === 2
-                  ? ''
-                  : (result.draft.shortAnswers[0] ?? ''),
-            });
-            result = {
-              ...result,
-              savedProblem: created,
-              messages: [
-                ...result.messages,
-                {
-                  role: 'assistant',
-                  content: `클라이언트가 초안을 저장했습니다: ${created.title}`,
-                },
-              ],
-            };
-          }
-
-          history = result.messages;
-          setMessages(history);
-          onDraftChange(result.draft);
-          draftRef.current = result.draft;
-
-          if (result.savedProblem) {
-            savedProblems.push(result.savedProblem);
-            excludeCreated.add(result.savedProblem.id);
-            onSaved(result.savedProblem, { navigate: false });
-            const nextType =
-              OFFICIAL_AUTOGEN_SEQUENCE[i + 1] ??
-              (taskType < 3 ? ((taskType + 1) as TaskType) : 1);
-            const nextDraft = emptyAuthorDraft(nextType);
-            onDraftChange(nextDraft);
-            draftRef.current = nextDraft;
-          } else {
-            setError(
-              `시험지 ${paperLabel} · 제${taskType}유형 저장에 실패했습니다. 초안(본문·정답)이 충분히 채워지지 않았을 수 있습니다.`,
-            );
-            break;
+            setError('');
+            await sleepAbortable(800, ctrl.signal);
           }
         }
 
-        let summary =
-          savedProblems.length > 0
-            ? `시험지 ${paperLabel} 생성 완료 (${savedProblems.length}/${OFFICIAL_TOTAL_ITEMS}):\n${savedProblems
-                .map((p, i) => `${i + 1}. [제${p.taskType}유형] ${p.title}`)
-                .join('\n')}`
-            : `시험지 ${paperLabel}: 저장된 문항이 없습니다.`;
+        let summary = `시험지 ${paperLabel} 생성 완료 (${savedProblems.length}/${OFFICIAL_TOTAL_ITEMS}):\n${savedProblems
+          .map((p, idx) => `${idx + 1}. [제${p.taskType}유형] ${p.title}`)
+          .join('\n')}`;
 
         const counts = countBankByType(savedProblems);
-        // Pass only this paper's newly saved items (never the full bank).
         if (savedProblems.length > 0 && onAssembleExam) {
-          setLiveStatus(`시험지 ${paperLabel} 조립 중…`);
-          try {
-            const isLast = paper === examCount - 1;
-            onAssembleExam([...savedProblems], { navigate: isLast });
-            assembledPapers += 1;
-            if (isOfficialStructure(counts)) {
-              summary +=
-                '\n\n시험 조립 완료: 공식 구성(1유형 3 · 2유형 1 · 3유형 2).';
-            } else {
-              summary += `\n\n시험 조립 완료 (부분): 1유형 ${counts[1]} · 2유형 ${counts[2]} · 3유형 ${counts[3]} / 목표 3+1+2.`;
-            }
-          } catch (assembleErr) {
-            setError(
-              assembleErr instanceof Error
-                ? assembleErr.message
-                : String(assembleErr),
+          let assembleAttempt = 0;
+          while (true) {
+            throwIfAborted(ctrl.signal);
+            setLiveStatus(
+              assembleAttempt === 0
+                ? `시험지 ${paperLabel} 조립 중…`
+                : `시험지 ${paperLabel} 조립 재시도… (${assembleAttempt})`,
             );
-            summary += '\n\n시험 조립에 실패했습니다.';
+            try {
+              const isLast = paper === examCount - 1;
+              onAssembleExam([...savedProblems], { navigate: isLast });
+              assembledPapers += 1;
+              if (isOfficialStructure(counts)) {
+                summary +=
+                  '\n\n시험 조립 완료: 공식 구성(1유형 3 · 2유형 1 · 3유형 2).';
+              } else {
+                summary += `\n\n시험 조립 완료 (부분): 1유형 ${counts[1]} · 2유형 ${counts[2]} · 3유형 ${counts[3]} / 목표 3+1+2.`;
+              }
+              break;
+            } catch (assembleErr) {
+              if (isAbortError(assembleErr)) throw assembleErr;
+              assembleAttempt += 1;
+              const msg =
+                assembleErr instanceof Error
+                  ? assembleErr.message
+                  : String(assembleErr);
+              setLiveStatus(
+                `시험지 ${paperLabel} 조립 실패 재시도… (${assembleAttempt}) · ${msg.slice(0, 80)}`,
+              );
+              await sleepAbortable(
+                Math.min(20_000, 800 * Math.min(assembleAttempt, 12)),
+                ctrl.signal,
+              );
+            }
           }
         }
 
@@ -779,8 +814,6 @@ export function AuthorChatDock({
           { role: 'assistant', content: summary },
         ];
         setMessages(history);
-
-        if (savedProblems.length === 0) break;
       }
 
       clearLive();

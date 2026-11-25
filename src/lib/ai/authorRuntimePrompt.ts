@@ -60,22 +60,22 @@ export const HARD_CUSTOM_METRIC_IDEAS = [
 /** Research statistical knowledge via web tools before inventing formulas. */
 export function authorStatsResearchPromptEn(): string {
   return [
-    '## Research stats knowledge (web / APIs — use freely)',
-    '- Tools: `lookup_statistic` (preferred for metrics), `web_search`, then `fetch_url` on the best page.',
-    '- Sources to prefer: Wikipedia (ko/en), textbooks/docs, CrossValidated, package docs. Verify the formula before putting it in the problem.',
-    '- When designing a hard custom metric: look it up first — do not invent LaTeX or definitions from memory alone.',
-    '- After fetch, rewrite the formula in KaTeX (`$...$` / `$$...$$`) in Korean exam tone; cite the idea in `note` briefly (no need for a bibliography).',
+    '## Research stats knowledge (web / APIs — optional)',
+    '- Tools: `lookup_statistic` (preferred), `web_search`, then `fetch_url` on the best page.',
+    '- If search/fetch fails or returns empty: **skip research** and continue using your trained statistical knowledge. Do not stall the turn.',
+    '- Sources when available: Wikipedia (ko/en), textbooks/docs, CrossValidated. Prefer verified formulas when the web works.',
+    '- After a successful fetch, rewrite in KaTeX (`$...$` / `$$...$$`); optionally note the metric in `note`.',
     '- Still reject package one-liners (mean/std/ttest/AUC/F1…): those need no pasted formula.',
   ].join('\n');
 }
 
 export function authorStatsResearchPromptKo(): string {
   return [
-    '## 통계 지식 조사 (웹검색·API · 적극 사용)',
-    '- 도구: `lookup_statistic`(지표 조회 우선) → `web_search` → 필요 시 `fetch_url`로 본문 확인.',
-    '- 위키백과(한/영), 교재·공식 문서, CrossValidated 등에서 수식·정의를 확인한 뒤 출제하세요. 기억만으로 수식을 만들지 마세요.',
-    '- 조사한 지표를 KaTeX(`$...$` / `$$...$$`)로 본문에 넣고, `note`에 어떤 지표를 참고했는지 한 줄로 남겨도 됩니다.',
-    '- 패키지 한 줄로 되는 값(평균·표준편차·t검정·AUC 등)은 조사해도 본문에 수식을 넣지 마세요.',
+    '## 통계 지식 조사 (웹검색·API · 선택)',
+    '- 도구: `lookup_statistic` → `web_search` → 필요 시 `fetch_url`.',
+    '- 검색/조회가 실패하거나 비면 **스킵**하고, 모델이 알고 있는 통계 지식으로 바로 출제하세요. 조사 때문에 작업을 멈추지 마세요.',
+    '- 조사가 성공하면 KaTeX(`$...$` / `$$...$$`)로 본문에 넣고, `note`에 지표명을 한 줄 남겨도 됩니다.',
+    '- 패키지 한 줄로 되는 값(평균·표준편차·t검정·AUC 등)은 본문에 수식을 넣지 마세요.',
   ].join('\n');
 }
 

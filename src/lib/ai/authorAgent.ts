@@ -112,7 +112,7 @@ function systemPrompt(requireSave: boolean): string {
     'Type 1/3: CSV ready (mutate or synthesize) → update_draft → set_answer_code → run_answer_code → set_short_answers.',
     'Type 2: CSV ready → update_draft with markdown 구간표 + grading_python/r (SCORE_BANDS) → verify.',
     'Never invent final numeric answers yourself — compute via tools, then set answers from stdout.',
-    'For stats formulas/metrics: lookup_statistic and/or web_search → fetch_url. Do not invent formulas or API signatures.',
+    'For stats formulas/metrics: prefer lookup_statistic / web_search → fetch_url. If those return ok=false or skip=true, continue with your own knowledge — do not stall.',
   ];
   if (requireSave) {
     lines.push(
@@ -613,7 +613,7 @@ export async function runAuthorAgentTurn(opts: {
         'Analyze references with list_references / get_reference, then invent a NEW exam-realistic item.',
         'DATA_POLICY=csv_only — choose MUTATE (list_project_csvs / transform) or SYNTHESIZE (dataset_code) at design time.',
         'RUNTIME=python(pandas,numpy,scipy.stats,statsmodels,sklearn,xgboost,lightgbm) | r(tidyverse,broom,lubridate).',
-        'DIFFICULTY=hard custom metrics via lookup_statistic/web_search/fetch_url + KaTeX; do NOT default to 합동분산; no formulas for package one-liners.',
+        'DIFFICULTY=hard custom metrics via lookup_statistic/web_search/fetch_url + KaTeX when available; if search fails/skips, use trained knowledge; do NOT default to 합동분산; no formulas for package one-liners.',
         'TYPE1_3_ANSWERS=numeric only after 반올림 or 절사; never letters/labels.',
         requireSave
           ? 'REQUIRE_SAVE=true — end this turn with save_problem(confirm=true).'
@@ -657,10 +657,12 @@ export async function runAuthorAgentTurn(opts: {
       tools: TOOLS,
       toolChoice: 'auto',
       signal,
-      onEmptyStreamRetry: (attempt) => {
+      onRetry: (attempt, error) => {
+        const msg =
+          error instanceof Error ? error.message : String(error ?? '');
         report({
           kind: 'status',
-          text: `빈 스트림 응답 — 재시도 중… (${attempt})`,
+          text: `실패 재시도 중… (${attempt})${msg ? ` · ${msg.slice(0, 80)}` : ''}`,
         });
       },
       onDelta: (delta) => {
@@ -1147,6 +1149,14 @@ export async function runAuthorAgentTurn(opts: {
           function: { name: 'save_problem' },
         },
         signal,
+        onRetry: (attempt, error) => {
+          const msg =
+            error instanceof Error ? error.message : String(error ?? '');
+          report({
+            kind: 'status',
+            text: `강제 저장 재시도… (${attempt})${msg ? ` · ${msg.slice(0, 80)}` : ''}`,
+          });
+        },
       });
       messages.push({
         role: 'assistant',

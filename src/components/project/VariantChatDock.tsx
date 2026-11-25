@@ -4,6 +4,8 @@ import { loadAiSettings } from '@/lib/aiSettings';
 import { runVariantAgentTurn } from '@/lib/ai/variantAgent';
 import {
   chatContentToText,
+  isAbortError,
+  sleepAbortable,
   type ChatMessage,
 } from '@/lib/ai/openaiCompatible';
 import {
@@ -135,29 +137,46 @@ export function VariantChatDock({
     setBusy(true);
     setError('');
 
+    let attempt = 0;
     try {
-      const settings = await loadAiSettings();
-      const result = await runVariantAgentTurn({
-        ctx: {
-          settings,
-          project,
-          source,
-          draft: draftRef.current,
-          addProjectAssets,
-        },
-        history: historyBefore,
-        userText: trimmed,
-        onDraft: setDraft,
-        onSave: onSaveVariant,
-      });
-      setMessages(result.messages);
-      setDraft(result.draft);
-      if (result.savedProblem) {
-        onSaved(result.savedProblem);
-        await clearVariantSession(source.id);
+      while (true) {
+        try {
+          const settings = await loadAiSettings();
+          const result = await runVariantAgentTurn({
+            ctx: {
+              settings,
+              project,
+              source,
+              draft: draftRef.current,
+              addProjectAssets,
+            },
+            history: historyBefore,
+            userText: trimmed,
+            onDraft: setDraft,
+            onSave: onSaveVariant,
+          });
+          setMessages(result.messages);
+          setDraft(result.draft);
+          setError('');
+          if (result.savedProblem) {
+            onSaved(result.savedProblem);
+            await clearVariantSession(source.id);
+          }
+          break;
+        } catch (err) {
+          if (isAbortError(err)) throw err;
+          attempt += 1;
+          const msg = err instanceof Error ? err.message : String(err);
+          setError(
+            `실패 재시도 중… (${attempt})${msg ? ` · ${msg.slice(0, 80)}` : ''}`,
+          );
+          await sleepAbortable(Math.min(20_000, 800 * Math.min(attempt, 12)));
+        }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (!isAbortError(err)) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setBusy(false);
     }

@@ -91,7 +91,7 @@ function systemPrompt(source: BankProblem): string {
     type === 2 ? authorType2BandPromptEn() : '',
     '',
     'Always explain briefly in natural language what you changed.',
-    'For stats formulas/metrics: lookup_statistic → fetch_url (or web_search). Do not invent formulas.',
+    'For stats formulas/metrics: prefer lookup_statistic → fetch_url (or web_search). If ok=false/skip=true, continue with your own knowledge — do not stall.',
     'Call save_variant only when the user asks to save or the draft is complete.',
   ].join('\n');
 }
@@ -490,6 +490,14 @@ export async function runVariantAgentTurn(opts: {
       messages,
       tools,
       toolChoice: 'auto',
+      onRetry: (attempt, error) => {
+        const msg =
+          error instanceof Error ? error.message : String(error ?? '');
+        // Progress is optional on variant; keep console breadcrumb for retries.
+        console.info(
+          `[variantAgent] retry ${attempt}${msg ? `: ${msg.slice(0, 120)}` : ''}`,
+        );
+      },
     });
     const msg = completion.message;
     messages.push({
