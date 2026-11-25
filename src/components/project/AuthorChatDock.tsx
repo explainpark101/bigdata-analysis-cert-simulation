@@ -55,6 +55,7 @@ import {
   OFFICIAL_TOTAL_ITEMS,
   countBankByType,
   isOfficialStructure,
+  takeAllOrRandom,
 } from '@/lib/examOfficialSpec';
 import { ConfirmModal } from '@/components/exam/ConfirmModal';
 import { EdgeResizeHandle } from '@/components/layout/EdgeResizeHandle';
@@ -163,8 +164,9 @@ const AUTO_REF_MAX = 16;
 
 /**
  * Pick bank problems to feed the author agent for a given task type.
- * - Prefer user selection when present (plus same-type peers).
- * - Else use all same-type items; if none, the whole bank.
+ * - Prefer user selection when present (always kept).
+ * - Fill with same-type (then other-type) peers.
+ * - If the candidate set fits in `max`, take all; otherwise random sample.
  * - Exclude ids from the current auto-gen batch (avoid copying ourselves).
  */
 function pickReferencesForSituation(
@@ -186,19 +188,29 @@ function pickReferencesForSituation(
   if (selected.length) {
     for (const b of selected) merged.set(b.id, b);
     for (const b of sameType) merged.set(b.id, b);
+    for (const b of otherType) merged.set(b.id, b);
   } else if (sameType.length) {
     for (const b of sameType) merged.set(b.id, b);
-    // Sprinkle a few other-type items for cross-skill texture.
-    for (const b of otherType.slice(0, 4)) merged.set(b.id, b);
+    for (const b of otherType) merged.set(b.id, b);
   } else {
     for (const b of pool) merged.set(b.id, b);
   }
 
-  const ordered = [
-    ...[...merged.values()].filter((b) => b.taskType === taskType),
-    ...[...merged.values()].filter((b) => b.taskType !== taskType),
-  ];
-  return ordered.slice(0, max).map((b) => b.id);
+  const same = [...merged.values()].filter((b) => b.taskType === taskType);
+  const other = [...merged.values()].filter((b) => b.taskType !== taskType);
+  const candidates = [...same, ...other];
+
+  if (candidates.length <= max) {
+    return candidates.map((b) => b.id);
+  }
+
+  // Always keep user-selected refs when possible, then random-fill.
+  const selectedSet = new Set(selected.map((b) => b.id));
+  const kept = candidates.filter((b) => selectedSet.has(b.id)).slice(0, max);
+  const rest = candidates.filter((b) => !selectedSet.has(b.id));
+  const need = max - kept.length;
+  const filled = need > 0 ? takeAllOrRandom(rest, need) : [];
+  return [...kept.map((b) => b.id), ...filled.map((b) => b.id)];
 }
 
 function autoPromptForType(

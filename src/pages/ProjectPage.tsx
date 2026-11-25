@@ -1083,7 +1083,7 @@ export default function ProjectPage() {
                   onClick={() =>
                     setExamProblemIds(pickOfficialProblemIds(project.bank))
                   }
-                  title="유형별로 은행 앞에서부터 3·1·2개를 골라 공식 구성으로 맞춤"
+                  title="유형별로 필요 수 이하면 전체, 초과면 랜덤으로 3·1·2개를 골라 공식 구성으로 맞춤"
                 >
                   <ListChecks size={16} />
                   공식 구성으로 맞추기

@@ -93,21 +93,45 @@ export function officialStructureSummary(counts: TypeCounts): string {
   return parts.join('  ');
 }
 
+/** Fisher–Yates shuffle (copy). */
+export function shuffleCopy<T>(items: T[]): T[] {
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = out[i];
+    out[i] = out[j];
+    out[j] = tmp;
+  }
+  return out;
+}
+
 /**
- * Pick up to the official count per type, preserving bank order within type,
- * then emit 1→2→3 for a standard paper.
+ * Take all items when they fit in `limit`; otherwise a random sample of `limit`.
+ */
+export function takeAllOrRandom<T>(items: T[], limit: number): T[] {
+  if (limit <= 0) return [];
+  if (items.length <= limit) return [...items];
+  return shuffleCopy(items).slice(0, limit);
+}
+
+/**
+ * Pick up to the official count per type for a standard paper (1→2→3).
+ * If a type has at most the needed count, take all; otherwise sample randomly.
  */
 export function pickOfficialProblemIds(
   bank: Array<Pick<BankProblem, 'id' | 'taskType'>>,
 ): string[] {
-  const buckets: Record<TaskType, string[]> = { 1: [], 2: [], 3: [] };
+  const byType: Record<TaskType, string[]> = { 1: [], 2: [], 3: [] };
   for (const b of bank) {
     const t = b.taskType;
     if (t !== 1 && t !== 2 && t !== 3) continue;
-    if (buckets[t].length >= OFFICIAL_COUNTS[t]) continue;
-    buckets[t].push(b.id);
+    byType[t].push(b.id);
   }
-  return [...buckets[1], ...buckets[2], ...buckets[3]];
+  return [
+    ...takeAllOrRandom(byType[1], OFFICIAL_COUNTS[1]),
+    ...takeAllOrRandom(byType[2], OFFICIAL_COUNTS[2]),
+    ...takeAllOrRandom(byType[3], OFFICIAL_COUNTS[3]),
+  ];
 }
 
 /** Max points for one type-2 submit quiz. */
