@@ -13,6 +13,8 @@ import {
   authorStatsResearchPromptEn,
   authorType13AnswerFormatPromptEn,
   authorType2BandPromptEn,
+  shortAnswersAreFinite,
+  stdoutHasNonFiniteAnswer,
   validateNumericShortAnswers,
 } from '@/lib/ai/authorRuntimePrompt';
 import {
@@ -112,6 +114,7 @@ function systemPrompt(requireSave: boolean): string {
     '## Workflow',
     'Type 1/3: CSV ready (mutate or synthesize) → update_draft → set_answer_code → run_answer_code → set_short_answers.',
     'Type 1/3 소문항: one item may have multiple sub-questions (type1 max 5, type3 max 3). Mark with line-leading ①②/(1)(2); set_short_answers length = 소문항 count; print one number per line.',
+    'Type 1/3 NaN: if run_answer_code prints NaN/Inf, do not save — change data/metric and regenerate until every answer is a finite number.',
     'Type 2: CSV ready → update_draft with markdown 구간표 + grading_python/r (SCORE_BANDS) → verify.',
     'Never invent final numeric answers yourself — compute via tools, then set answers from stdout.',
     'For stats formulas/metrics: prefer lookup_statistic / web_search → fetch_url. If those return ok=false or skip=true, continue with your own knowledge — do not stall.',
@@ -179,11 +182,10 @@ export function isDraftReadyForSave(draft: AuthorDraft): boolean {
       md.length > 200
     );
   }
-  const hasAnswer = draft.shortAnswers.some((s) => s.trim().length > 0);
-  const hasCode =
-    draft.answerCode.python.trim().length > 0 ||
-    draft.answerCode.r.trim().length > 0;
-  return hasAnswer || hasCode || md.length > 200;
+  // Type 1/3: only ready when short answers are finite numbers (never NaN/Inf).
+  return shortAnswersAreFinite(draft.shortAnswers, {
+    taskType: draft.taskType,
+  });
 }
 
 const TOOLS: ChatToolDef[] = [
@@ -542,17 +544,52 @@ async function runAnswer(
   if (!source.trim()) {
     return { ok: false, stdout: '', stderr: 'answer code is empty' };
   }
+  const finish = (out: {
+    ok: boolean;
+    stdout: string;
+    stderr: string;
+  }): {
+    ok: boolean;
+    stdout: string;
+    stderr: string;
+    nonFinite?: boolean;
+    regenerate?: boolean;
+  } => {
+    if (stdoutHasNonFiniteAnswer(out.stdout)) {
+      return {
+        ok: false,
+        stdout: out.stdout,
+        stderr: [
+          out.stderr,
+          'NON_FINITE_ANSWER: stdout contains NaN/Inf. Redesign dataset/filters/metric and regenerate; do not call set_short_answers or save_problem with these values.',
+        ]
+          .filter(Boolean)
+          .join('\n'),
+        nonFinite: true,
+        regenerate: true,
+      };
+    }
+    return { ok: out.ok, stdout: out.stdout, stderr: out.stderr };
+  };
   if (language === 'python') {
     await preloadPyodide();
     await mountAssetsToPyodide(files);
-    const out = await runPython(source);
-    return { ok: out.ok, stdout: out.stdout, stderr: out.stderr };
+    return finish(await runPython(source));
   }
   await preloadWebR();
   const { mountAssetsToWebR } = await import('@/runtimes/fsMount');
   await mountAssetsToWebR(files);
-  const out = await runR(source);
-  return { ok: out.ok, stdout: out.stdout, stderr: out.stderr };
+  return finish(await runR(source));
+}
+
+function assertType13AnswersFinite(draft: AuthorDraft): string | null {
+  if (draft.taskType === 2) return null;
+  if (
+    shortAnswersAreFinite(draft.shortAnswers, { taskType: draft.taskType })
+  ) {
+    return null;
+  }
+  return 'Answers are missing or NaN/Inf — regenerate the item until run_answer_code yields finite numbers, then set_short_answers.';
 }
 
 function refsOf(ctx: AuthorAgentContext): BankProblem[] {
@@ -1111,14 +1148,23 @@ export async function runAuthorAgentTurn(opts: {
           } else if (!onSave) {
             toolResult = JSON.stringify({ ok: false, error: 'save unavailable' });
           } else {
-            savedProblem = onSave(
-              draftToBankPartial(draft, ctx.referenceIds),
-            );
-            toolResult = JSON.stringify({
-              ok: true,
-              id: savedProblem.id,
-              title: savedProblem.title,
-            });
+            const bad = assertType13AnswersFinite(draft);
+            if (bad) {
+              toolResult = JSON.stringify({
+                ok: false,
+                error: bad,
+                regenerate: true,
+              });
+            } else {
+              savedProblem = onSave(
+                draftToBankPartial(draft, ctx.referenceIds),
+              );
+              toolResult = JSON.stringify({
+                ok: true,
+                id: savedProblem.id,
+                title: savedProblem.title,
+              });
+            }
           }
         } else if (isWebToolName(name)) {
           toolResult = await runWebTool(name, args);
@@ -1185,16 +1231,26 @@ export async function runAuthorAgentTurn(opts: {
         if (args.confirm === false) {
           toolResult = JSON.stringify({ ok: false, error: 'confirm=false' });
         } else {
-          report({ kind: 'tool', name: 'save_problem', phase: 'start' });
-          savedProblem = onSave(
-            draftToBankPartial(draft, ctx.referenceIds),
-          );
-          toolResult = JSON.stringify({
-            ok: true,
-            id: savedProblem.id,
-            title: savedProblem.title,
-          });
-          report({ kind: 'tool', name: 'save_problem', phase: 'done' });
+          const bad = assertType13AnswersFinite(draft);
+          if (bad) {
+            toolResult = JSON.stringify({
+              ok: false,
+              error: bad,
+              regenerate: true,
+            });
+            report({ kind: 'tool', name: 'save_problem', phase: 'done' });
+          } else {
+            report({ kind: 'tool', name: 'save_problem', phase: 'start' });
+            savedProblem = onSave(
+              draftToBankPartial(draft, ctx.referenceIds),
+            );
+            toolResult = JSON.stringify({
+              ok: true,
+              id: savedProblem.id,
+              title: savedProblem.title,
+            });
+            report({ kind: 'tool', name: 'save_problem', phase: 'done' });
+          }
         }
         messages.push({
           role: 'tool',
@@ -1217,12 +1273,29 @@ export async function runAuthorAgentTurn(opts: {
       }
     }
 
-    if (!savedProblem && isDraftReadyForSave(draft)) {
+    if (
+      !savedProblem &&
+      isDraftReadyForSave(draft) &&
+      !assertType13AnswersFinite(draft)
+    ) {
       report({ kind: 'status', text: '초안을 직접 저장합니다…' });
       savedProblem = onSave(draftToBankPartial(draft, ctx.referenceIds));
       messages.push({
         role: 'assistant',
         content: `save_problem이 누락되어 초안을 직접 저장했습니다: ${savedProblem.title}`,
+      });
+    } else if (
+      !savedProblem &&
+      assertType13AnswersFinite(draft)
+    ) {
+      report({
+        kind: 'status',
+        text: '정답 NaN/Inf — 저장 보류, 재생성 필요',
+      });
+      messages.push({
+        role: 'assistant',
+        content:
+          '정답이 NaN/Inf라 저장하지 않았습니다. 데이터·지표를 바꿔 유한 숫자가 나오게 문항을 다시 만드세요.',
       });
     }
   }

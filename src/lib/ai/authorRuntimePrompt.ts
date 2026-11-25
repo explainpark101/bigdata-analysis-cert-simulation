@@ -201,6 +201,7 @@ export function authorType13AnswerFormatPromptEn(opts?: {
     `- One bank item may include multiple 소문항. ${typeLabel} max **${maxSub}** sub-questions (item points split evenly). Prefer 2+ when it fits the skill; single-answer items are still OK.`,
     '- Mark 소문항 clearly in markdown with line-leading ①②… or (1)(2)… Each 소문항 MUST have its **own** short-answer slot. `set_short_answers` length = 소문항 count (one number per entry). Never pack several answers into one string.',
     '- answer_code must print one numeric line per 소문항 (same order); then set_short_answers from those lines (e.g. ["0.12", "11"]).',
+    '- If run_answer_code prints NaN / Inf / -Inf: do NOT save. Change the dataset, filters, or metric and regenerate until every answer is a finite number.',
     '- Do not author items whose key is a category/string (e.g. "C", "Yes", column name). Redesign so the reported value is numeric after round/trunc.',
   ].join('\n');
 }
@@ -217,17 +218,73 @@ export function authorType13AnswerFormatPromptKo(opts?: {
     `- 한 문항 안에 소문항을 둘 수 있습니다. ${typeLabel} 소문항 **최대 ${maxSub}개** (문항 배점은 소문항으로 균등 분할). 스킬에 맞으면 2개 이상을 권장하고, 단일도 가능합니다.`,
     '- 본문에 줄 앞 ①②… 또는 (1)(2)… 로 소문항을 표시하세요. **소문항마다 별도 정답란**. `set_short_answers` 길이 = 소문항 수. 한 문자열에 여러 답 금지.',
     '- 정답 코드는 소문항 순서대로 한 줄에 숫자 하나씩 출력한 뒤 set_short_answers 하세요 (예: ["0.12", "11"]).',
+    '- run_answer_code 결과가 NaN / Inf / -Inf 이면 저장하지 마세요. 데이터·필터·지표를 바꿔 유한 숫자가 나올 때까지 문항을 다시 만드세요.',
     '- 카테고리/문자열 정답 문항은 만들지 마세요. 반드시 수치를 round·절사해 답하게 설계하세요.',
   ].join('\n');
 }
 
-/** True if the string is a single numeric short-answer token. */
+/** NaN / Inf tokens that must never become exam keys. */
+export function isNonFiniteAnswerToken(raw: string): boolean {
+  const s = String(raw ?? '').trim().toLowerCase();
+  if (!s) return false;
+  return (
+    s === 'nan' ||
+    s === 'inf' ||
+    s === '+inf' ||
+    s === '-inf' ||
+    s === 'infinity' ||
+    s === '+infinity' ||
+    s === '-infinity'
+  );
+}
+
+/** True if stdout from answer_code contains a non-finite answer line. */
+export function stdoutHasNonFiniteAnswer(stdout: string): boolean {
+  const lines = String(stdout ?? '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (!lines.length) return false;
+  // Prefer last lines (final prints); also flag any bare nan/inf line.
+  const check = (line: string) => {
+    if (isNonFiniteAnswerToken(line)) return true;
+    // e.g. "nan", "NaN", "float('nan')" leftovers as sole token
+    if (/^[\[\(\s]*nan[\]\)\s]*$/i.test(line)) return true;
+    if (/^[\[\(\s]*[+-]?inf(?:inity)?[\]\)\s]*$/i.test(line)) return true;
+    return false;
+  };
+  if (lines.some(check)) return true;
+  // Also scan trailing tokens on the last few lines
+  for (const line of lines.slice(-5)) {
+    const toks = line.split(/[\s,;]+/).filter(Boolean);
+    if (toks.some((t) => isNonFiniteAnswerToken(t))) return true;
+  }
+  return false;
+}
+
+/** True if the string is a single finite numeric short-answer token. */
 export function isNumericShortAnswer(raw: string): boolean {
   const s = String(raw ?? '').trim();
   if (!s) return false;
+  if (isNonFiniteAnswerToken(s)) return false;
   // Reject comma-separated multi-answers and non-numeric tokens.
   if (/[,\s]/.test(s)) return false;
-  return /^-?(?:\d+(?:\.\d+)?|\.\d+)$/.test(s);
+  if (!/^-?(?:\d+(?:\.\d+)?|\.\d+)$/.test(s)) return false;
+  const n = Number(s);
+  return Number.isFinite(n);
+}
+
+/** Type 1/3 draft answers ready to save (finite numbers only). */
+export function shortAnswersAreFinite(
+  answers: string[] | undefined,
+  opts?: { taskType?: 1 | 2 | 3 },
+): boolean {
+  if (opts?.taskType === 2) return true;
+  const check = validateNumericShortAnswers(answers ?? [''], opts);
+  return (
+    check.ok &&
+    check.answers.every((a) => a.trim() && isNumericShortAnswer(a))
+  );
 }
 
 export function validateNumericShortAnswers(
@@ -261,9 +318,19 @@ export function validateNumericShortAnswers(
   }
   const trimmed = expanded.length ? expanded : [''];
   const rejected = trimmed.filter((a) => a && !isNumericShortAnswer(a));
+  const nonFinite = trimmed.filter((a) => a && isNonFiniteAnswerToken(a));
   const empty = trimmed.every((a) => !a);
   const max =
     opts?.taskType === 1 ? 5 : opts?.taskType === 3 ? 3 : undefined;
+  if (nonFinite.length) {
+    return {
+      ok: false,
+      answers: trimmed,
+      rejected: [...new Set([...rejected, ...nonFinite])],
+      error:
+        'Answer is NaN/Inf — redesign the item (dataset/filters/metric) and regenerate until answers are finite numbers.',
+    };
+  }
   if (max != null && trimmed.length > max) {
     return {
       ok: false,

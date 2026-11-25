@@ -12,6 +12,8 @@ import {
   authorStatsResearchPromptEn,
   authorType13AnswerFormatPromptEn,
   authorType2BandPromptEn,
+  shortAnswersAreFinite,
+  stdoutHasNonFiniteAnswer,
   validateNumericShortAnswers,
 } from '@/lib/ai/authorRuntimePrompt';
 import {
@@ -71,6 +73,7 @@ function systemPrompt(source: BankProblem): string {
           '- Put computation code in set_answer_code; run_answer_code; then set_short_answers from printed values only.',
           '- Short answers MUST be numbers only after 반올림/절사 (e.g. "11.0", "0.12"). Never letters/labels.',
           '- One item may have multiple 소문항 (type1 max 5, type3 max 3). Mark ①②/(1)(2); set_short_answers length = count; print one line each.',
+          '- If run_answer_code prints NaN/Inf: do not save — redesign and regenerate until answers are finite.',
         ].join('\n')
       : [
           'Type 2 rules:',
@@ -425,17 +428,32 @@ async function runAnswer(
   if (!source.trim()) {
     return { ok: false, stdout: '', stderr: 'answer code is empty' };
   }
+  const finish = (out: { ok: boolean; stdout: string; stderr: string }) => {
+    if (stdoutHasNonFiniteAnswer(out.stdout)) {
+      return {
+        ok: false,
+        stdout: out.stdout,
+        stderr: [
+          out.stderr,
+          'NON_FINITE_ANSWER: stdout contains NaN/Inf. Redesign and regenerate; do not save.',
+        ]
+          .filter(Boolean)
+          .join('\n'),
+        nonFinite: true,
+        regenerate: true,
+      };
+    }
+    return { ok: out.ok, stdout: out.stdout, stderr: out.stderr };
+  };
   if (language === 'python') {
     await preloadPyodide();
     await mountAssetsToPyodide(files);
-    const out = await runPython(source);
-    return { ok: out.ok, stdout: out.stdout, stderr: out.stderr };
+    return finish(await runPython(source));
   }
   await preloadWebR();
   const { mountAssetsToWebR } = await import('@/runtimes/fsMount');
   await mountAssetsToWebR(files);
-  const out = await runR(source);
-  return { ok: out.ok, stdout: out.stdout, stderr: out.stderr };
+  return finish(await runR(source));
 }
 
 export async function runVariantAgentTurn(opts: {
@@ -864,6 +882,21 @@ export async function runVariantAgentTurn(opts: {
             toolResult = JSON.stringify({ ok: false, error: 'confirm=false' });
           } else if (!onSave) {
             toolResult = JSON.stringify({ ok: false, error: 'save unavailable' });
+          } else if (
+            ctx.source.taskType !== 2 &&
+            !shortAnswersAreFinite(draft.shortAnswers, {
+              taskType:
+                ctx.source.taskType === 1 || ctx.source.taskType === 3
+                  ? ctx.source.taskType
+                  : undefined,
+            })
+          ) {
+            toolResult = JSON.stringify({
+              ok: false,
+              error:
+                'Answers are missing or NaN/Inf — regenerate until finite numbers, then save.',
+              regenerate: true,
+            });
           } else {
             const partial: Partial<BankProblem> = {
               title: draft.title,

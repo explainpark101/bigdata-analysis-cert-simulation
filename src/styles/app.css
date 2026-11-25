@@ -3488,11 +3488,41 @@ body.is-resizing-y * {
   border-color: var(--dq-input-border);
 }
 
+/* Bank answer / grading editors: fixed pane + scroll inside CodeMirror. */
 .edit-code-wrap {
   height: 280px;
   margin-bottom: 16px;
   border-radius: 8px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  position: relative;
+}
+
+/* @uiw/react-codemirror root + .cm-editor must fill the pane (not grow with doc). */
+.edit-code-wrap > div {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.edit-code-wrap .cm-editor {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100% !important;
+  max-height: 100%;
+  width: 100%;
+}
+
+.edit-code-wrap .cm-scroller {
+  min-height: 0 !important;
+  height: 100%;
+  overflow: auto !important;
 }
 
 .edit-file-list {

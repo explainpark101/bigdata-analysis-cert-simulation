@@ -44,6 +44,7 @@ import {
   authorType13AnswerFormatPromptKo,
   authorType2BandPromptKo,
   pickHardMetricHint,
+  shortAnswersAreFinite,
 } from '@/lib/ai/authorRuntimePrompt';
 import type {
   AuthoringProject,
@@ -727,42 +728,71 @@ export function AuthorChatDock({
             }
 
             if (!result.savedProblem && isDraftReadyForSave(result.draft)) {
+              const canSave =
+                result.draft.taskType === 2 ||
+                shortAnswersAreFinite(result.draft.shortAnswers, {
+                  taskType: result.draft.taskType,
+                });
+              if (canSave) {
+                setLiveStatus(
+                  `시험지 ${paperLabel} · 제${taskType}유형 초안 직접 저장…`,
+                );
+                const shorts =
+                  result.draft.taskType === 2
+                    ? undefined
+                    : ensureShortAnswersForSubQuestions(
+                        result.draft.markdown,
+                        result.draft.shortAnswers,
+                        result.draft.shortAnswers[0],
+                        result.draft.taskType,
+                      );
+                const created = onSaveProblem({
+                  title: result.draft.title,
+                  note: result.draft.note,
+                  showNoteOnExam: false,
+                  taskType: result.draft.taskType,
+                  kind: 'submit',
+                  language: result.draft.language,
+                  markdown: result.draft.markdown,
+                  answerCode: result.draft.answerCode,
+                  gradingCode: result.draft.gradingCode,
+                  datasetCode: result.draft.datasetCode || undefined,
+                  assetIds: result.draft.assetIds,
+                  sourceProblemId: turnRefs[0],
+                  submitFormat: result.draft.taskType === 2 ? 'csv' : 'short',
+                  submitFile:
+                    result.draft.taskType === 2 ? 'result.csv' : undefined,
+                  shortAnswers: shorts,
+                  shortAnswer: shorts?.[0] ?? '',
+                });
+                result = {
+                  ...result,
+                  savedProblem: created,
+                  messages: result.messages,
+                };
+              } else {
+                setLiveStatus(
+                  `시험지 ${paperLabel} · 제${taskType}유형 정답 NaN/Inf — 재생성…`,
+                );
+              }
+            }
+
+            // Reject saves that somehow still carry non-finite keys.
+            if (
+              result.savedProblem &&
+              result.savedProblem.taskType !== 2 &&
+              !shortAnswersAreFinite(
+                result.savedProblem.shortAnswers ??
+                  (result.savedProblem.shortAnswer
+                    ? [result.savedProblem.shortAnswer]
+                    : []),
+                { taskType: result.savedProblem.taskType },
+              )
+            ) {
               setLiveStatus(
-                `시험지 ${paperLabel} · 제${taskType}유형 초안 직접 저장…`,
+                `시험지 ${paperLabel} · 제${taskType}유형 정답 NaN/Inf — 문항 재생성…`,
               );
-              const shorts =
-                result.draft.taskType === 2
-                  ? undefined
-                  : ensureShortAnswersForSubQuestions(
-                      result.draft.markdown,
-                      result.draft.shortAnswers,
-                      result.draft.shortAnswers[0],
-                      result.draft.taskType,
-                    );
-              const created = onSaveProblem({
-                title: result.draft.title,
-                note: result.draft.note,
-                showNoteOnExam: false,
-                taskType: result.draft.taskType,
-                kind: 'submit',
-                language: result.draft.language,
-                markdown: result.draft.markdown,
-                answerCode: result.draft.answerCode,
-                gradingCode: result.draft.gradingCode,
-                datasetCode: result.draft.datasetCode || undefined,
-                assetIds: result.draft.assetIds,
-                sourceProblemId: turnRefs[0],
-                submitFormat: result.draft.taskType === 2 ? 'csv' : 'short',
-                submitFile:
-                  result.draft.taskType === 2 ? 'result.csv' : undefined,
-                shortAnswers: shorts,
-                shortAnswer: shorts?.[0] ?? '',
-              });
-              result = {
-                ...result,
-                savedProblem: created,
-                messages: result.messages,
-              };
+              result = { ...result, savedProblem: null };
             }
 
             onDraftChange(result.draft);

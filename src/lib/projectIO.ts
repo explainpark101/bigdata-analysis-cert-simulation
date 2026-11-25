@@ -462,15 +462,17 @@ function bankExpectedAnswers(bank: BankProblem): string[] {
 
 function buildShortSlots(banks: BankProblem[]): ShortAnswerSlot[] {
   const slots: ShortAnswerSlot[] = [];
-  let globalIdx = 0;
   banks.forEach((bank, bankIdx) => {
     const answers = bankExpectedAnswers(bank);
     const points = shortSlotPoints(bank.taskType, answers.length);
+    const problemNo = bankIdx + 1;
     answers.forEach((expected, subIdx) => {
+      // Label by problem index (not cumulative slot index) so earlier
+      // multi-소문항 items do not shift later answer numbers.
       const label =
         answers.length > 1
-          ? `문제 ${bankIdx + 1}-${circledLabel(subIdx)}`
-          : `답안 ${circledLabel(globalIdx)}`;
+          ? `문제 ${problemNo}-${circledLabel(subIdx)}`
+          : `문제 ${problemNo}`;
       slots.push({
         id: `${bank.id}-slot-${subIdx}`,
         label,
@@ -478,7 +480,6 @@ function buildShortSlots(banks: BankProblem[]): ShortAnswerSlot[] {
         draft: '',
         points,
       });
-      globalIdx += 1;
     });
   });
   return slots;
