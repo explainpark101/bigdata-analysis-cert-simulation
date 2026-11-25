@@ -10,7 +10,9 @@ import type { AuthorDraft } from '@/lib/ai/authorChatStore';
 import {
   authorDifficultyPromptEn,
   authorRuntimeEnvPromptEn,
+  authorType13AnswerFormatPromptEn,
   authorType2BandPromptEn,
+  validateNumericShortAnswers,
 } from '@/lib/ai/authorRuntimePrompt';
 import {
   isWebToolName,
@@ -76,14 +78,16 @@ function systemPrompt(requireSave: boolean): string {
     '## Exam realism (anti-toy)',
     '- Prefer multi-step pipelines: cleaning → transform/feature → aggregate or model/test → report a formatted value.',
     '- Avoid one-liner arithmetic on a tiny hand-typed table with no CSV (e.g. "3+5 평균").',
-    '- Type 1: preprocessing / aggregation / ranking / missing / datetime / string handling on tabular CSV; short numeric or string answers.',
+    '- Type 1: preprocessing / aggregation / ranking / missing / datetime / string handling on tabular CSV; short **numeric** answers only (after round/trunc).',
     '- Type 2: train/test (or similar) CSVs, modeling or scoring workflow, submit a result CSV; include clear submission column/file rules.',
-    '- Type 3: statistical inference on CSV (tests, CI, correlation, etc.) with exam-like reporting precision.',
-    '- Write problem markdown in clear Korean exam tone: given files, what to compute, rounding/format rules, submission notes.',
+    '- Type 3: statistical inference on CSV (tests, CI, correlation, etc.); short **numeric** answers only (after round/trunc).',
+    '- Write problem markdown in clear Korean exam tone: given files, what to compute, round/trunc rules, submission notes.',
     '',
     authorRuntimeEnvPromptEn(),
     '',
     authorDifficultyPromptEn(),
+    '',
+    authorType13AnswerFormatPromptEn(),
     '',
     authorType2BandPromptEn(),
     '',
@@ -241,7 +245,8 @@ const TOOLS: ChatToolDef[] = [
     type: 'function',
     function: {
       name: 'set_short_answers',
-      description: 'Set short-answer keys (type 1/3 only) from executed output.',
+      description:
+        'Set type 1/3 short-answer keys from executed output. Each answer must be a single number string after round/trunc (e.g. "0.12"). No letters or multi-values.',
       parameters: {
         type: 'object',
         properties: {
@@ -606,6 +611,7 @@ export async function runAuthorAgentTurn(opts: {
         'DATA_POLICY=csv_only — choose MUTATE (list_project_csvs / transform) or SYNTHESIZE (dataset_code) at design time.',
         'RUNTIME=python(pandas,numpy,scipy.stats,statsmodels,sklearn,xgboost,lightgbm) | r(tidyverse,broom,lubridate).',
         'DIFFICULTY=hard formula items allowed (e.g. pooled variance) — implement formula in answer_code, never invent numbers.',
+        'TYPE1_3_ANSWERS=numeric only after 반올림 or 절사; never letters/labels.',
         requireSave
           ? 'REQUIRE_SAVE=true — end this turn with save_problem(confirm=true).'
           : '',
@@ -761,9 +767,23 @@ export async function runAuthorAgentTurn(opts: {
             const answers = Array.isArray(args.answers)
               ? args.answers.map((a) => String(a ?? ''))
               : [];
-            draft.shortAnswers = answers.length ? answers : [''];
-            onDraft?.(draft);
-            toolResult = JSON.stringify({ ok: true, answers: draft.shortAnswers });
+            const check = validateNumericShortAnswers(answers);
+            if (!check.ok) {
+              toolResult = JSON.stringify({
+                ok: false,
+                error:
+                  'Type 1/3 answers must be numeric only (after round/trunc). Reject letters, units, commas, or empty.',
+                rejected: check.rejected,
+                answers: check.answers,
+              });
+            } else {
+              draft.shortAnswers = check.answers;
+              onDraft?.(draft);
+              toolResult = JSON.stringify({
+                ok: true,
+                answers: draft.shortAnswers,
+              });
+            }
           }
         } else if (name === 'list_project_csvs') {
           const referenceOnly = Boolean(args.reference_only);

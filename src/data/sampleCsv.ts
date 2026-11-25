@@ -12,7 +12,7 @@ function rowsToCsv(header: string[], rows: Array<Array<string | number>>): strin
  * Type1 shared CSV — three short-answer questions on one file.
  * Q1 median(value) → 11.0
  * Q2 rows with any NA → 2
- * Q3 group with max mean(value) → C
+ * Q3 max group mean(value) → 13.0
  */
 export const SAMPLE_TYPE1_CSV = rowsToCsv(
   ['group', 'value', 'score'],

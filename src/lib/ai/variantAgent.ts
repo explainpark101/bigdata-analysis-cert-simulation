@@ -9,7 +9,9 @@ import type { VariantDraft } from '@/lib/ai/variantChatStore';
 import {
   authorDifficultyPromptEn,
   authorRuntimeEnvPromptEn,
+  authorType13AnswerFormatPromptEn,
   authorType2BandPromptEn,
+  validateNumericShortAnswers,
 } from '@/lib/ai/authorRuntimePrompt';
 import {
   isWebToolName,
@@ -63,9 +65,9 @@ function systemPrompt(source: BankProblem): string {
       ? [
           'Type 1/3 rules:',
           '- Keep the SAME dataset assetIds (do not regenerate CSV unless user insists).',
-          '- Change the question wording / aggregation / filter / target column / rounding as requested.',
+          '- Change the question wording / aggregation / filter / target column / round-or-trunc rule as requested.',
           '- Put computation code in set_answer_code; run_answer_code; then set_short_answers from printed values only.',
-          '- short answers are strings examinees type (e.g. "11.0", "C").',
+          '- Short answers MUST be numbers only after 반올림/절사 (e.g. "11.0", "0.12"). Never letters/labels.',
         ].join('\n')
       : [
           'Type 2 rules:',
@@ -82,6 +84,7 @@ function systemPrompt(source: BankProblem): string {
     '',
     authorDifficultyPromptEn(),
     '',
+    type === 1 || type === 3 ? authorType13AnswerFormatPromptEn() : '',
     type === 2 ? authorType2BandPromptEn() : '',
     '',
     'Always explain briefly in natural language what you changed.',
@@ -162,7 +165,7 @@ function toolsFor(source: BankProblem): ChatToolDef[] {
       function: {
         name: 'set_short_answers',
         description:
-          'Set short-answer keys from executed code output (type 1/3 only).',
+          'Set type 1/3 short-answer keys from executed output. Each must be a single number after round/trunc (e.g. "0.12"). No letters.',
         parameters: {
           type: 'object',
           properties: {
@@ -550,9 +553,23 @@ export async function runVariantAgentTurn(opts: {
             const answers = Array.isArray(args.answers)
               ? args.answers.map((a) => String(a ?? ''))
               : [];
-            draft.shortAnswers = answers.length ? answers : [''];
-            onDraft?.(draft);
-            toolResult = JSON.stringify({ ok: true, answers: draft.shortAnswers });
+            const check = validateNumericShortAnswers(answers);
+            if (!check.ok) {
+              toolResult = JSON.stringify({
+                ok: false,
+                error:
+                  'Type 1/3 answers must be numeric only (after round/trunc).',
+                rejected: check.rejected,
+                answers: check.answers,
+              });
+            } else {
+              draft.shortAnswers = check.answers;
+              onDraft?.(draft);
+              toolResult = JSON.stringify({
+                ok: true,
+                answers: draft.shortAnswers,
+              });
+            }
           }
         } else if (name === 'list_project_csvs') {
           if (ctx.source.taskType !== 2) {

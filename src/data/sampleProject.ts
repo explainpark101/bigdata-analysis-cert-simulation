@@ -140,7 +140,7 @@ print(round(median(df$value), 1))
 
 제공된 \`data/type1_exam.csv\` 에서 **하나라도 결측이 있는 행**의 개수를 구하시오.
 
-**[제출 형식]** 정수로 작성`,
+**[제출 형식]** 정수로 작성 (소수점 이하는 절사)`,
       starterCode: TYPE1_STARTER,
       answerCode: {
         python: `import pandas as pd
@@ -158,7 +158,7 @@ print(sum(!complete.cases(df)))
       id: 't1-q3',
       number: '03',
       taskType: 1,
-      title: '그룹 평균 최대',
+      title: '그룹 평균 최댓값',
       note: '샘플 · type1_exam.csv (3/3)',
       showNoteOnExam: false,
       kind: 'submit',
@@ -167,23 +167,23 @@ print(sum(!complete.cases(df)))
       assetIds: [TYPE1_ID],
       markdown: `## 문제 3. (10점)
 
-제공된 \`data/type1_exam.csv\` 에서 그룹(\`group\`)별 \`value\` 평균이
-**가장 큰 그룹 라벨**을 구하시오.
+제공된 \`data/type1_exam.csv\` 에서 그룹(\`group\`)별 \`value\` 평균 중
+**가장 큰 평균값**을 구하시오.
 
-**[제출 형식]** 그룹 라벨 문자`,
+**[제출 형식]** 반올림하여 소수점 첫째 자리까지 작성`,
       starterCode: TYPE1_STARTER,
       answerCode: {
         python: `import pandas as pd
 df = pd.read_csv("data/type1_exam.csv")
-print(df.groupby("group")["value"].mean().idxmax())
+print(round(float(df.groupby("group")["value"].mean().max()), 1))
 `,
         r: `df <- read.csv("data/type1_exam.csv")
 m <- aggregate(value ~ group, data = df, FUN = mean)
-print(as.character(m$group[which.max(m$value)]))
+print(round(max(m$value), 1))
 `,
       },
-      shortAnswer: 'C',
-      testCases: [{ id: 't1', name: 'g', expectIncludes: ['C'] }],
+      shortAnswer: '13.0',
+      testCases: [{ id: 't1', name: 'gmax', expectIncludes: ['13'] }],
     },
     {
       id: 't2-ml',

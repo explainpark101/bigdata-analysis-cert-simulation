@@ -39,6 +39,7 @@ import {
 import {
   authorDifficultyPromptKo,
   authorRuntimeEnvPromptKo,
+  authorType13AnswerFormatPromptKo,
   authorType2BandPromptKo,
 } from '@/lib/ai/authorRuntimePrompt';
 import type {
@@ -238,12 +239,15 @@ function autoPromptForType(
     '- SYNTHESIZE: set_dataset_code → run_dataset_code → save_generated_assets (고정 시드로 out/*.csv 신규 생성)',
     '- xlsx/parquet/json/txt 테이블 금지. 문제 본문에 CSV 파일명을 명시하세요.',
     '',
+    taskType === 1 || taskType === 3
+      ? authorType13AnswerFormatPromptKo()
+      : '',
     taskType === 2 ? authorType2BandPromptKo() : '',
     '',
     '## 유형별 마무리',
     taskType === 2
       ? '- 2유형(40점): 본문에 채점 구간표 + 제출 형식. grading에 SCORE_BANDS(또는 EARNED_POINTS). 모델링은 sklearn/xgboost/lightgbm(또는 R 허용 스택) 기준.'
-      : `- ${taskType}유형(${pts}점): set_answer_code → run_answer_code → set_short_answers 로 정답을 확정하세요. 수식 구현형이면 정답 코드에 동일 수식을 구현하세요. 제출은 별도 답안 제출 화면(단답)입니다.`,
+      : `- ${taskType}유형(${pts}점): 본문에 반올림/절사·자리수 명시 → set_answer_code → run_answer_code → set_short_answers(숫자만). 제출은 별도 답안 제출 화면(단답)입니다.`,
     '- 마지막에 반드시 save_problem(confirm=true). 저장 없이 끝내면 실패입니다.',
     '- 이번 턴에서는 해당 유형 하나만 작업·저장하세요.',
   ]

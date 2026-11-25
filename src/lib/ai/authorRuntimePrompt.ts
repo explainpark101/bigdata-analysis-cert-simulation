@@ -108,3 +108,50 @@ export function authorType2BandPromptKo(): string {
     '- 평가 행 수 ≠ 예측 행 수이면 0점 처리되도록 채점 코드에서 검사를 두세요.',
   ].join('\n');
 }
+
+/**
+ * 제1·3유형: 답은 숫자만. 반올림 또는 절사로 자리수를 맞춘 뒤 제출 (제13회 가이드 형식 예시).
+ */
+export function authorType13AnswerFormatPromptEn(): string {
+  return [
+    '## Type 1 / 3 answer format (mandatory)',
+    '- Every short answer MUST be a **number only** (optional leading minus, optional decimal point). No letters, labels, units, commas, or multiple values.',
+    '- Problem markdown MUST require **rounding (반올림)** or **truncation (절사)** to a stated number of decimal places (or integer). Example: "반올림하여 소수점 둘째 자리까지".',
+    '- answer_code must apply that same round/trunc before printing; set_short_answers from that printed numeric string only (e.g. "0.12", "11", "-3.5").',
+    '- Do not author items whose key is a category/string (e.g. "C", "Yes", column name). Redesign so the reported value is numeric after round/trunc.',
+  ].join('\n');
+}
+
+export function authorType13AnswerFormatPromptKo(): string {
+  return [
+    '## 제1·3유형 답안 형식 (필수)',
+    '- 모든 단답 정답은 **숫자만** 가능합니다 (부호·소수점만 허용). 문자·라벨·단위·쉼표·복수 값 금지.',
+    '- 문제 본문에 **반올림** 또는 **절사**와 자리수(또는 정수)를 반드시 명시하세요. 예: "반올림하여 소수점 둘째 자리까지 구하시오".',
+    '- 정답 코드도 동일 규칙으로 round/절사 후 출력하고, 그 숫자 문자열만 set_short_answers 하세요 (예: "0.12", "11").',
+    '- 카테고리/문자열 정답 문항은 만들지 마세요. 반드시 수치를 round·절사해 답하게 설계하세요.',
+  ].join('\n');
+}
+
+/** True if the string is a single numeric short-answer token. */
+export function isNumericShortAnswer(raw: string): boolean {
+  const s = String(raw ?? '').trim();
+  if (!s) return false;
+  // Reject comma-separated multi-answers and non-numeric tokens.
+  if (/[,\s]/.test(s)) return false;
+  return /^-?(?:\d+(?:\.\d+)?|\.\d+)$/.test(s);
+}
+
+export function validateNumericShortAnswers(answers: string[]): {
+  ok: boolean;
+  answers: string[];
+  rejected: string[];
+} {
+  const trimmed = answers.map((a) => String(a ?? '').trim());
+  const rejected = trimmed.filter((a) => a && !isNumericShortAnswer(a));
+  const empty = trimmed.every((a) => !a);
+  return {
+    ok: !empty && rejected.length === 0 && trimmed.some((a) => a.length > 0),
+    answers: trimmed,
+    rejected,
+  };
+}
