@@ -58,6 +58,7 @@ import {
   OFFICIAL_TOTAL_ITEMS,
   countBankByType,
   isOfficialStructure,
+  shuffleCopy,
   takeAllOrRandom,
 } from '@/lib/examOfficialSpec';
 import { ConfirmModal } from '@/components/exam/ConfirmModal';
@@ -203,11 +204,12 @@ function pickReferencesForSituation(
   const other = [...merged.values()].filter((b) => b.taskType !== taskType);
   const candidates = [...same, ...other];
 
-  if (candidates.length <= max) {
-    return candidates.map((b) => b.id);
+  // Auto (no sticky selection): always shuffle/sample so multi-paper runs diverge.
+  if (!selected.length) {
+    return takeAllOrRandom(shuffleCopy(candidates), max).map((b) => b.id);
   }
 
-  // Always keep user-selected refs when possible, then random-fill.
+  // Keep user-selected refs when possible, then random-fill.
   const selectedSet = new Set(selected.map((b) => b.id));
   const kept = candidates.filter((b) => selectedSet.has(b.id)).slice(0, max);
   const rest = candidates.filter((b) => !selectedSet.has(b.id));
@@ -593,7 +595,6 @@ export function AuthorChatDock({
   const generateAllTypes = async (examCountIn: number) => {
     if (busyRef.current) return;
     const examCount = clampExamCount(String(examCountIn));
-    const preferredIds = [...referenceIdsRef.current];
 
     const ctrl = beginAbortable();
     busyRef.current = true;
@@ -610,6 +611,8 @@ export function AuthorChatDock({
         const savedProblems: BankProblem[] = [];
         const typeOrdinal: Record<TaskType, number> = { 1: 0, 2: 0, 3: 0 };
         const paperLabel = `${paper + 1}/${examCount}`;
+        // Fresh random refs every paper — never reuse sticky/auto-picked UI selection.
+        const preferredIds: string[] = [];
 
         history = [
           ...history,
@@ -632,11 +635,7 @@ export function AuthorChatDock({
             preferredIds,
             excludeCreated,
           );
-          const refMode = turnRefs.length
-            ? preferredIds.length
-              ? 'selected'
-              : 'auto'
-            : 'auto';
+          const refMode = 'auto' as const;
           if (turnRefs.length) onReferenceIdsChange?.(turnRefs);
 
           const prompt = autoPromptForType(
