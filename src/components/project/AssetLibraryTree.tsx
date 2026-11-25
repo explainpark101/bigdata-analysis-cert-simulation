@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
@@ -25,6 +25,87 @@ interface AssetLibraryTreeProps {
   onSelect: (id: string) => void;
   onUpdatePath: (id: string, path: string) => void;
   onRemove: (id: string) => void;
+}
+
+function AssetFileRow({
+  asset,
+  depth,
+  selected,
+  onSelect,
+  onUpdatePath,
+  onRemove,
+}: {
+  asset: ProjectAsset;
+  depth: number;
+  selected: boolean;
+  onSelect: (id: string) => void;
+  onUpdatePath: (id: string, path: string) => void;
+  onRemove: (id: string) => void;
+}) {
+  const mount = mountPathForAsset(asset);
+  const image = isImageAsset(asset);
+  // Draft path locally — committing every keystroke rewrote all assets + IDB.
+  const [pathDraft, setPathDraft] = useState(asset.path);
+  useEffect(() => {
+    setPathDraft(asset.path);
+  }, [asset.path]);
+
+  const commitPath = () => {
+    const next = normalizeLibraryPath(pathDraft, {
+      image,
+      fileName: asset.name,
+    });
+    setPathDraft(next);
+    if (next !== asset.path) onUpdatePath(asset.id, next);
+  };
+
+  return (
+    <div
+      className={`fs-tree__file ${selected ? 'active' : ''}`}
+      style={{ paddingLeft: 8 + depth * 14 }}
+    >
+      {image ? (
+        <img className="asset-thumb" src={assetToDataUrl(asset)} alt="" />
+      ) : (
+        <FileSpreadsheet size={16} aria-hidden />
+      )}
+      <button
+        type="button"
+        className="edit-file-name"
+        onClick={() => onSelect(asset.id)}
+        aria-pressed={selected}
+        title="미리보기"
+      >
+        {asset.name}
+      </button>
+      <input
+        className="edit-file-path"
+        value={pathDraft}
+        title="라이브러리 트리 경로"
+        onChange={(e) => setPathDraft(e.target.value)}
+        onBlur={commitPath}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.currentTarget.blur();
+          }
+        }}
+      />
+      <span className="badge" title="런타임 로드 경로">
+        {mount}
+      </span>
+      <span className="badge">
+        {Math.max(1, Math.round(asset.content.length / 1024))} KB
+      </span>
+      <button
+        type="button"
+        className="danger-btn btn-with-icon"
+        onClick={() => onRemove(asset.id)}
+      >
+        <Trash2 size={14} />
+        제거
+      </button>
+    </div>
+  );
 }
 
 export function AssetLibraryTree({
@@ -71,59 +152,16 @@ export function AssetLibraryTree({
       );
     }
 
-    const a = node.asset;
-    const mount = mountPathForAsset(a);
-    const active = a.id === selectedId;
-
     return (
-      <div
-        key={a.id}
-        className={`fs-tree__file ${active ? 'active' : ''}`}
-        style={{ paddingLeft: 8 + depth * 14 }}
-      >
-        {isImageAsset(a) ? (
-          <img className="asset-thumb" src={assetToDataUrl(a)} alt="" />
-        ) : (
-          <FileSpreadsheet size={16} aria-hidden />
-        )}
-        <button
-          type="button"
-          className="edit-file-name"
-          onClick={() => onSelect(a.id)}
-          aria-pressed={active}
-          title="미리보기"
-        >
-          {a.name}
-        </button>
-        <input
-          className="edit-file-path"
-          value={a.path}
-          title="라이브러리 트리 경로"
-          onChange={(e) =>
-            onUpdatePath(
-              a.id,
-              normalizeLibraryPath(e.target.value, {
-                image: isImageAsset(a),
-                fileName: a.name,
-              }),
-            )
-          }
-        />
-        <span className="badge" title="런타임 로드 경로">
-          {mount}
-        </span>
-        <span className="badge">
-          {Math.max(1, Math.round(a.content.length / 1024))} KB
-        </span>
-        <button
-          type="button"
-          className="danger-btn btn-with-icon"
-          onClick={() => onRemove(a.id)}
-        >
-          <Trash2 size={14} />
-          제거
-        </button>
-      </div>
+      <AssetFileRow
+        key={node.asset.id}
+        asset={node.asset}
+        depth={depth}
+        selected={node.asset.id === selectedId}
+        onSelect={onSelect}
+        onUpdatePath={onUpdatePath}
+        onRemove={onRemove}
+      />
     );
   };
 

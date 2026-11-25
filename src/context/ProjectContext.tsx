@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -110,10 +111,22 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // Debounce IDB writes: structuredClone of large projects on every keystroke OOMs WebView.
+  const projectRef = useRef(project);
+  projectRef.current = project;
   useEffect(() => {
     if (!ready) return;
-    void saveProjectToStorage(project);
+    const handle = window.setTimeout(() => {
+      void saveProjectToStorage(projectRef.current);
+    }, 600);
+    return () => window.clearTimeout(handle);
   }, [project, ready]);
+  useEffect(() => {
+    if (!ready) return;
+    return () => {
+      void saveProjectToStorage(projectRef.current);
+    };
+  }, [ready]);
 
   const setProject = useCallback((p: AuthoringProject) => {
     setProjectState({ ...p, updatedAt: new Date().toISOString() });

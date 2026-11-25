@@ -34,21 +34,26 @@ export function assetToDataUrl(asset: MediaAsset): string {
   if (asset.encoding === 'base64') {
     return `data:${mime};base64,${asset.content}`;
   }
-  // utf-8 text (e.g. svg)
+  // utf-8 text (e.g. svg) — never call this for multi-MB CSVs
   return `data:${mime};charset=utf-8,${encodeURIComponent(asset.content)}`;
 }
 
+/**
+ * Map mount/library paths → data URLs for markdown/img preview.
+ * Images only: encoding every CSV with encodeURIComponent OOM'd Tauri WebView
+ * (gichul ~9MB raw → ~15MB+ URI strings on top of React state).
+ */
 export function buildAssetUrlMap(assets: MediaAsset[]): Map<string, string> {
   const map = new Map<string, string>();
   for (const asset of assets) {
+    if (!isImageAsset(asset)) continue;
     const url = assetToDataUrl(asset);
     const path = asset.path.replace(/^\.\//, '');
     map.set(path, url);
     map.set(`./${path}`, url);
     map.set(asset.name, url);
-    // Also index flat mount path (data/file.csv · images/file.png)
     const base = asset.name || path.split('/').pop() || path;
-    const mount = isImageAsset(asset) ? `images/${base}` : `data/${base}`;
+    const mount = `images/${base}`;
     map.set(mount, url);
     map.set(`./${mount}`, url);
   }

@@ -50,7 +50,12 @@ export function ProblemMarkdownEditor({
   const { theme } = useTheme();
   const imageInputRef = useRef<HTMLInputElement>(null);
 
-  const urlMap = useMemo(() => buildAssetUrlMap(assets), [assets]);
+  // Images only — CSV data-URLs from full project.assets OOMd the WebView.
+  const imageAssets = useMemo(
+    () => assets.filter(isImageAsset),
+    [assets],
+  );
+  const urlMap = useMemo(() => buildAssetUrlMap(imageAssets), [imageAssets]);
   const dataUrlToPath = useMemo(() => {
     const rev = new Map<string, string>();
     for (const [path, url] of urlMap) {
@@ -60,8 +65,8 @@ export function ProblemMarkdownEditor({
   }, [urlMap]);
 
   const resolvedHtml = useMemo(
-    () => markdownToHtmlFragment(value, assets),
-    [value, assets],
+    () => markdownToHtmlFragment(value, imageAssets),
+    [value, imageAssets],
   );
 
   const editor = useEditor({
@@ -253,6 +258,7 @@ export function ProblemMarkdownEditor({
 
 /** Helper for parent UIs that insert markdown image tags. */
 export function previewAssetThumb(asset: MediaAsset): string | null {
+  if (!isImageAsset(asset)) return null;
   try {
     return assetToDataUrl(asset);
   } catch {

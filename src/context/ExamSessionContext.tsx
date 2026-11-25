@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -49,10 +50,23 @@ export function ExamSessionProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  const examRef = useRef(exam);
+  examRef.current = exam;
   useEffect(() => {
     if (!ready || !exam) return;
-    void saveExamSession(exam);
+    const handle = window.setTimeout(() => {
+      const current = examRef.current;
+      if (current) void saveExamSession(current);
+    }, 600);
+    return () => window.clearTimeout(handle);
   }, [exam, ready]);
+  useEffect(() => {
+    if (!ready) return;
+    return () => {
+      const current = examRef.current;
+      if (current) void saveExamSession(current);
+    };
+  }, [ready]);
 
   const setExam = useCallback((next: ExamSet | null) => {
     if (!next) {
