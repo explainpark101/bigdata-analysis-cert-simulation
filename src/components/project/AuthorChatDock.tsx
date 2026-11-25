@@ -218,11 +218,24 @@ function pickReferencesForSituation(
   return [...kept.map((b) => b.id), ...filled.map((b) => b.id)];
 }
 
+/** Compact same-paper sibling briefs for uniqueness check (not full transcripts). */
+function siblingProblemBrief(p: BankProblem): string {
+  const body = (p.markdown ?? '').replace(/\s+/g, ' ').trim().slice(0, 140);
+  const note = (p.note ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  const bits = [
+    p.title.trim() || '(제목 없음)',
+    note ? `note:${note}` : '',
+    body ? `본문요지:${body}` : '',
+  ].filter(Boolean);
+  return `- ${bits.join(' · ')}`;
+}
+
 function autoPromptForType(
   taskType: TaskType,
   refCount: number,
   ordinalInType: number,
   refMode: 'selected' | 'auto',
+  sameTypeSiblings: BankProblem[] = [],
 ): string {
   const pts = OFFICIAL_POINTS_PER_ITEM[taskType];
   const refLine =
@@ -231,10 +244,23 @@ function autoPromptForType(
       : refMode === 'auto'
         ? `문제은행에서 상황에 맞게 가져온 참고 문제 ${refCount}개(제${taskType}유형 우선)를 분석한 뒤, 빅데이터분석기사 실기(제13회 가이드) 작업형 ${taskType}유형 새 문항을 작성·저장하세요.`
         : `선택된 참고 문제 ${refCount}개를 분석한 뒤, 빅데이터분석기사 실기(제13회 가이드) 작업형 ${taskType}유형 새 문항을 작성·저장하세요.`;
+  const siblingBlock =
+    sameTypeSiblings.length > 0
+      ? [
+          '## 같은 유형 중복 방지 (기획 단계 · 필수)',
+          `이번 시험지에 이미 만든 제${taskType}유형 문항 ${sameTypeSiblings.length}개:`,
+          ...sameTypeSiblings.map(siblingProblemBrief),
+          '- 데이터 설계·스토리·요구 스킬·지표가 위 문항과 비슷한지 **먼저 한 줄로 판단**하세요 (예: "유사함 → 재기획" / "다름 → 진행").',
+          '- 비슷하면 도메인·컬럼·스킬·지표·스토리를 바꿔 재기획한 뒤에만 데이터/본문 작업으로 넘어가세요.',
+          '- 이전 생성 대화 기록은 제공되지 않습니다. 위 요약만으로 중복을 피하세요.',
+          '',
+        ]
+      : [];
   return [
     refLine,
     `이번 생성은 제${taskType}유형 ${ordinalInType}/${OFFICIAL_COUNTS[taskType]}번째 · 문항 배점 ${pts}점입니다.`,
     '',
+    ...siblingBlock,
     '## 참고 분석',
     refCount === 0
       ? '- 참고가 없으면 list_references를 건너뛰고 SYNTHESIZE로 진행하세요.'
@@ -638,16 +664,18 @@ export function AuthorChatDock({
           const refMode = 'auto' as const;
           if (turnRefs.length) onReferenceIdsChange?.(turnRefs);
 
+          // Same-type siblings already saved on this paper (brief only — no prior transcripts).
+          const sameTypeSiblings = savedProblems.filter(
+            (p) => p.taskType === taskType,
+          );
           const prompt = autoPromptForType(
             taskType,
             turnRefs.length,
             ordinalInType,
             refMode,
+            sameTypeSiblings,
           );
-          const userMsg = buildUserMessage(prompt, []);
-          const historyBefore = history;
-          history = [...historyBefore, userMsg];
-          setMessages(history);
+          const uiLabel = `자동 생성 · 시험지 ${paperLabel} · 제${taskType}유형 ${ordinalInType}/${OFFICIAL_COUNTS[taskType]}`;
           onDraftChange(emptyAuthorDraft(taskType));
           draftRef.current = emptyAuthorDraft(taskType);
 
@@ -659,9 +687,10 @@ export function AuthorChatDock({
           setError('');
 
           try {
+            // Fresh agent context every item (token isolation across items/papers).
             let result = await runTurn({
               userText: prompt,
-              history: historyBefore,
+              history: [],
               draftOverride: emptyAuthorDraft(taskType),
               signal: ctrl.signal,
               requireSave: true,
@@ -674,13 +703,11 @@ export function AuthorChatDock({
                 `시험지 ${paperLabel} · 제${taskType}유형 저장 재시도…`,
               );
               const savePrompt =
-                '추가 수정 없이 지금 초안으로 save_problem(confirm=true)만 호출하세요.';
-              const saveUser = buildUserMessage(savePrompt, []);
-              history = [...result.messages, saveUser];
-              setMessages(history);
+                '추가 수정 없이 지금 초안으로 save_problem(confirm=true)만 호출하세요. 다른 도구는 쓰지 마세요.';
+              // Draft is carried via draftOverride — do not resend this item's tool transcript.
               result = await runTurn({
                 userText: savePrompt,
-                history: result.messages,
+                history: [],
                 draftOverride: result.draft,
                 signal: ctrl.signal,
                 requireSave: true,
@@ -720,18 +747,10 @@ export function AuthorChatDock({
               result = {
                 ...result,
                 savedProblem: created,
-                messages: [
-                  ...result.messages,
-                  {
-                    role: 'assistant',
-                    content: `클라이언트가 초안을 저장했습니다: ${created.title}`,
-                  },
-                ],
+                messages: result.messages,
               };
             }
 
-            history = result.messages;
-            setMessages(history);
             onDraftChange(result.draft);
             draftRef.current = result.draft;
 
@@ -740,6 +759,16 @@ export function AuthorChatDock({
               savedProblems.push(result.savedProblem);
               excludeCreated.add(result.savedProblem.id);
               onSaved(result.savedProblem, { navigate: false });
+              // Compact UI summary — discard this item's full tool transcript.
+              history = [
+                ...history,
+                { role: 'user', content: uiLabel },
+                {
+                  role: 'assistant',
+                  content: `저장 완료: [제${result.savedProblem.taskType}유형] ${result.savedProblem.title}`,
+                },
+              ];
+              setMessages(history);
               const nextType =
                 OFFICIAL_AUTOGEN_SEQUENCE[i + 1] ??
                 (taskType < 3 ? ((taskType + 1) as TaskType) : 1);
