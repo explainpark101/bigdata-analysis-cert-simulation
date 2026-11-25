@@ -84,7 +84,10 @@ function mimeForAsset(
   return encoding === 'base64' ? 'application/octet-stream' : 'text/csv';
 }
 
-/** Store raw bytes. Tauri uses base64 IPC (not number[]) to avoid WebView OOM. */
+/**
+ * Store raw bytes.
+ * Tauri: append base64 chunks (never one multi-MB IPC payload / number[]).
+ */
 export async function putAssetBodyBytes(
   id: string,
   encoding: ProjectAsset['encoding'],
@@ -94,10 +97,23 @@ export async function putAssetBodyBytes(
   if (isTauriRuntime()) {
     const { invoke } = await import('@tauri-apps/api/core');
     const { bytesToBase64 } = await import('@/lib/assetMedia');
-    await invoke('write_asset_base64', {
-      assetId: id,
-      dataBase64: bytesToBase64(bytes),
-    });
+    // 240 KiB raw → ~320 KiB base64 per round-trip; keeps WebView IPC stable.
+    const chunkSize = 240 * 1024;
+    if (bytes.byteLength <= chunkSize) {
+      await invoke('write_asset_base64', {
+        assetId: id,
+        dataBase64: bytesToBase64(bytes),
+      });
+    } else {
+      await invoke('begin_write_asset', { assetId: id });
+      for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
+        const slice = bytes.subarray(offset, offset + chunkSize);
+        await invoke('append_asset_base64', {
+          assetId: id,
+          dataBase64: bytesToBase64(slice),
+        });
+      }
+    }
     if (cachedId === id) clearAssetContentCache();
     return;
   }
@@ -118,13 +134,29 @@ export async function putAssetBody(
 ): Promise<void> {
   if (isTauriRuntime()) {
     const { invoke } = await import('@tauri-apps/api/core');
-    if (encoding === 'base64') {
+    // Small payloads: one IPC. Large: chunk via putAssetBodyBytes.
+    const small = content.length <= 240 * 1024;
+    if (encoding === 'base64' && small) {
       await invoke('write_asset_base64', {
         assetId: id,
         dataBase64: content,
       });
-    } else {
+    } else if (encoding !== 'base64' && small) {
       await invoke('write_asset_text', { assetId: id, text: content });
+    } else if (encoding === 'base64') {
+      const bin = atob(content);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+      await putAssetBodyBytes(id, encoding, bytes, mimeType);
+      return;
+    } else {
+      await putAssetBodyBytes(
+        id,
+        encoding,
+        new TextEncoder().encode(content),
+        mimeType,
+      );
+      return;
     }
     if (cachedId === id) clearAssetContentCache();
     return;

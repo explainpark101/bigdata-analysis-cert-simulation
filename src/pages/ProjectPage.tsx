@@ -274,7 +274,17 @@ export default function ProjectPage() {
           <button
             type="button"
             className="ghost-btn btn-with-icon"
-            onClick={() => void exportProject()}
+            onClick={() => {
+              void (async () => {
+                try {
+                  setMessage('프로젝트 ZIP 저장 중…');
+                  await exportProject();
+                  setMessage('프로젝트 ZIP 저장 완료');
+                } catch (err) {
+                  setMessage(err instanceof Error ? err.message : String(err));
+                }
+              })();
+            }}
           >
             <Download size={16} />
             프로젝트 ZIP

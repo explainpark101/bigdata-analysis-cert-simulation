@@ -297,6 +297,7 @@ fn now_iso() -> String {
 }
 
 /// Write a project zip to `dest_path` using on-disk asset bodies.
+/// Streams each asset file into the archive — never buffers all CSVs in RAM.
 pub fn export_project_zip(app: &AppHandle, project: &Value, dest_path: &str) -> Result<(), String> {
     let dest = Path::new(dest_path);
     if let Some(parent) = dest.parent() {
@@ -310,10 +311,13 @@ pub fn export_project_zip(app: &AppHandle, project: &Value, dest_path: &str) -> 
     strip_asset_contents(&mut meta);
     let meta_str =
         serde_json::to_string_pretty(&meta).map_err(|e| format!("serialize project: {e}"))?;
+    // Drop the cloned meta tree before streaming large asset files.
+    drop(meta);
     zip.start_file(PROJECT_JSON, opts)
         .map_err(|e| e.to_string())?;
     zip.write_all(meta_str.as_bytes())
         .map_err(|e| e.to_string())?;
+    drop(meta_str);
 
     if let Some(assets) = project.get("assets").and_then(|a| a.as_array()) {
         for asset in assets {
@@ -327,19 +331,25 @@ pub fn export_project_zip(app: &AppHandle, project: &Value, dest_path: &str) -> 
                 continue;
             }
             let entry_name = format!("{FILES_PREFIX}{id}/{path}");
-            let bytes = if asset_store::exists(app, id)? {
-                asset_store::read_bytes(app, id)?
+            if asset_store::exists(app, id)? {
+                let disk_path = asset_store::asset_path(app, id)?;
+                let mut src = File::open(&disk_path)
+                    .map_err(|e| format!("open {}: {e}", disk_path.display()))?;
+                zip.start_file(&entry_name, opts).map_err(|e| e.to_string())?;
+                std::io::copy(&mut src, &mut zip).map_err(|e| format!("zip copy {id}: {e}"))?;
             } else if let Some(content) = asset.get("content").and_then(|c| c.as_str()) {
-                if encoding == "base64" {
-                    B64.decode(content).map_err(|e| e.to_string())?
-                } else {
-                    content.as_bytes().to_vec()
+                if content.is_empty() {
+                    continue;
                 }
-            } else {
-                continue;
-            };
-            zip.start_file(&entry_name, opts).map_err(|e| e.to_string())?;
-            zip.write_all(&bytes).map_err(|e| e.to_string())?;
+                zip.start_file(&entry_name, opts).map_err(|e| e.to_string())?;
+                if encoding == "base64" {
+                    let bytes = B64.decode(content).map_err(|e| e.to_string())?;
+                    zip.write_all(&bytes).map_err(|e| e.to_string())?;
+                } else {
+                    zip.write_all(content.as_bytes())
+                        .map_err(|e| e.to_string())?;
+                }
+            }
         }
     }
 

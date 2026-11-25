@@ -32,9 +32,10 @@ import {
   persistExternalAssets,
   putAssetBody,
   replaceAllAssetBodies,
+  stripExternalContents,
   usesExternalBody,
 } from '@/lib/assetStore';
-import { isTauriRuntime } from '@/lib/tauriRuntime';
+import { isTauriRuntime, tauriFilePath } from '@/lib/tauriRuntime';
 import {
   pickSaveZipPath,
   rustExportProjectZip,
@@ -364,16 +365,18 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const exportProject = useCallback(async () => {
+    const lean = stripExternalContents(projectRef.current);
     if (isTauriRuntime()) {
       const dest = await pickSaveZipPath(
-        `${project.id || 'project'}.project.zip`,
+        `${lean.id || 'project'}.project.zip`,
       );
       if (!dest) return;
-      await rustExportProjectZip(project, dest);
+      // Rust streams disk assets into the zip — never JSZip / getAssetContent.
+      await rustExportProjectZip(lean, dest);
       return;
     }
-    await exportProjectZip(project);
-  }, [project]);
+    await exportProjectZip(lean);
+  }, []);
 
   const importProject = useCallback(async (source: File | string) => {
     // Drop prior project + exam session so WebView can GC before inflate.
@@ -386,9 +389,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       window.setTimeout(r, 0);
     });
 
-    if (isTauriRuntime() && typeof source === 'string') {
-      const next = await rustImportProjectZip(source);
-      const stamped = { ...next, updatedAt: new Date().toISOString() };
+    const rustPath = isTauriRuntime() ? tauriFilePath(source) : null;
+    if (rustPath) {
+      const next = await rustImportProjectZip(rustPath);
+      const stamped = {
+        ...stripExternalContents(next),
+        updatedAt: new Date().toISOString(),
+      };
       projectRef.current = stamped;
       setProjectState(stamped);
       return;
@@ -410,13 +417,19 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     }
 
     // Always merge into the latest project (import-then-merge must not use stale state).
-    let snapshot = await persistExternalAssets(projectRef.current);
+    let snapshot = stripExternalContents(
+      await persistExternalAssets(projectRef.current),
+    );
     let addedProblems = 0;
     let addedAssets = 0;
     const labels: string[] = [];
 
-    if (isTauriRuntime() && list.every((f) => typeof f === 'string')) {
-      for (const path of list as string[]) {
+    const rustPaths = isTauriRuntime()
+      ? list.map((f) => tauriFilePath(f)).filter((p): p is string => Boolean(p))
+      : [];
+
+    if (rustPaths.length === list.length) {
+      for (const path of rustPaths) {
         const label =
           path.replace(/^.*[\\/]/, '').replace(/\.(project|exam)?\.zip$/i, '') ||
           'import';
@@ -427,7 +440,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
           );
         }
         const result = await rustMergeProjectZip(path, snapshot, label);
-        snapshot = result.project;
+        snapshot = stripExternalContents(result.project);
         projectRef.current = snapshot;
         addedProblems += result.addedProblems;
         addedAssets += result.addedAssets;

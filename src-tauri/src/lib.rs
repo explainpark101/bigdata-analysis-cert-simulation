@@ -54,6 +54,20 @@ fn write_asset_base64(
 }
 
 #[tauri::command]
+fn begin_write_asset(app: AppHandle, asset_id: String) -> Result<(), String> {
+    asset_store::begin_write(&app, &asset_id)
+}
+
+#[tauri::command]
+fn append_asset_base64(
+    app: AppHandle,
+    asset_id: String,
+    data_base64: String,
+) -> Result<u64, String> {
+    asset_store::append_base64(&app, &asset_id, &data_base64)
+}
+
+#[tauri::command]
 fn write_asset_text(app: AppHandle, asset_id: String, text: String) -> Result<u64, String> {
     asset_store::write_bytes(&app, &asset_id, text.as_bytes())
 }
@@ -122,6 +136,8 @@ pub fn run() {
             read_asset_base64,
             write_asset_bytes,
             write_asset_base64,
+            begin_write_asset,
+            append_asset_base64,
             write_asset_text,
             write_asset_file,
             ingest_asset_file,

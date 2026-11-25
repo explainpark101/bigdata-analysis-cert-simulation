@@ -19,17 +19,16 @@ export function isImageFileName(name: string, mimeType?: string): boolean {
 }
 
 export function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
+  // Join chunks once — repeated `binary +=` is O(n²) and OOMs WebView2 on multi-MB CSVs.
   const chunk = 0x8000;
+  const parts: string[] = [];
   for (let i = 0; i < bytes.length; i += chunk) {
-    // Avoid spread (...chunk) — large images blow the call stack / OOM in WebView.
     const slice = bytes.subarray(i, i + chunk);
-    binary += String.fromCharCode.apply(
-      null,
-      slice as unknown as number[],
+    parts.push(
+      String.fromCharCode.apply(null, slice as unknown as number[]),
     );
   }
-  return btoa(binary);
+  return btoa(parts.join(''));
 }
 
 export function assetToDataUrl(asset: MediaAsset): string {

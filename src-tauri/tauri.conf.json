@@ -17,7 +17,7 @@
         "height": 800,
         "resizable": true,
         "fullscreen": false,
-        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --js-flags=--max-old-space-size=8192 --disable-renderer-backgrounding"
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --js-flags=--max-old-space-size=4096 --disable-renderer-backgrounding"
       }
     ],
     "security": {

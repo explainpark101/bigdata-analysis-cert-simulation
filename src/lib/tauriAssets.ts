@@ -8,6 +8,21 @@ import { isTauriRuntime } from '@/lib/tauriRuntime';
 
 export { isTauriRuntime };
 
+/** Lean meta only — never ship asset.content strings through IPC. */
+function leanProjectForIpc(project: AuthoringProject): AuthoringProject {
+  return {
+    ...project,
+    assets: project.assets.map((a) => ({
+      ...a,
+      content: '',
+      byteLength:
+        typeof a.byteLength === 'number' && a.byteLength >= 0
+          ? a.byteLength
+          : (a.content?.length ?? 0),
+    })),
+  };
+}
+
 export async function rustImportProjectZip(
   path: Stringish,
 ): Promise<AuthoringProject> {
@@ -26,7 +41,7 @@ export async function rustMergeProjectZip(
 }> {
   return invoke('merge_project_zip', {
     path: String(path),
-    current,
+    current: leanProjectForIpc(current),
     label,
   });
 }
@@ -36,7 +51,7 @@ export async function rustExportProjectZip(
   destPath: Stringish,
 ): Promise<void> {
   await invoke('export_project_zip', {
-    project,
+    project: leanProjectForIpc(project),
     destPath: String(destPath),
   });
 }

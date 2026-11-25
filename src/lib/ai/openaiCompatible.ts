@@ -32,10 +32,22 @@ export function chatContentToText(content: ChatContent): string {
     .join('\n');
 }
 
+/**
+ * Gemini (AI Studio OpenAI-compat) attaches encrypted thought state on
+ * tool_calls. Must be echoed back on the next request or Gemini 3 returns 400.
+ * @see https://ai.google.dev/gemini-api/docs/thought-signatures
+ */
+export type ToolCallExtraContent = {
+  google?: {
+    thought_signature?: string;
+  };
+};
+
 export interface ToolCall {
   id: string;
   type: 'function';
   function: { name: string; arguments: string };
+  extra_content?: ToolCallExtraContent;
 }
 
 export interface ChatToolDef {
@@ -68,6 +80,48 @@ function buildCompletionHeaders(settings: AiEndpointSettings): HeadersInit {
   return headers;
 }
 
+function isGoogleAiStudioBaseUrl(baseUrl: string): boolean {
+  return /generativelanguage\.googleapis\.com/i.test(baseUrl);
+}
+
+/**
+ * Gemini 3 requires thought_signature on functionCall parts in the current
+ * turn. Preserve any captured signatures; if history lost them entirely,
+ * inject the documented escape hatch on the first tool_call of each assistant
+ * message so the request is not rejected with 400.
+ */
+function withThoughtSignaturesForGoogle(
+  messages: ChatMessage[],
+  baseUrl: string,
+): ChatMessage[] {
+  if (!isGoogleAiStudioBaseUrl(baseUrl)) return messages;
+  return messages.map((m) => {
+    if (m.role !== 'assistant' || !m.tool_calls?.length) return m;
+    const calls = m.tool_calls;
+    const hasAnySignature = calls.some(
+      (tc) => tc.extra_content?.google?.thought_signature,
+    );
+    if (hasAnySignature) return m;
+    return {
+      ...m,
+      tool_calls: calls.map((tc, index) =>
+        index === 0
+          ? {
+              ...tc,
+              extra_content: {
+                ...tc.extra_content,
+                google: {
+                  ...tc.extra_content?.google,
+                  thought_signature: 'skip_thought_signature_validator',
+                },
+              },
+            }
+          : tc,
+      ),
+    };
+  });
+}
+
 function buildCompletionBody(opts: {
   settings: AiEndpointSettings;
   messages: ChatMessage[];
@@ -82,7 +136,7 @@ function buildCompletionBody(opts: {
   }
   const body: Record<string, unknown> = {
     model: settings.model,
-    messages,
+    messages: withThoughtSignaturesForGoogle(messages, settings.baseUrl),
     temperature: temperature ?? 0.4,
     stream,
   };
@@ -110,16 +164,20 @@ type ToolCallAcc = {
   id: string;
   type: 'function';
   function: { name: string; arguments: string };
+  extra_content?: ToolCallExtraContent;
+};
+
+type ToolCallDelta = {
+  index?: number;
+  id?: string;
+  type?: string;
+  function?: { name?: string; arguments?: string };
+  extra_content?: ToolCallExtraContent;
 };
 
 function applyToolCallDelta(
   acc: Map<number, ToolCallAcc>,
-  delta: {
-    index?: number;
-    id?: string;
-    type?: string;
-    function?: { name?: string; arguments?: string };
-  },
+  delta: ToolCallDelta,
 ) {
   const index = delta.index ?? 0;
   let row = acc.get(index);
@@ -135,6 +193,21 @@ function applyToolCallDelta(
   if (delta.function?.name) row.function.name += delta.function.name;
   if (delta.function?.arguments) {
     row.function.arguments += delta.function.arguments;
+  }
+  // Gemini may send thought_signature once (often with the first chunk).
+  const sig = delta.extra_content?.google?.thought_signature;
+  if (sig) {
+    row.extra_content = {
+      ...row.extra_content,
+      ...delta.extra_content,
+      google: {
+        ...row.extra_content?.google,
+        ...delta.extra_content?.google,
+        thought_signature: sig,
+      },
+    };
+  } else if (delta.extra_content && !row.extra_content) {
+    row.extra_content = delta.extra_content;
   }
 }
 
@@ -220,12 +293,7 @@ export async function createChatCompletion(opts: {
           choices?: Array<{
             delta?: {
               content?: string | null;
-              tool_calls?: Array<{
-                index?: number;
-                id?: string;
-                type?: string;
-                function?: { name?: string; arguments?: string };
-              }>;
+              tool_calls?: ToolCallDelta[];
             };
             finish_reason?: string | null;
             message?: ChatMessage;
@@ -296,12 +364,7 @@ export async function createChatCompletion(opts: {
             choices?: Array<{
               delta?: {
                 content?: string | null;
-                tool_calls?: Array<{
-                  index?: number;
-                  id?: string;
-                  type?: string;
-                  function?: { name?: string; arguments?: string };
-                }>;
+                tool_calls?: ToolCallDelta[];
               };
               finish_reason?: string | null;
             }>;

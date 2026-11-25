@@ -71,17 +71,53 @@ pub fn write_base64(app: &AppHandle, asset_id: &str, data_base64: &str) -> Resul
     write_bytes(app, asset_id, &bytes)
 }
 
+/// Truncate/create the asset file for chunked appends from the WebView.
+pub fn begin_write(app: &AppHandle, asset_id: &str) -> Result<(), String> {
+    let path = asset_path(app, asset_id)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::File::create(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
+    Ok(())
+}
+
+/// Append one base64 chunk (keeps each IPC payload small).
+pub fn append_base64(app: &AppHandle, asset_id: &str, data_base64: &str) -> Result<u64, String> {
+    let bytes = B64
+        .decode(data_base64)
+        .map_err(|e| format!("base64 decode: {e}"))?;
+    let path = asset_path(app, asset_id)?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("append {}: {e}", path.display()))?;
+    use std::io::Write;
+    file.write_all(&bytes)
+        .map_err(|e| format!("append write {}: {e}", path.display()))?;
+    Ok(bytes.len() as u64)
+}
+
 pub fn read_bytes(app: &AppHandle, asset_id: &str) -> Result<Vec<u8>, String> {
     let path = asset_path(app, asset_id)?;
     fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))
 }
 
 pub fn read_text(app: &AppHandle, asset_id: &str, max_chars: Option<usize>) -> Result<String, String> {
-    let bytes = read_bytes(app, asset_id)?;
-    let text = String::from_utf8_lossy(&bytes);
+    let path = asset_path(app, asset_id)?;
+    let bytes = fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
     match max_chars {
-        Some(n) if text.chars().count() > n => Ok(text.chars().take(n).collect()),
-        _ => Ok(text.into_owned()),
+        // Cap by bytes first so huge CSVs are not fully scanned just for a preview.
+        Some(n) => {
+            let take = std::cmp::min(bytes.len(), n.saturating_mul(4));
+            let text = String::from_utf8_lossy(&bytes[..take]);
+            if text.chars().count() > n {
+                Ok(text.chars().take(n).collect())
+            } else {
+                Ok(text.into_owned())
+            }
+        }
+        None => Ok(String::from_utf8_lossy(&bytes).into_owned()),
     }
 }
 
