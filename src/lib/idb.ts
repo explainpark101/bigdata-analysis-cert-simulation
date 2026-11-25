@@ -11,6 +11,7 @@ export type IdbKey =
   | 'theme'
   | 'aiSettings'
   | 'variantChats'
+  | 'modifyChats'
   | 'authorChats'
   | 'gradeResult';
 

@@ -44,6 +44,9 @@ import type { AuthoringProject, BankProblem, ProjectAsset } from '@/types/projec
 
 const MAX_TOOL_ROUNDS = 12;
 
+/** variant = new bank item; modify = update the same bank item in place. */
+export type ProblemEditMode = 'variant' | 'modify';
+
 export interface VariantAgentContext {
   settings: AiEndpointSettings;
   project: AuthoringProject;
@@ -51,6 +54,7 @@ export interface VariantAgentContext {
   draft: VariantDraft;
   /** Persist newly created assets into the project */
   addProjectAssets: (assets: ProjectAsset[]) => Promise<ProjectAsset[]>;
+  mode?: ProblemEditMode;
 }
 
 export interface VariantAgentResult {
@@ -60,19 +64,26 @@ export interface VariantAgentResult {
   savedProblem: BankProblem | null;
 }
 
-function systemPrompt(source: BankProblem): string {
+function systemPrompt(source: BankProblem, mode: ProblemEditMode): string {
   const type = source.taskType;
+  const isModify = mode === 'modify';
   return [
     'You are an exam-authoring agent for 빅데이터분석기사 실기 (DataQ-style).',
-    'Transform the source problem into a VARIANT that tests related skills.',
+    isModify
+      ? 'MODIFY the existing bank problem in place. Improve wording, answers, grading, or data only as the user asks — do not invent a separate variant title unless asked.'
+      : 'Transform the source problem into a VARIANT that tests related skills.',
     'Never invent final numeric answers yourself. Always write executable code that computes answers, then use tools to run it and set answers from stdout.',
     '',
     `Source task type: ${type}`,
     type === 1 || type === 3
       ? [
           'Type 1/3 rules:',
-          '- Keep the SAME dataset assetIds (do not regenerate CSV unless user insists).',
-          '- Change the question wording / aggregation / filter / target column / round-or-trunc rule as requested.',
+          isModify
+            ? '- Keep the SAME dataset assetIds unless the user explicitly asks to change data.'
+            : '- Keep the SAME dataset assetIds (do not regenerate CSV unless user insists).',
+          isModify
+            ? '- Edit markdown / filters / aggregation / round-or-trunc as requested; preserve structure when the user only asks for a small fix.'
+            : '- Change the question wording / aggregation / filter / target column / round-or-trunc rule as requested.',
           '- Put computation code in set_answer_code; run_answer_code; then set_short_answers from printed values only.',
           '- CSV load paths in answer_code / markdown MUST be `data/<file>.csv` (flat).',
           '- Short answers MUST be numbers only after 반올림/절사 (e.g. "11.0", "0.12"). Never letters/labels.',
@@ -81,7 +92,9 @@ function systemPrompt(source: BankProblem): string {
         ].join('\n')
       : [
           'Type 2 rules:',
-          '- At design time choose MUTATE (preferred if source CSVs exist) or SYNTHESIZE.',
+          isModify
+            ? '- Prefer editing markdown / gradingCode on the existing assets. Only MUTATE or SYNTHESIZE new CSVs if the user asks for new data.'
+            : '- At design time choose MUTATE (preferred if source CSVs exist) or SYNTHESIZE.',
           '- MUTATE: list_project_csvs → preview_csv_asset → set_transform_code (python|r) → run_transform_code(asset_ids=source) → save_generated_assets.',
           '  Read data/<file>.csv; write NEW out/*.csv (rename columns, resample, shift target — not a verbatim copy).',
           '- SYNTHESIZE: set_dataset_code (seeded Python) → run_dataset_code → save_generated_assets.',
@@ -103,18 +116,55 @@ function systemPrompt(source: BankProblem): string {
     '',
     'Always explain briefly in natural language what you changed.',
     'For stats formulas/metrics: prefer lookup_statistic → fetch_url (or web_search). If ok=false/skip=true, continue with your own knowledge — do not stall.',
-    'Call save_variant only when the user asks to save or the draft is complete.',
+    isModify
+      ? 'Call apply_changes only when the user asks to apply/save or the draft is ready to write back to the bank item.'
+      : 'Call save_variant only when the user asks to save or the draft is complete.',
   ].join('\n');
 }
 
-function toolsFor(source: BankProblem): ChatToolDef[] {
+function toolsFor(source: BankProblem, mode: ProblemEditMode): ChatToolDef[] {
+  const saveTool =
+    mode === 'modify'
+      ? {
+          type: 'function' as const,
+          function: {
+            name: 'apply_changes',
+            description:
+              'Write the draft back onto the same bank problem (in-place update).',
+            parameters: {
+              type: 'object',
+              properties: {
+                confirm: { type: 'boolean' },
+              },
+              required: ['confirm'],
+            },
+          },
+        }
+      : {
+          type: 'function' as const,
+          function: {
+            name: 'save_variant',
+            description:
+              'Persist the draft as a new bank problem linked to the source.',
+            parameters: {
+              type: 'object',
+              properties: {
+                confirm: { type: 'boolean' },
+              },
+              required: ['confirm'],
+            },
+          },
+        };
+
   const common: ChatToolDef[] = [
     {
       type: 'function',
       function: {
         name: 'update_draft',
         description:
-          'Update variant draft fields (title, note, markdown, language). Do not put final answers here.',
+          mode === 'modify'
+            ? 'Update modify draft fields (title, note, markdown, language). Do not put final answers here.'
+            : 'Update variant draft fields (title, note, markdown, language). Do not put final answers here.',
         parameters: {
           type: 'object',
           properties: {
@@ -157,20 +207,7 @@ function toolsFor(source: BankProblem): ChatToolDef[] {
         },
       },
     },
-    {
-      type: 'function',
-      function: {
-        name: 'save_variant',
-        description: 'Persist the draft as a new bank problem linked to the source.',
-        parameters: {
-          type: 'object',
-          properties: {
-            confirm: { type: 'boolean' },
-          },
-          required: ['confirm'],
-        },
-      },
-    },
+    saveTool,
   ];
 
   if (source.taskType === 1 || source.taskType === 3) {
@@ -468,9 +505,11 @@ export async function runVariantAgentTurn(opts: {
   onSave?: (problem: Partial<BankProblem>) => BankProblem;
 }): Promise<VariantAgentResult> {
   const { onDraft, onSave } = opts;
+  const mode: ProblemEditMode = opts.ctx.mode ?? 'variant';
   // Mutable working copy so newly saved assets are visible later in the same turn.
   const ctx: VariantAgentContext = {
     ...opts.ctx,
+    mode,
     project: {
       ...opts.ctx.project,
       assets: [...opts.ctx.project.assets],
@@ -489,7 +528,7 @@ export async function runVariantAgentTurn(opts: {
     assetIds: [...ctx.draft.assetIds],
   };
   const messages: ChatMessage[] = [
-    { role: 'system', content: systemPrompt(ctx.source) },
+    { role: 'system', content: systemPrompt(ctx.source, mode) },
     ...stripThinkingFromHistory(
       opts.history.filter((m) => m.role !== 'system'),
     ),
@@ -502,7 +541,12 @@ export async function runVariantAgentTurn(opts: {
     `taskType=${ctx.source.taskType}`,
     `assetIds=${JSON.stringify(ctx.draft.assetIds)}`,
     `markdown:\n${ctx.source.markdown.slice(0, 6000)}`,
-  ].join('\n');
+    mode === 'modify'
+      ? `CURRENT DRAFT SNAPSHOT:\ntitle=${draft.title}\nnote=${(draft.note ?? '').slice(0, 500)}\nmarkdown:\n${draft.markdown.slice(0, 6000)}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
   messages.splice(1, 0, {
     role: 'user',
     content: `SOURCE PROBLEM CONTEXT:\n${sourceSummary}`,
@@ -510,7 +554,7 @@ export async function runVariantAgentTurn(opts: {
 
   let assistantText = '';
   let savedProblem: BankProblem | null = null;
-  const tools = toolsFor(ctx.source);
+  const tools = toolsFor(ctx.source, mode);
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const completion = await createChatCompletion({
@@ -888,8 +932,19 @@ export async function runVariantAgentTurn(opts: {
               hint: 'In answer_code / markdown load via mount paths only (data/<file>.csv).',
             });
           }
-        } else if (name === 'save_variant') {
-          if (!args.confirm) {
+        } else if (name === 'save_variant' || name === 'apply_changes') {
+          const expectApply = mode === 'modify';
+          if (
+            (expectApply && name !== 'apply_changes') ||
+            (!expectApply && name !== 'save_variant')
+          ) {
+            toolResult = JSON.stringify({
+              ok: false,
+              error: expectApply
+                ? 'Use apply_changes for in-place edits'
+                : 'Use save_variant to create a new variant',
+            });
+          } else if (!args.confirm) {
             toolResult = JSON.stringify({ ok: false, error: 'confirm=false' });
           } else if (!onSave) {
             toolResult = JSON.stringify({ ok: false, error: 'save unavailable' });
@@ -912,7 +967,10 @@ export async function runVariantAgentTurn(opts: {
             const partial: Partial<BankProblem> = {
               title: draft.title,
               note: draft.note,
-              showNoteOnExam: false,
+              showNoteOnExam:
+                mode === 'modify'
+                  ? ctx.source.showNoteOnExam
+                  : false,
               taskType: ctx.source.taskType,
               kind: ctx.source.kind,
               language: draft.language,
@@ -921,7 +979,9 @@ export async function runVariantAgentTurn(opts: {
               gradingCode: draft.gradingCode,
               datasetCode: draft.datasetCode || undefined,
               assetIds: draft.assetIds,
-              sourceProblemId: ctx.source.id,
+              ...(mode === 'variant'
+                ? { sourceProblemId: ctx.source.id }
+                : {}),
               submitFormat: ctx.source.taskType === 2 ? 'csv' : 'short',
               submitFile:
                 ctx.source.taskType === 2 ? 'result.csv' : undefined,
@@ -946,6 +1006,7 @@ export async function runVariantAgentTurn(opts: {
               ok: true,
               id: savedProblem.id,
               title: savedProblem.title,
+              mode,
             });
           }
         } else if (isWebToolName(name)) {

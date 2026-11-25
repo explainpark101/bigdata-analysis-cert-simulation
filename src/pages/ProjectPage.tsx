@@ -38,6 +38,7 @@ import {
 import { AnswerAuthorPanel } from '@/components/project/AnswerAuthorPanel';
 import { ExamAssemblePreview } from '@/components/project/ExamAssemblePreview';
 import { VariantChatDock } from '@/components/project/VariantChatDock';
+import { ModifyChatDock } from '@/components/project/ModifyChatDock';
 import { ProblemAuthorTab } from '@/components/project/ProblemAuthorTab';
 import { GlobalSettingsModal } from '@/components/settings/GlobalSettingsModal';
 import { ConfirmModal } from '@/components/exam/ConfirmModal';
@@ -76,6 +77,8 @@ const BANK_SIDEBAR_W_MIN = 200;
 const BANK_SIDEBAR_W_DEFAULT = 260;
 const VARIANT_DOCK_W_MIN = 300;
 const VARIANT_DOCK_W_DEFAULT = 380;
+const MODIFY_DOCK_W_MIN = 300;
+const MODIFY_DOCK_W_DEFAULT = 380;
 
 type Tab = 'assets' | 'bank' | 'author' | 'exam';
 
@@ -125,6 +128,9 @@ export default function ProjectPage() {
   );
   const [variantDockWidth, setVariantDockWidth] = useState(
     VARIANT_DOCK_W_DEFAULT,
+  );
+  const [modifyDockWidth, setModifyDockWidth] = useState(
+    MODIFY_DOCK_W_DEFAULT,
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [variantOpen, setVariantOpen] = useState(false);
@@ -192,6 +198,11 @@ export default function ProjectPage() {
   const variantDockMaxWidth = useMemo(() => {
     if (typeof window === 'undefined') return 560;
     return Math.max(VARIANT_DOCK_W_MIN, Math.floor(window.innerWidth * 0.45));
+  }, []);
+
+  const modifyDockMaxWidth = useMemo(() => {
+    if (typeof window === 'undefined') return 560;
+    return Math.max(MODIFY_DOCK_W_MIN, Math.floor(window.innerWidth * 0.45));
   }, []);
 
   const problem = useMemo(
@@ -531,7 +542,11 @@ export default function ProjectPage() {
       )}
 
       {tab === 'bank' && (
-        <div className={`edit-page__body ${variantOpen ? 'edit-page__body--with-dock' : ''}`}>
+        <div
+          className={`edit-page__body ${
+            problem ? 'edit-page__body--with-dock' : ''
+          }`}
+        >
           <div
             className="edit-sidebar-pane"
             style={{ width: bankSidebarWidth, flexBasis: bankSidebarWidth }}
@@ -843,6 +858,49 @@ export default function ProjectPage() {
                 setSelectedId(created.id);
                 setMessage(`변형 문제 저장: ${created.title}`);
                 setVariantOpen(false);
+              }}
+            />
+          ) : problem ? (
+            <ModifyChatDock
+              problem={problem}
+              project={project}
+              width={modifyDockWidth}
+              onWidthChange={setModifyDockWidth}
+              maxWidth={modifyDockMaxWidth}
+              addProjectAssets={addProjectAssets}
+              onLinkCsv={({ assetIds, markdown }) => {
+                const paths = assetIds
+                  .map((id) => project.assets.find((a) => a.id === id))
+                  .filter((a): a is NonNullable<typeof a> => Boolean(a))
+                  .map((a) => mountPathForAsset(a));
+                updateBankProblem(problem.id, {
+                  assetIds,
+                  ...(markdown != null ? { markdown } : {}),
+                  starterCode: buildStarterCode(problem.taskType, paths),
+                });
+                setMessage('CSV가 없어 자동 생성·연결했습니다.');
+              }}
+              onApply={(partial: Partial<BankProblem>) => {
+                const taskType = partial.taskType ?? problem.taskType;
+                const assetIds = partial.assetIds ?? problem.assetIds;
+                const paths = assetIds
+                  .map((id) => project.assets.find((a) => a.id === id))
+                  .filter((a): a is NonNullable<typeof a> => Boolean(a))
+                  .map((a) => mountPathForAsset(a));
+                const next: BankProblem = {
+                  ...problem,
+                  ...partial,
+                  id: problem.id,
+                  number: problem.number,
+                  taskType,
+                  assetIds,
+                  starterCode: buildStarterCode(taskType, paths),
+                };
+                updateBankProblem(problem.id, next);
+                return next;
+              }}
+              onApplied={(updated) => {
+                setMessage(`문제 반영: ${updated.title}`);
               }}
             />
           ) : null}
