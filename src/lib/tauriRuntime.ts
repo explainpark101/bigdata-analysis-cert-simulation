@@ -18,17 +18,26 @@ export function isTauriRuntime(): boolean {
   return /\bTauri\b/i.test(navigator.userAgent ?? '');
 }
 
+/** True absolute FS path — rejects browser `C:\fakepath\...` placeholders. */
+export function isRealFsPath(path: string): boolean {
+  const p = path.trim();
+  if (!p || /fakepath/i.test(p)) return false;
+  if (/^[a-zA-Z]:[\\/]/.test(p)) return true;
+  if (p.startsWith('\\\\') || p.startsWith('//')) return true;
+  if (p.startsWith('/')) return true;
+  return false;
+}
+
 /**
  * Absolute filesystem path for a File selected in the Tauri WebView.
- * HTML file inputs and dialogs often attach `.path` — prefer Rust zip/asset
- * commands with that path so bytes never cross the WebView IPC as JSON.
+ * HTML file inputs often omit `.path` or set a fakepath — callers must stage
+ * those Blobs to a temp file before Rust zip import.
  */
 export function tauriFilePath(source: File | string): string | null {
   if (typeof source === 'string') {
-    const s = source.trim();
-    return s ? s : null;
+    return isRealFsPath(source) ? source.trim() : null;
   }
   const path = (source as File & { path?: string }).path;
-  if (typeof path === 'string' && path.trim()) return path.trim();
+  if (typeof path === 'string' && isRealFsPath(path)) return path.trim();
   return null;
 }

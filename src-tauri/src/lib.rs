@@ -151,6 +151,21 @@ fn peek_zip_kind(path: String) -> Result<String, String> {
     zip_ops::peek_zip_kind(&path)
 }
 
+#[tauri::command]
+fn create_staging_path(app: AppHandle, file_name: String) -> Result<String, String> {
+    asset_store::create_staging_path(&app, &file_name)
+}
+
+#[tauri::command]
+fn append_path_base64(path: String, data_base64: String) -> Result<u64, String> {
+    asset_store::append_path_base64(&path, &data_base64)
+}
+
+#[tauri::command]
+fn remove_path(path: String) -> Result<(), String> {
+    asset_store::remove_path(&path)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -175,6 +190,9 @@ pub fn run() {
             asset_exists,
             asset_abs_path,
             peek_zip_kind,
+            create_staging_path,
+            append_path_base64,
+            remove_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -35,12 +35,13 @@ import {
   stripExternalContents,
   usesExternalBody,
 } from '@/lib/assetStore';
-import { isTauriRuntime, tauriFilePath } from '@/lib/tauriRuntime';
+import { isTauriRuntime } from '@/lib/tauriRuntime';
 import {
   rustExportProjectZipAsk,
   rustImportProjectZip,
   rustMergeProjectZip,
   rustPeekZipKind,
+  withRustZipPath,
 } from '@/lib/tauriAssets';
 import type {
   AuthoringProject,
@@ -387,9 +388,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       window.setTimeout(r, 0);
     });
 
-    const rustPath = isTauriRuntime() ? tauriFilePath(source) : null;
-    if (rustPath) {
-      const next = await rustImportProjectZip(rustPath);
+    if (isTauriRuntime()) {
+      // Stage HTML File → temp (if needed), then Rust streams zip→disk.
+      // Never inflate CSV bodies in the WebView (OOM on gichul-sized zips).
+      const next = await withRustZipPath(source, (path) =>
+        rustImportProjectZip(path),
+      );
       const stamped = {
         ...stripExternalContents(next),
         updatedAt: new Date().toISOString(),
@@ -422,27 +426,30 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     let addedAssets = 0;
     const labels: string[] = [];
 
-    const rustPaths = isTauriRuntime()
-      ? list.map((f) => tauriFilePath(f)).filter((p): p is string => Boolean(p))
-      : [];
-
-    if (rustPaths.length === list.length) {
-      for (const path of rustPaths) {
+    if (isTauriRuntime()) {
+      for (const source of list) {
         const label =
-          path.replace(/^.*[\\/]/, '').replace(/\.(project|exam)?\.zip$/i, '') ||
-          'import';
-        const kind = await rustPeekZipKind(path);
-        if (kind === 'exam') {
-          throw new Error(
-            `${label}: Tauri에서는 .project.zip 병합을 지원합니다. .exam.zip 은 브라우저에서 열어 주세요.`,
-          );
-        }
-        const result = await rustMergeProjectZip(path, snapshot, label);
-        snapshot = stripExternalContents(result.project);
-        projectRef.current = snapshot;
-        addedProblems += result.addedProblems;
-        addedAssets += result.addedAssets;
-        labels.push(result.label);
+          typeof source === 'string'
+            ? source.replace(/^.*[\\/]/, '').replace(/\.(project|exam)?\.zip$/i, '') ||
+              'import'
+            : source.name.replace(/\.(project|exam)?\.zip$/i, '') || 'import';
+        await withRustZipPath(source, async (path) => {
+          const kind = await rustPeekZipKind(path);
+          if (kind === 'exam') {
+            throw new Error(
+              `${label}: Tauri에서는 .project.zip 병합을 지원합니다. .exam.zip 은 브라우저에서 열어 주세요.`,
+            );
+          }
+          const result = await rustMergeProjectZip(path, snapshot, label);
+          snapshot = stripExternalContents(result.project);
+          projectRef.current = snapshot;
+          addedProblems += result.addedProblems;
+          addedAssets += result.addedAssets;
+          labels.push(result.label);
+        });
+        await new Promise<void>((r) => {
+          window.setTimeout(r, 0);
+        });
       }
       setProjectState(snapshot);
       return { addedProblems, addedAssets, labels };
@@ -471,10 +478,14 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         typeof s === 'string'
           ? s.split(/[\\/]/).pop() || s
           : s.name;
+      // One zip at a time so WebView can GC between large imports.
       await importProject(list[0]);
       if (list.length === 1) {
         return { merged: false, labels: [labelOf(list[0])] };
       }
+      await new Promise<void>((r) => {
+        window.setTimeout(r, 0);
+      });
       const result = await mergeBankZips(list.slice(1));
       return {
         merged: true,

@@ -146,3 +146,74 @@ pub fn clear_all(app: &AppHandle) -> Result<(), String> {
 pub fn exists(app: &AppHandle, asset_id: &str) -> Result<bool, String> {
     Ok(asset_path(app, asset_id)?.exists())
 }
+
+fn import_staging_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("app_cache_dir: {e}"))?
+        .join("import-staging");
+    fs::create_dir_all(&dir).map_err(|e| format!("create staging dir: {e}"))?;
+    Ok(dir)
+}
+
+fn sanitize_file_name(name: &str) -> String {
+    let base = Path::new(name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("import.zip");
+    let safe: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if safe.is_empty() {
+        "import.zip".into()
+    } else {
+        safe
+    }
+}
+
+/// Create an empty temp path under app cache for staging an HTML File into Rust.
+pub fn create_staging_path(app: &AppHandle, file_name: &str) -> Result<String, String> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let path = import_staging_dir(app)?.join(format!(
+        "{}-{}",
+        stamp,
+        sanitize_file_name(file_name)
+    ));
+    fs::File::create(&path).map_err(|e| format!("create staging file: {e}"))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+pub fn append_path_base64(path: &str, data_base64: &str) -> Result<u64, String> {
+    let bytes = B64
+        .decode(data_base64)
+        .map_err(|e| format!("base64 decode: {e}"))?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| format!("append {path}: {e}"))?;
+    use std::io::Write;
+    file.write_all(&bytes)
+        .map_err(|e| format!("append write {path}: {e}"))?;
+    Ok(bytes.len() as u64)
+}
+
+pub fn remove_path(path: &str) -> Result<(), String> {
+    let p = Path::new(path);
+    if p.exists() {
+        fs::remove_file(p).map_err(|e| format!("remove {path}: {e}"))?;
+    }
+    Ok(())
+}

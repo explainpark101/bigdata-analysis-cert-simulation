@@ -3,10 +3,75 @@
  * Large CSV bodies stay on disk under app_data_dir/assets — never in the WebView heap.
  */
 import { invoke } from '@tauri-apps/api/core';
+import { bytesToBase64 } from '@/lib/assetMedia';
 import type { AuthoringProject, ProjectAsset } from '@/types/project';
-import { isTauriRuntime } from '@/lib/tauriRuntime';
+import { isTauriRuntime, tauriFilePath } from '@/lib/tauriRuntime';
 
 export { isTauriRuntime };
+
+/** ~192 KiB raw per IPC round-trip while staging an HTML File to disk. */
+const STAGE_CHUNK = 192 * 1024;
+
+/**
+ * Stream a Blob to a cache temp path via small base64 appends.
+ * Never holds the whole zip as one ArrayBuffer / base64 string.
+ */
+export async function stageBlobToTempPath(
+  blob: Blob,
+  fileName: string,
+): Promise<string> {
+  const path = await invoke<string>('create_staging_path', {
+    fileName: fileName || 'import.zip',
+  });
+  try {
+    for (let offset = 0; offset < blob.size; offset += STAGE_CHUNK) {
+      const slice = blob.slice(offset, offset + STAGE_CHUNK);
+      const buf = new Uint8Array(await slice.arrayBuffer());
+      await invoke('append_path_base64', {
+        path,
+        dataBase64: bytesToBase64(buf),
+      });
+    }
+    return path;
+  } catch (err) {
+    await invoke('remove_path', { path }).catch(() => undefined);
+    throw err;
+  }
+}
+
+export async function removeStagedPath(path: string): Promise<void> {
+  await invoke('remove_path', { path }).catch(() => undefined);
+}
+
+/**
+ * Resolve a real FS path for Rust zip ops. HTML `<input type="file">` usually
+ * has no usable `.path` in WebView2 — stage those Blobs to temp first.
+ */
+export async function resolveRustZipPath(
+  source: File | string,
+): Promise<{ path: string; staged: boolean }> {
+  const direct = tauriFilePath(source);
+  if (direct) return { path: direct, staged: false };
+  if (!(source instanceof Blob)) {
+    throw new Error('ZIP file required');
+  }
+  const name = source instanceof File ? source.name : 'import.zip';
+  const path = await stageBlobToTempPath(source, name);
+  return { path, staged: true };
+}
+
+/** Run `fn(path)` with a resolved zip path; delete staged temps afterward. */
+export async function withRustZipPath<T>(
+  source: File | string,
+  fn: (path: string) => Promise<T>,
+): Promise<T> {
+  const { path, staged } = await resolveRustZipPath(source);
+  try {
+    return await fn(path);
+  } finally {
+    if (staged) await removeStagedPath(path);
+  }
+}
 
 /** Lean meta only — never ship asset.content strings through IPC. */
 function leanProjectForIpc(project: AuthoringProject): AuthoringProject {
