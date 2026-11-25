@@ -8,7 +8,12 @@ export interface AiEndpointSettings {
   model: string;
 }
 
-export type AiProviderKind = 'openai' | 'openrouter' | 'compatible' | 'custom';
+export type AiProviderKind =
+  | 'openai'
+  | 'openrouter'
+  | 'google'
+  | 'compatible'
+  | 'custom';
 
 /** One saved provider / endpoint profile. */
 export interface AiProviderProfile {
@@ -44,6 +49,13 @@ export const PROVIDER_PRESETS: Array<{
     label: 'OpenRouter',
     baseUrl: 'https://openrouter.ai/api/v1',
     model: 'openai/gpt-4o-mini',
+  },
+  {
+    kind: 'google',
+    label: 'Google AI Studio',
+    // OpenAI-compatible root (not /v1) — see chatCompletionsUrl / modelsUrl.
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    model: 'gemini-3.8-flash',
   },
   {
     kind: 'compatible',
@@ -187,14 +199,23 @@ export async function saveAiSettings(
   await saveAiSettingsState({ ...state, profiles });
 }
 
+/**
+ * True when `baseUrl` is already an OpenAI-compatible API root
+ * (…/v1 or Google AI Studio …/openai), so we append /chat/completions|/models
+ * without inserting another /v1.
+ */
+function isOpenAiCompatRoot(root: string): boolean {
+  return /\/(v\d+|openai)$/i.test(root);
+}
+
 export function chatCompletionsUrl(baseUrl: string): string {
   const root = baseUrl.replace(/\/+$/, '');
-  return root.endsWith('/v1')
+  return isOpenAiCompatRoot(root)
     ? `${root}/chat/completions`
     : `${root}/v1/chat/completions`;
 }
 
 export function modelsUrl(baseUrl: string): string {
   const root = baseUrl.replace(/\/+$/, '');
-  return root.endsWith('/v1') ? `${root}/models` : `${root}/v1/models`;
+  return isOpenAiCompatRoot(root) ? `${root}/models` : `${root}/v1/models`;
 }
