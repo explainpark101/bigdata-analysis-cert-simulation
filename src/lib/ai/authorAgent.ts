@@ -35,7 +35,7 @@ export interface AuthorAgentContext {
   project: AuthoringProject;
   draft: AuthorDraft;
   referenceIds: string[];
-  addProjectAssets: (assets: ProjectAsset[]) => ProjectAsset[];
+  addProjectAssets: (assets: ProjectAsset[]) => Promise<ProjectAsset[]>;
 }
 
 export interface AuthorAgentResult {
@@ -647,7 +647,7 @@ export async function runAuthorAgentTurn(opts: {
                 ),
               );
             }
-            const added = ctx.addProjectAssets(created);
+            const added = await ctx.addProjectAssets(created);
             for (const a of added) {
               const idx = ctx.project.assets.findIndex((x) => x.id === a.id);
               if (idx >= 0) ctx.project.assets[idx] = a;

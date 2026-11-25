@@ -26,7 +26,7 @@ interface VariantChatDockProps {
   onWidthChange: (w: number) => void;
   maxWidth: number;
   onClose: () => void;
-  addProjectAssets: (assets: ProjectAsset[]) => ProjectAsset[];
+  addProjectAssets: (assets: ProjectAsset[]) => Promise<ProjectAsset[]>;
   onSaveVariant: (partial: Partial<BankProblem>) => BankProblem;
   onSaved: (problem: BankProblem) => void;
 }

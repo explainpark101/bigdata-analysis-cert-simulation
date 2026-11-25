@@ -1,16 +1,22 @@
 import { loadZip, zipKindFrom } from '@/lib/zipKind';
-import { parseProjectZipFrom } from '@/lib/projectZip';
+import { parseProjectZipMeta } from '@/lib/projectZip';
 import { parseExamZipFrom } from '@/lib/examZip';
 import {
   createEmptyBankProblem,
   createProjectAsset,
 } from '@/lib/projectIO';
+import {
+  persistExternalAssets,
+  putAssetBody,
+  usesExternalBody,
+} from '@/lib/assetStore';
 import type {
   AuthoringProject,
   BankProblem,
   ProjectAsset,
 } from '@/types/project';
 import type { ExamSet, QuizProblem } from '@/types/exam';
+import type JSZip from 'jszip';
 
 export interface MergeBankZipResult {
   project: AuthoringProject;
@@ -19,12 +25,14 @@ export interface MergeBankZipResult {
   label: string;
 }
 
+const FILES_PREFIX = 'files/';
+
 function stem(name: string): string {
   return name.replace(/\.(project|exam)?\.zip$/i, '').replace(/\.zip$/i, '') || 'import';
 }
 
-function remapIds<T extends string>(
-  oldId: T,
+function remapIds(
+  oldId: string,
   map: Map<string, string>,
   prefix: string,
 ): string {
@@ -35,33 +43,72 @@ function remapIds<T extends string>(
   return next;
 }
 
-function mergeProjectZip(
+function findAssetEntry(
+  zip: JSZip,
+  assetId: string,
+): { path: string; entry: JSZip.JSZipObject } | null {
+  const prefix = `${FILES_PREFIX}${assetId}/`;
+  for (const path of Object.keys(zip.files)) {
+    const entry = zip.files[path];
+    if (!entry || entry.dir) continue;
+    if (path.startsWith(prefix)) return { path, entry };
+  }
+  return null;
+}
+
+async function mergeProjectZipFromArchive(
   current: AuthoringProject,
-  incoming: AuthoringProject,
+  zip: JSZip,
+  meta: AuthoringProject,
   label: string,
-): MergeBankZipResult {
+): Promise<MergeBankZipResult> {
   const assetMap = new Map<string, string>();
   const problemMap = new Map<string, string>();
 
   const assets: ProjectAsset[] = [...current.assets];
   let addedAssets = 0;
-  for (const a of incoming.assets) {
+
+  for (const a of meta.assets) {
     const newId = remapIds(a.id, assetMap, 'asset');
     const folder = `imports/${label}`;
     const base = a.path.includes('/') ? a.path.split('/').pop()! : a.path;
     const path = `${folder}/${base}`;
-    assets.push({
+
+    const found = findAssetEntry(zip, a.id);
+    let content = '';
+    let byteLength = a.byteLength ?? 0;
+    if (found) {
+      content =
+        a.encoding === 'base64'
+          ? await found.entry.async('base64')
+          : await found.entry.async('string');
+      zip.remove(found.path);
+      byteLength = content.length;
+    }
+
+    const stub: ProjectAsset = {
       ...a,
       id: newId,
       path,
       name: a.name || base,
-    });
+      content: '',
+      byteLength,
+    };
+
+    if (content && usesExternalBody(stub)) {
+      await putAssetBody(newId, a.encoding, content);
+      assets.push(stub);
+    } else if (content) {
+      assets.push({ ...stub, content });
+    } else {
+      assets.push(stub);
+    }
     addedAssets += 1;
   }
 
   const bank: BankProblem[] = [...current.bank];
   let addedProblems = 0;
-  for (const p of incoming.bank) {
+  for (const p of meta.bank) {
     const newId = remapIds(p.id, problemMap, 'bank');
     const assetIds = (p.assetIds ?? [])
       .map((id) => assetMap.get(id))
@@ -132,11 +179,11 @@ function quizToBank(
   });
 }
 
-function mergeExamZip(
+async function mergeExamZip(
   current: AuthoringProject,
   exam: ExamSet,
   label: string,
-): MergeBankZipResult {
+): Promise<MergeBankZipResult> {
   const assets: ProjectAsset[] = [...current.assets];
   const bank: BankProblem[] = [...current.bank];
   let addedAssets = 0;
@@ -157,7 +204,12 @@ function mergeExamZip(
         },
         libraryPath,
       );
-      assets.push(asset);
+      if (usesExternalBody(asset)) {
+        await putAssetBody(asset.id, asset.encoding, asset.content);
+        assets.push({ ...asset, content: '' });
+      } else {
+        assets.push(asset);
+      }
       assetIds.push(asset.id);
       addedAssets += 1;
     }
@@ -183,13 +235,12 @@ export async function mergeBankFromZip(
   current: AuthoringProject,
   file: File,
 ): Promise<MergeBankZipResult> {
-  // Single JSZip load — avoid detectZipKind + parse each loading the file.
   const zip = await loadZip(file);
   const kind = zipKindFrom(zip);
   const label = stem(file.name);
   if (kind === 'project') {
-    const incoming = await parseProjectZipFrom(zip);
-    return mergeProjectZip(current, incoming, label);
+    const meta = await parseProjectZipMeta(zip);
+    return mergeProjectZipFromArchive(current, zip, meta, label);
   }
   if (kind === 'exam') {
     const exam = await parseExamZipFrom(zip);
@@ -210,7 +261,7 @@ export async function mergeBankFromZips(
   addedAssets: number;
   labels: string[];
 }> {
-  let project = current;
+  let project = await persistExternalAssets(current);
   let addedProblems = 0;
   let addedAssets = 0;
   const labels: string[] = [];

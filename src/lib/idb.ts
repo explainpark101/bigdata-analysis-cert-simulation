@@ -1,8 +1,9 @@
-/** Lightweight IndexedDB KV store for project / exam / theme persistence. */
+/** Lightweight IndexedDB KV + per-asset body store for project / exam persistence. */
 
 const DB_NAME = 'bigdata-knight-simulation';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE = 'kv';
+const ASSET_STORE = 'assetBodies';
 
 export type IdbKey =
   | 'project'
@@ -12,6 +13,11 @@ export type IdbKey =
   | 'variantChats'
   | 'authorChats'
   | 'gradeResult';
+
+export interface AssetBodyRecord {
+  encoding: 'utf-8' | 'base64';
+  content: string;
+}
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -24,6 +30,9 @@ function openDb(): Promise<IDBDatabase> {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) {
         db.createObjectStore(STORE);
+      }
+      if (!db.objectStoreNames.contains(ASSET_STORE)) {
+        db.createObjectStore(ASSET_STORE);
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -60,6 +69,52 @@ export async function idbDelete(key: IdbKey): Promise<void> {
   const db = await openDb();
   const tx = db.transaction(STORE, 'readwrite');
   tx.objectStore(STORE).delete(key);
+  await txDone(tx);
+}
+
+export async function idbPutAssetBody(
+  id: string,
+  body: AssetBodyRecord,
+): Promise<void> {
+  const db = await openDb();
+  const tx = db.transaction(ASSET_STORE, 'readwrite');
+  tx.objectStore(ASSET_STORE).put(body, id);
+  await txDone(tx);
+}
+
+export async function idbGetAssetBody(
+  id: string,
+): Promise<AssetBodyRecord | undefined> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(ASSET_STORE, 'readonly');
+    const req = tx.objectStore(ASSET_STORE).get(id);
+    req.onsuccess = () => resolve(req.result as AssetBodyRecord | undefined);
+    req.onerror = () =>
+      reject(req.error ?? new Error('IndexedDB asset get failed'));
+  });
+}
+
+export async function idbDeleteAssetBody(id: string): Promise<void> {
+  const db = await openDb();
+  const tx = db.transaction(ASSET_STORE, 'readwrite');
+  tx.objectStore(ASSET_STORE).delete(id);
+  await txDone(tx);
+}
+
+export async function idbClearAssetBodies(): Promise<void> {
+  const db = await openDb();
+  const tx = db.transaction(ASSET_STORE, 'readwrite');
+  tx.objectStore(ASSET_STORE).clear();
+  await txDone(tx);
+}
+
+export async function idbDeleteAssetBodies(ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  const db = await openDb();
+  const tx = db.transaction(ASSET_STORE, 'readwrite');
+  const store = tx.objectStore(ASSET_STORE);
+  for (const id of ids) store.delete(id);
   await txDone(tx);
 }
 

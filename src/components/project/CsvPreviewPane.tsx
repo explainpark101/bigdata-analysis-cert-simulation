@@ -4,10 +4,15 @@ import {
   buildCsvPreview,
   CSV_PREVIEW_MAX_ROWS,
 } from '@/lib/csvPreview';
-import { isImageAsset, type MediaAsset } from '@/lib/assetMedia';
+import { isImageAsset } from '@/lib/assetMedia';
+import { getAssetContent } from '@/lib/assetStore';
+import type { ProjectAsset } from '@/types/project';
+import type { ExamAsset } from '@/types/exam';
+
+type PreviewAsset = (ProjectAsset | ExamAsset) & { id?: string };
 
 interface CsvPreviewPaneProps {
-  asset: MediaAsset | null;
+  asset: PreviewAsset | null;
 }
 
 type CsvViewMode = 'table' | 'text';
@@ -30,27 +35,59 @@ function buildTextPreview(content: string): { text: string; truncated: boolean }
   };
 }
 
+async function resolvePreviewContent(asset: PreviewAsset): Promise<string> {
+  if (asset.content) return asset.content;
+  if (asset.id) {
+    return getAssetContent(asset as ProjectAsset);
+  }
+  return '';
+}
+
 export function CsvPreviewPane({ asset }: CsvPreviewPaneProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const theadRef = useRef<HTMLTableSectionElement>(null);
   const [viewMode, setViewMode] = useState<CsvViewMode>('table');
+  const [content, setContent] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!asset || isImageAsset(asset)) {
+      setContent('');
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    void (async () => {
+      try {
+        const text = await resolvePreviewContent(asset);
+        if (!cancelled) setContent(text);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [asset]);
 
   const preview = useMemo(() => {
     if (!asset || isImageAsset(asset) || asset.encoding !== 'utf-8') return null;
-    return buildCsvPreview(asset.content);
-  }, [asset]);
+    if (!content) return null;
+    return buildCsvPreview(content);
+  }, [asset, content]);
 
   const textPreview = useMemo(() => {
     if (!asset || isImageAsset(asset) || asset.encoding !== 'utf-8') {
       return { text: '', truncated: false };
     }
-    return buildTextPreview(asset.content ?? '');
-  }, [asset]);
+    return buildTextPreview(content);
+  }, [asset, content]);
 
   // Reset to table when switching files
   useEffect(() => {
     setViewMode('table');
-  }, [asset?.path]);
+  }, [asset && 'id' in asset ? asset.id : asset?.path]);
 
   // Sticky thead: map wheel (incl. vertical) to horizontal scroll of the pane.
   useEffect(() => {
@@ -91,6 +128,17 @@ export function CsvPreviewPane({ asset }: CsvPreviewPaneProps) {
           <p className="edit-page__sub">
             이미지 자산입니다. CSV 미리보기 대상이 아닙니다.
           </p>
+        </div>
+      </aside>
+    );
+  }
+
+  if (loading) {
+    return (
+      <aside className="csv-preview">
+        <div className="csv-preview__head">
+          <h3>{asset.path}</h3>
+          <p className="edit-page__sub">미리보기 불러오는 중…</p>
         </div>
       </aside>
     );

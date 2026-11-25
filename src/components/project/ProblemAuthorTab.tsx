@@ -36,7 +36,7 @@ const TASK_LABELS: Record<TaskType, string> = {
 
 interface ProblemAuthorTabProps {
   project: AuthoringProject;
-  addProjectAssets: (assets: ProjectAsset[]) => ProjectAsset[];
+  addProjectAssets: (assets: ProjectAsset[]) => Promise<ProjectAsset[]>;
   addAssetsFromFiles: (files: FileList | File[]) => Promise<ProjectAsset[]>;
   addBankProblem: (partial?: Partial<BankProblem>) => BankProblem;
   mergeBankZips: (files: File[]) => Promise<{
@@ -99,9 +99,28 @@ export function ProblemAuthorTab({
     return project.bank.find((b) => b.id === previewId) ?? null;
   }, [project.bank, previewId]);
 
-  const previewQuiz = useMemo(() => {
-    if (!previewProblem) return null;
-    return bankToPreviewQuiz(project, previewProblem);
+  const [previewQuiz, setPreviewQuiz] = useState<ReturnType<
+    typeof bankToPreviewQuiz
+  > | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!previewProblem) {
+      setPreviewQuiz(null);
+      return;
+    }
+    void (async () => {
+      const { withProjectAssetContents } = await import('@/lib/assetStore');
+      const hydrated = await withProjectAssetContents(
+        project,
+        previewProblem.assetIds,
+      );
+      if (cancelled) return;
+      setPreviewQuiz(bankToPreviewQuiz(hydrated, previewProblem));
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [project, previewProblem]);
 
   useEffect(() => {

@@ -55,41 +55,51 @@ function libraryPathFromFile(file: File): { path: string; image: boolean } {
   };
 }
 
-/** Read FileList / File[] into pending imports (skips non-data/image). */
+/** Read a single File into a pending import (skips non-data/image → null). */
+export async function readPendingImport(
+  file: File,
+): Promise<PendingAssetImport | null> {
+  if (!isImportableFile(file)) return null;
+  const { path, image } = libraryPathFromFile(file);
+  const sourcePath =
+    (file as File & { webkitRelativePath?: string }).webkitRelativePath ||
+    file.name;
+
+  if (image) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    return {
+      fileName: file.name,
+      libraryPath: path,
+      content: bytesToBase64(bytes),
+      encoding: 'base64',
+      mimeType: file.type || 'image/png',
+      sourcePath,
+    };
+  }
+  return {
+    fileName: file.name,
+    libraryPath: path,
+    content: await file.text(),
+    encoding: 'utf-8',
+    mimeType: file.type || 'text/csv',
+    sourcePath,
+  };
+}
+
+/**
+ * Read FileList into pending imports one-by-one.
+ * Prefer streaming callers that persist each file before the next read —
+ * holding every CSV string at once OOMs Tauri WebView.
+ */
 export async function readPendingImports(
   files: FileList | File[],
 ): Promise<PendingAssetImport[]> {
-  const list = Array.from(files).filter(isImportableFile);
+  const list = Array.from(files);
   const out: PendingAssetImport[] = [];
-
   for (const file of list) {
-    const { path, image } = libraryPathFromFile(file);
-    const sourcePath =
-      (file as File & { webkitRelativePath?: string }).webkitRelativePath ||
-      file.name;
-
-    if (image) {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      out.push({
-        fileName: file.name,
-        libraryPath: path,
-        content: bytesToBase64(bytes),
-        encoding: 'base64',
-        mimeType: file.type || 'image/png',
-        sourcePath,
-      });
-    } else {
-      out.push({
-        fileName: file.name,
-        libraryPath: path,
-        content: await file.text(),
-        encoding: 'utf-8',
-        mimeType: file.type || 'text/csv',
-        sourcePath,
-      });
-    }
+    const pending = await readPendingImport(file);
+    if (pending) out.push(pending);
   }
-
   return out;
 }
 

@@ -96,7 +96,12 @@ function PreviewCard({
         });
         return;
       }
-      const files = resolveAssets(project, problem.assetIds);
+      const { withProjectAssetContents } = await import('@/lib/assetStore');
+      const hydrated = await withProjectAssetContents(
+        project,
+        problem.assetIds,
+      );
+      const files = resolveAssets(hydrated, problem.assetIds);
       let out;
       if (lang === 'python') {
         await preloadPyodide();

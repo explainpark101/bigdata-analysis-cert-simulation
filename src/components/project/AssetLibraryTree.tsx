@@ -12,6 +12,7 @@ import {
   assetToDataUrl,
   isImageAsset,
 } from '@/lib/assetMedia';
+import { assetByteLength } from '@/lib/assetStore';
 import {
   buildAssetTree,
   mountPathForAsset,
@@ -94,7 +95,7 @@ function AssetFileRow({
         {mount}
       </span>
       <span className="badge">
-        {Math.max(1, Math.round(asset.content.length / 1024))} KB
+        {Math.max(1, Math.round(assetByteLength(asset) / 1024))} KB
       </span>
       <button
         type="button"

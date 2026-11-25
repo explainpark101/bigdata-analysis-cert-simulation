@@ -93,7 +93,12 @@ export function AnswerAuthorPanel({
     setRunning(true);
     setPreview(null);
     try {
-      const files = resolveAssets(project, problem.assetIds);
+      const { withProjectAssetContents } = await import('@/lib/assetStore');
+      const hydrated = await withProjectAssetContents(
+        project,
+        problem.assetIds,
+      );
+      const files = resolveAssets(hydrated, problem.assetIds);
       const source = activeCode.trim();
       if (!source) {
         setPreview({

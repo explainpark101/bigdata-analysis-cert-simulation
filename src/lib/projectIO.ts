@@ -25,6 +25,29 @@ export function cloneProject(project: AuthoringProject): AuthoringProject {
   return structuredClone(project);
 }
 
+/** Minimal project used while swapping in a large import (frees prior RAM). */
+export function createEmptyProject(
+  partial?: Partial<AuthoringProject>,
+): AuthoringProject {
+  const exam = createEmptyExamBlueprint({
+    title: partial?.title ? `${partial.title} 시험` : '새 시험지',
+  });
+  const now = new Date().toISOString();
+  return {
+    schemaVersion: 1,
+    kind: 'project',
+    id: partial?.id ?? `proj-${crypto.randomUUID().slice(0, 8)}`,
+    title: partial?.title ?? '새 프로젝트',
+    description: partial?.description ?? '',
+    assets: [],
+    bank: [],
+    exams: [exam],
+    activeExamId: exam.id,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 export function createEmptyExamBlueprint(
   partial?: Partial<ExamBlueprint>,
 ): ExamBlueprint {
@@ -228,7 +251,10 @@ export async function loadProjectFromStorage(): Promise<AuthoringProject | null>
     await ensureIdbReady();
     const data = await idbGet<unknown>('project');
     if (data == null) return null;
-    return validateProject(data);
+    const project = validateProject(data);
+    // Migrate legacy inline CSV bodies into assetBodies, keep React RAM lean.
+    const { persistExternalAssets } = await import('@/lib/assetStore');
+    return persistExternalAssets(project);
   } catch {
     return null;
   }
@@ -238,8 +264,10 @@ export async function saveProjectToStorage(
   project: AuthoringProject,
 ): Promise<void> {
   await ensureIdbReady();
+  const { persistExternalAssets } = await import('@/lib/assetStore');
+  const lean = await persistExternalAssets(project);
   await idbSet('project', {
-    ...project,
+    ...lean,
     updatedAt: new Date().toISOString(),
   });
 }
@@ -334,12 +362,14 @@ export function createProjectAsset(
     image: isImage,
     fileName: name,
   });
+  const content = file.content;
   return {
     id: `asset-${crypto.randomUUID().slice(0, 8)}`,
     path: rel,
     name,
     encoding: file.encoding ?? (isImage ? 'base64' : 'utf-8'),
-    content: file.content,
+    content,
+    byteLength: content.length,
     mimeType:
       file.mimeType ||
       (isImage ? 'application/octet-stream' : 'text/csv'),
@@ -459,6 +489,17 @@ function emptyCodePair(): { python: string; r: string } {
  * - 제2유형 code + result.csv submit
  * - 제3유형 (풀이용) code practice + 문제 풀이 short-answer submit
  */
+/** Hydrate external asset bodies needed for one exam, then materialize. */
+export async function materializeExamAsync(
+  project: AuthoringProject,
+  examId?: string,
+): Promise<ExamSet> {
+  const ids = collectExamAssetIds(project, examId);
+  const { withProjectAssetContents } = await import('@/lib/assetStore');
+  const hydrated = await withProjectAssetContents(project, ids);
+  return materializeExam(hydrated, examId);
+}
+
 export function materializeExam(
   project: AuthoringProject,
   examId?: string,

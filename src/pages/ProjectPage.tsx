@@ -29,9 +29,7 @@ import { DataAssetPicker } from '@/components/project/DataAssetPicker';
 import { AssetImportConflictDialog } from '@/components/project/AssetImportConflictDialog';
 import { EdgeResizeHandle } from '@/components/layout/EdgeResizeHandle';
 import {
-  classifyAssetImports,
   pendingToAsset,
-  readPendingImports,
   takenBasenames,
   type AssetNameConflict,
   type ConflictResolution,
@@ -128,7 +126,7 @@ export default function ProjectPage() {
   const zipRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
 
-  const finishImport = (
+  const finishImport = async (
     ready: PendingAssetImport[],
     conflicts: AssetNameConflict[],
     resolutions: ConflictResolution[],
@@ -140,7 +138,7 @@ export default function ProjectPage() {
       if (!r || r.action === 'skip') return;
       toAdd.push(pendingToAsset(c.pending, r.newName));
     });
-    const added = addProjectAssets(toAdd);
+    const added = await addProjectAssets(toAdd);
     const skippedConflicts = resolutions.filter((r) => r.action === 'skip').length;
     setMessage(
       `추가 ${added.length} · 내용 동일 건너뜀 ${identicalCount}` +
@@ -153,20 +151,20 @@ export default function ProjectPage() {
 
   const handleLibraryFiles = async (files: FileList | null) => {
     if (!files?.length) return;
-    const pending = await readPendingImports(files);
-    if (!pending.length) {
-      setMessage('가져올 CSV/이미지 파일이 없습니다.');
-      return;
+    // Stream one file at a time (full readPendingImports OOMs on big folders).
+    setMessage('파일 불러오는 중…');
+    try {
+      const added = await addAssetsFromFiles(files);
+      if (!added.length) {
+        setMessage('가져올 CSV/이미지 파일이 없거나 모두 동일해 건너뛰었습니다.');
+        return;
+      }
+      setMessage(`추가 ${added.length}`);
+      const last = added[added.length - 1];
+      if (last) setSelectedAssetId(last.id);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err));
     }
-    const { ready, conflicts, identicalCount } = classifyAssetImports(
-      pending,
-      project.assets,
-    );
-    if (conflicts.length) {
-      setImportSession({ ready, conflicts, identicalCount });
-      return;
-    }
-    finishImport(ready, [], [], identicalCount);
   };
 
   const previewMaxWidth = useMemo(() => {
@@ -1124,7 +1122,7 @@ export default function ProjectPage() {
           takenNames={takenBasenames(project.assets)}
           onCancel={() => setImportSession(null)}
           onResolveAll={(resolutions) => {
-            finishImport(
+            void finishImport(
               importSession.ready,
               importSession.conflicts,
               resolutions,

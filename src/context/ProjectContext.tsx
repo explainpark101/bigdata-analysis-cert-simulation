@@ -16,14 +16,24 @@ import {
   duplicateBankProblem,
   duplicateExamBlueprint,
   getActiveExam,
+  clearExamSession,
+  createEmptyProject,
   loadProjectFromStorage,
-  materializeExam,
+  materializeExamAsync,
   saveExamSession,
   saveProjectToStorage,
 } from '@/lib/projectIO';
 import { exportExamZip } from '@/lib/examZip';
-import { exportProjectZip, parseProjectZip } from '@/lib/projectZip';
+import { exportProjectZip, importProjectZip } from '@/lib/projectZip';
 import { mergeBankFromZips } from '@/lib/mergeBankZip';
+import {
+  clearAssetContentCache,
+  deleteAssetBody,
+  persistExternalAssets,
+  putAssetBody,
+  replaceAllAssetBodies,
+  usesExternalBody,
+} from '@/lib/assetStore';
 import type {
   AuthoringProject,
   BankProblem,
@@ -35,7 +45,7 @@ import { mountPathForAsset } from '@/lib/assetPaths';
 import {
   classifyAssetImports,
   pendingToAsset,
-  readPendingImports,
+  readPendingImport,
   suggestRename,
   takenBasenames,
 } from '@/lib/assetImport';
@@ -46,8 +56,8 @@ interface ProjectContextValue {
   setProject: (p: AuthoringProject) => void;
   /** Import files; identical basename+content skipped; content conflicts auto-renamed */
   addAssetsFromFiles: (files: FileList | File[]) => Promise<ProjectAsset[]>;
-  /** Append / upsert prepared assets by mount path */
-  addProjectAssets: (assets: ProjectAsset[]) => ProjectAsset[];
+  /** Append / upsert prepared assets by mount path (large bodies → IndexedDB). */
+  addProjectAssets: (assets: ProjectAsset[]) => Promise<ProjectAsset[]>;
   updateAsset: (id: string, patch: Partial<ProjectAsset>) => void;
   removeAsset: (id: string) => void;
   updateBankProblem: (id: string, patch: Partial<BankProblem>) => void;
@@ -132,34 +142,52 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setProjectState({ ...p, updatedAt: new Date().toISOString() });
   }, []);
 
-  const addProjectAssets = useCallback((incoming: ProjectAsset[]) => {
+  const addProjectAssets = useCallback(async (incoming: ProjectAsset[]) => {
+    const prev = projectRef.current;
+    const assets = [...prev.assets];
     const resolved: ProjectAsset[] = [];
-    setProjectState((prev) => {
-      const assets = [...prev.assets];
-      for (const a of incoming) {
-        const mount = mountPathForAsset(a);
-        const sameIdx = assets.findIndex((x) => mountPathForAsset(x) === mount);
-        if (sameIdx >= 0) {
-          const next = { ...a, id: assets[sameIdx].id };
-          assets[sameIdx] = next;
-          resolved.push(next);
-        } else {
-          assets.push(a);
-          resolved.push(a);
-        }
+
+    for (const a of incoming) {
+      const mount = mountPathForAsset(a);
+      const sameIdx = assets.findIndex((x) => mountPathForAsset(x) === mount);
+      const id = sameIdx >= 0 ? assets[sameIdx].id : a.id;
+      if (usesExternalBody(a) && a.content) {
+        await putAssetBody(id, a.encoding, a.content);
       }
-      return { ...prev, assets, updatedAt: new Date().toISOString() };
+      const lean: ProjectAsset = usesExternalBody(a)
+        ? {
+            ...a,
+            id,
+            content: '',
+            byteLength: a.byteLength ?? a.content.length,
+          }
+        : { ...a, id };
+      if (sameIdx >= 0) assets[sameIdx] = lean;
+      else assets.push(lean);
+      resolved.push(lean);
+    }
+
+    setProjectState({
+      ...prev,
+      assets,
+      updatedAt: new Date().toISOString(),
     });
     return resolved;
   }, []);
 
   const addAssetsFromFiles = useCallback(async (files: FileList | File[]) => {
-    const pending = await readPendingImports(files);
-    if (!pending.length) return [];
-
+    // One file at a time: read → IDB → drop string → next (avoids folder-import OOM).
     const resolved: ProjectAsset[] = [];
-    setProjectState((prev) => {
-      const { ready, conflicts } = classifyAssetImports(pending, prev.assets);
+    const list = Array.from(files);
+    for (const file of list) {
+      const pending = await readPendingImport(file);
+      if (!pending) continue;
+      const prev = projectRef.current;
+      const { ready, conflicts, identicalCount } = classifyAssetImports(
+        [pending],
+        prev.assets,
+      );
+      if (identicalCount) continue;
       const taken = takenBasenames(prev.assets);
       const toAdd = ready.map((p) => pendingToAsset(p));
       for (const c of conflicts) {
@@ -167,24 +195,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         taken.add(name.toLowerCase());
         toAdd.push(pendingToAsset(c.pending, name));
       }
-
-      const assets = [...prev.assets];
-      for (const a of toAdd) {
-        const mount = mountPathForAsset(a);
-        const sameIdx = assets.findIndex((x) => mountPathForAsset(x) === mount);
-        if (sameIdx >= 0) {
-          const next = { ...a, id: assets[sameIdx].id };
-          assets[sameIdx] = next;
-          resolved.push(next);
-        } else {
-          assets.push(a);
-          resolved.push(a);
-        }
-      }
-      return { ...prev, assets, updatedAt: new Date().toISOString() };
-    });
+      if (!toAdd.length) continue;
+      const added = await addProjectAssets(toAdd);
+      resolved.push(...added);
+    }
     return resolved;
-  }, []);
+  }, [addProjectAssets]);
 
   const updateAsset = useCallback((id: string, patch: Partial<ProjectAsset>) => {
     setProjectState((prev) => ({
@@ -195,6 +211,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const removeAsset = useCallback((id: string) => {
+    void deleteAssetBody(id);
     setProjectState((prev) => ({
       ...prev,
       assets: prev.assets.filter((a) => a.id !== id),
@@ -330,8 +347,17 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   }, [project]);
 
   const importProject = useCallback(async (file: File) => {
-    const next = await parseProjectZip(file);
-    setProjectState({ ...next, updatedAt: new Date().toISOString() });
+    // Drop prior project + exam session so WebView can GC before inflate.
+    clearAssetContentCache();
+    setProjectState(createEmptyProject({ title: '불러오는 중…' }));
+    await clearExamSession();
+    await new Promise<void>((r) => {
+      window.setTimeout(r, 0);
+    });
+
+    const next = await importProjectZip(file);
+    const lean = await persistExternalAssets(next);
+    setProjectState({ ...lean, updatedAt: new Date().toISOString() });
   }, []);
 
   const mergeBankZips = useCallback(async (files: FileList | File[]) => {
@@ -339,8 +365,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     if (!list.length) {
       return { addedProblems: 0, addedAssets: 0, labels: [] as string[] };
     }
-    let snapshot = project;
-    // Read latest via functional update after merge
+    const snapshot = await persistExternalAssets(project);
     const result = await mergeBankFromZips(snapshot, list);
     setProjectState(result.project);
     return {
@@ -352,7 +377,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   const exportExamPackage = useCallback(
     async (examId?: string) => {
-      const exam = materializeExam(project, examId);
+      const exam = await materializeExamAsync(project, examId);
       await exportExamZip(exam);
     },
     [project],
@@ -360,7 +385,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   const pushExamToSession = useCallback(
     async (examId?: string) => {
-      const exam = materializeExam(project, examId);
+      const exam = await materializeExamAsync(project, examId);
       await saveExamSession(exam);
       return exam;
     },
@@ -368,6 +393,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   );
 
   const resetSample = useCallback(() => {
+    clearAssetContentCache();
+    void replaceAllAssetBodies();
     setProjectState(cloneProject(SAMPLE_PROJECT));
   }, []);
 

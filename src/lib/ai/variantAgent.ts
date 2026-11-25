@@ -29,7 +29,7 @@ export interface VariantAgentContext {
   source: BankProblem;
   draft: VariantDraft;
   /** Persist newly created assets into the project */
-  addProjectAssets: (assets: ProjectAsset[]) => ProjectAsset[];
+  addProjectAssets: (assets: ProjectAsset[]) => Promise<ProjectAsset[]>;
 }
 
 export interface VariantAgentResult {
@@ -462,7 +462,7 @@ export async function runVariantAgentTurn(opts: {
                 ),
               );
             }
-            const added = ctx.addProjectAssets(created);
+            const added = await ctx.addProjectAssets(created);
             for (const a of added) {
               const idx = ctx.project.assets.findIndex((x) => x.id === a.id);
               if (idx >= 0) ctx.project.assets[idx] = a;

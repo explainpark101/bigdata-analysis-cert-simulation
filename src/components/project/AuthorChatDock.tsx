@@ -50,7 +50,7 @@ interface AuthorChatDockProps {
   width: number;
   onWidthChange: (w: number) => void;
   maxWidth: number;
-  addProjectAssets: (assets: ProjectAsset[]) => ProjectAsset[];
+  addProjectAssets: (assets: ProjectAsset[]) => Promise<ProjectAsset[]>;
   onSaveProblem: (partial: Partial<BankProblem>) => BankProblem;
   onSaved: (
     problem: BankProblem,
