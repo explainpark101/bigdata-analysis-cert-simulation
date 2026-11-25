@@ -862,9 +862,15 @@ export default function ProjectPage() {
             setTab('bank');
           }}
           onAssembleExam={(problems, opts) => {
-            const ordered = [...problems].sort(
-              (a, b) => a.taskType - b.taskType || a.title.localeCompare(b.title),
-            );
+            // This batch only — never pull older bank / sample problems.
+            const byId = new Map(problems.map((p) => [p.id, p]));
+            const ordered = pickOfficialProblemIds(problems)
+              .map((id) => byId.get(id))
+              .filter((p): p is (typeof problems)[number] => Boolean(p));
+            if (!ordered.length) {
+              setMessage('시험 조립 실패: 이번 생성 문항이 없습니다.');
+              return;
+            }
             const stamp = new Date().toLocaleString('ko-KR', {
               month: '2-digit',
               day: '2-digit',
@@ -874,7 +880,7 @@ export default function ProjectPage() {
             });
             const exam = addExam({
               title: `AI 자동 시험 ${stamp}`,
-              description: `제13회 가이드 공식 구성(3+1+2) 자동 생성 조립 · ${ordered
+              description: `제13회 가이드 공식 구성(3+1+2) · 이번 생성 문항만 · ${ordered
                 .map((p) => `제${p.taskType}유형`)
                 .join(' · ')}`,
               problemIds: ordered.map((p) => p.id),
@@ -882,7 +888,7 @@ export default function ProjectPage() {
               maxRunSeconds: OFFICIAL_MAX_RUN_SECONDS,
             });
             setMessage(
-              `시험 조립 완료: ${exam.title} · ${ordered.length}문항 (만점 ${OFFICIAL_TOTAL_POINTS}점)`,
+              `시험 조립 완료: ${exam.title} · ${ordered.length}문항 (이번 생성분만, 만점 ${OFFICIAL_TOTAL_POINTS}점)`,
             );
             // Stay on author tab while multi-paper batch is still running.
             if (opts?.navigate !== false) setTab('exam');
@@ -1083,7 +1089,7 @@ export default function ProjectPage() {
                   onClick={() =>
                     setExamProblemIds(pickOfficialProblemIds(project.bank))
                   }
-                  title="유형별로 필요 수 이하면 전체, 초과면 랜덤으로 3·1·2개를 골라 공식 구성으로 맞춤"
+                  title="유형별로 가장 최근에 추가된 문항만으로 3·1·2 공식 구성 (초과 시 최신 후보에서 랜덤)"
                 >
                   <ListChecks size={16} />
                   공식 구성으로 맞추기

@@ -116,7 +116,9 @@ export function takeAllOrRandom<T>(items: T[], limit: number): T[] {
 
 /**
  * Pick up to the official count per type for a standard paper (1→2→3).
- * If a type has at most the needed count, take all; otherwise sample randomly.
+ * Bank order is append-only (newest last). If a type fits the quota, take all;
+ * otherwise sample randomly among the **newest** candidates only (never older
+ * bank items ahead of a fresh auto-gen batch).
  */
 export function pickOfficialProblemIds(
   bank: Array<Pick<BankProblem, 'id' | 'taskType'>>,
@@ -127,10 +129,15 @@ export function pickOfficialProblemIds(
     if (t !== 1 && t !== 2 && t !== 3) continue;
     byType[t].push(b.id);
   }
+  const pickNewest = (ids: string[], need: number): string[] => {
+    if (ids.length <= need) return [...ids];
+    // Window = newest `need` items only → assembled paper stays on recent gens.
+    return takeAllOrRandom(ids.slice(-need), need);
+  };
   return [
-    ...takeAllOrRandom(byType[1], OFFICIAL_COUNTS[1]),
-    ...takeAllOrRandom(byType[2], OFFICIAL_COUNTS[2]),
-    ...takeAllOrRandom(byType[3], OFFICIAL_COUNTS[3]),
+    ...pickNewest(byType[1], OFFICIAL_COUNTS[1]),
+    ...pickNewest(byType[2], OFFICIAL_COUNTS[2]),
+    ...pickNewest(byType[3], OFFICIAL_COUNTS[3]),
   ];
 }
 

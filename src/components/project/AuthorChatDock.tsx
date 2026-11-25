@@ -746,17 +746,12 @@ export function AuthorChatDock({
             : `시험지 ${paperLabel}: 저장된 문항이 없습니다.`;
 
         const counts = countBankByType(savedProblems);
+        // Pass only this paper's newly saved items (never the full bank).
         if (savedProblems.length > 0 && onAssembleExam) {
           setLiveStatus(`시험지 ${paperLabel} 조립 중…`);
           try {
             const isLast = paper === examCount - 1;
-            onAssembleExam(
-              [...savedProblems].sort(
-                (a, b) =>
-                  a.taskType - b.taskType || a.title.localeCompare(b.title),
-              ),
-              { navigate: isLast },
-            );
+            onAssembleExam([...savedProblems], { navigate: isLast });
             assembledPapers += 1;
             if (isOfficialStructure(counts)) {
               summary +=
