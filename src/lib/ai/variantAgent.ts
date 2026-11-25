@@ -1,6 +1,9 @@
 import {
   chatContentToText,
   createChatCompletion,
+  RepetitionLoopError,
+  stripThinkingContent,
+  stripThinkingFromHistory,
   type ChatMessage,
   type ChatToolDef,
 } from '@/lib/ai/openaiCompatible';
@@ -71,6 +74,7 @@ function systemPrompt(source: BankProblem): string {
           '- Keep the SAME dataset assetIds (do not regenerate CSV unless user insists).',
           '- Change the question wording / aggregation / filter / target column / round-or-trunc rule as requested.',
           '- Put computation code in set_answer_code; run_answer_code; then set_short_answers from printed values only.',
+          '- CSV load paths in answer_code / markdown MUST be `data/<file>.csv` (flat).',
           '- Short answers MUST be numbers only after 반올림/절사 (e.g. "11.0", "0.12"). Never letters/labels.',
           '- One item may have multiple 소문항 (type1 max 5, type3 max 3). Mark ①②/(1)(2); set_short_answers length = count; print one line each.',
           '- If run_answer_code prints NaN/Inf: do not save — redesign and regenerate until answers are finite.',
@@ -486,7 +490,9 @@ export async function runVariantAgentTurn(opts: {
   };
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt(ctx.source) },
-    ...opts.history.filter((m) => m.role !== 'system'),
+    ...stripThinkingFromHistory(
+      opts.history.filter((m) => m.role !== 'system'),
+    ),
     { role: 'user', content: opts.userText },
   ];
 
@@ -515,9 +521,12 @@ export async function runVariantAgentTurn(opts: {
       onRetry: (attempt, error) => {
         const msg =
           error instanceof Error ? error.message : String(error ?? '');
-        // Progress is optional on variant; keep console breadcrumb for retries.
+        const label =
+          error instanceof RepetitionLoopError
+            ? 'repetition abort'
+            : 'retry';
         console.info(
-          `[variantAgent] retry ${attempt}${msg ? `: ${msg.slice(0, 120)}` : ''}`,
+          `[variantAgent] ${label} ${attempt}${msg ? `: ${msg.slice(0, 120)}` : ''}`,
         );
       },
     });
@@ -875,6 +884,8 @@ export async function runVariantAgentTurn(opts: {
               ok: true,
               assetIds: draft.assetIds,
               paths: added.map((a) => a.path),
+              mount: added.map((a) => mountPathForAsset(a)),
+              hint: 'In answer_code / markdown load via mount paths only (data/<file>.csv).',
             });
           }
         } else if (name === 'save_variant') {
@@ -968,10 +979,13 @@ export async function runVariantAgentTurn(opts: {
       ),
   );
 
+  // Persist final answers only — drop think/thought from stored turns.
   return {
-    messages: uiMessages.filter((m) => m.role !== 'system'),
+    messages: stripThinkingFromHistory(
+      uiMessages.filter((m) => m.role !== 'system'),
+    ),
     draft,
-    assistantText,
+    assistantText: stripThinkingContent(assistantText),
     savedProblem,
   };
 }

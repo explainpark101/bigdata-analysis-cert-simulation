@@ -25,6 +25,7 @@ import {
 import { playCompletionSound } from '@/lib/ai/completionSound';
 import {
   chatContentToText,
+  stripThinkingFromHistory,
   sleepAbortable,
   type ChatContentPart,
   type ChatMessage,
@@ -290,7 +291,7 @@ function autoPromptForType(
     '- MUTATE: list_project_csvs → preview_csv_asset → set_transform_code(python|r) → run_transform_code → save_generated_assets',
     '  (컬럼명 변경·결측 주입·리샘플·분포 이동·train/test 재분할 등으로 스킬은 유지하고 내용은 새로 만드세요. 원본을 draft에 그대로 붙이지 마세요.)',
     '- SYNTHESIZE: set_dataset_code → run_dataset_code → save_generated_assets (고정 시드로 out/*.csv 신규 생성)',
-    '- xlsx/parquet/json/txt 테이블 금지. 문제 본문에 CSV 파일명을 명시하세요.',
+    '- xlsx/parquet/json/txt 테이블 금지. 문제 본문·정답 코드의 CSV 경로는 반드시 `data/파일명.csv` 형태로 명시하세요.',
     '',
     taskType === 1 || taskType === 3
       ? authorType13AnswerFormatPromptKo({ taskType })
@@ -395,7 +396,7 @@ export function AuthorChatDock({
       const stored = await loadAuthorSession(project.id);
       if (cancelled) return;
       if (stored) {
-        setMessages(stored.messages);
+        setMessages(stripThinkingFromHistory(stored.messages));
         onDraftChange(normalizeAuthorDraft(stored.draft));
         // Do not clobber refs the user already picked while this load was in flight
         // (otherwise the 123 button stays disabled / generation sees empty refs).

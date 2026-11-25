@@ -11,7 +11,13 @@ import type {
   ShortAnswerSlot,
 } from '@/types/exam';
 import { extractMarkdownImagePaths } from '@/lib/assetMedia';
-import { mountPathForAsset, normalizeLibraryPath } from '@/lib/assetPaths';
+import {
+  assetBasename,
+  mountPathForAsset,
+  normalizeLibraryPath,
+  rewriteMountPaths,
+  uniqueMountPath,
+} from '@/lib/assetPaths';
 import { ensureIdbReady, idbDelete, idbGet, idbSet } from '@/lib/idb';
 import { buildStarterCode } from '@/lib/starterCode';
 import {
@@ -387,22 +393,27 @@ export function createProjectAsset(
   };
 }
 
+/**
+ * Resolve assets to flat exam mount paths (`data/*.csv`, `images/*`).
+ * Duplicate basenames get `_2`, `_3`, … suffixes so every file is reachable.
+ */
 export function resolveAssets(
   project: AuthoringProject,
   assetIds: string[],
 ): ExamAsset[] {
   const map = new Map(project.assets.map((a) => [a.id, a]));
   const out: ExamAsset[] = [];
-  const seenMount = new Set<string>();
+  const usedMount = new Set<string>();
+  const byAssetId = new Map<string, string>();
   for (const id of assetIds) {
     const a = map.get(id);
     if (!a) continue;
-    const mount = mountPathForAsset(a);
-    if (seenMount.has(mount)) continue;
-    seenMount.add(mount);
+    if (byAssetId.has(id)) continue;
+    const mount = uniqueMountPath(mountPathForAsset(a), usedMount);
+    byAssetId.set(id, mount);
     out.push({
       path: mount,
-      name: a.name,
+      name: assetBasename(mount),
       encoding: a.encoding,
       content: a.content,
       mimeType: a.mimeType,
@@ -411,13 +422,74 @@ export function resolveAssets(
   return out;
 }
 
+/** assetId → unique mount path (same uniquify rules as resolveAssets). */
+export function resolveAssetMountMap(
+  project: AuthoringProject,
+  assetIds: string[],
+): Map<string, string> {
+  const map = new Map(project.assets.map((a) => [a.id, a]));
+  const usedMount = new Set<string>();
+  const byAssetId = new Map<string, string>();
+  for (const id of assetIds) {
+    const a = map.get(id);
+    if (!a) continue;
+    if (byAssetId.has(id)) continue;
+    byAssetId.set(id, uniqueMountPath(mountPathForAsset(a), usedMount));
+  }
+  return byAssetId;
+}
+
+function renamesForBank(
+  project: AuthoringProject,
+  bank: BankProblem,
+  mountByAssetId: Map<string, string>,
+): Array<{ from: string; to: string }> {
+  const map = new Map(project.assets.map((a) => [a.id, a]));
+  const renames: Array<{ from: string; to: string }> = [];
+  for (const id of bank.assetIds) {
+    const a = map.get(id);
+    const to = mountByAssetId.get(id);
+    if (!a || !to) continue;
+    const from = mountPathForAsset(a);
+    if (from !== to) renames.push({ from, to });
+  }
+  return renames;
+}
+
+function rewriteBankText(
+  text: string,
+  project: AuthoringProject,
+  bank: BankProblem,
+  mountByAssetId: Map<string, string>,
+): string {
+  return rewriteMountPaths(
+    text,
+    renamesForBank(project, bank, mountByAssetId),
+  );
+}
+
 function collectQuizFiles(
   project: AuthoringProject,
   banks: BankProblem[],
-): ExamAsset[] {
+): { files: ExamAsset[]; mountByAssetId: Map<string, string> } {
   const assetIds = [...new Set(banks.flatMap((b) => b.assetIds))];
-  const files = resolveAssets(project, assetIds);
-  const seen = new Set(files.map((f) => f.path));
+  const mountByAssetId = resolveAssetMountMap(project, assetIds);
+  const map = new Map(project.assets.map((a) => [a.id, a]));
+  const files: ExamAsset[] = [];
+  const seenPath = new Set<string>();
+  for (const id of assetIds) {
+    const a = map.get(id);
+    const mount = mountByAssetId.get(id);
+    if (!a || !mount || seenPath.has(mount)) continue;
+    seenPath.add(mount);
+    files.push({
+      path: mount,
+      name: assetBasename(mount),
+      encoding: a.encoding,
+      content: a.content,
+      mimeType: a.mimeType,
+    });
+  }
   for (const bank of banks) {
     for (const imgPath of extractMarkdownImagePaths(bank.markdown)) {
       const asset = project.assets.find((a) => {
@@ -430,19 +502,26 @@ function collectQuizFiles(
         );
       });
       if (!asset) continue;
-      const mount = mountPathForAsset(asset);
-      if (seen.has(mount)) continue;
+      if (!mountByAssetId.has(asset.id)) {
+        const used = new Set(mountByAssetId.values());
+        mountByAssetId.set(
+          asset.id,
+          uniqueMountPath(mountPathForAsset(asset), used),
+        );
+      }
+      const mount = mountByAssetId.get(asset.id)!;
+      if (seenPath.has(mount)) continue;
+      seenPath.add(mount);
       files.push({
         path: mount,
-        name: asset.name,
+        name: assetBasename(mount),
         encoding: asset.encoding,
         content: asset.content,
         mimeType: asset.mimeType,
       });
-      seen.add(mount);
     }
   }
-  return files;
+  return { files, mountByAssetId };
 }
 
 /**
@@ -485,14 +564,40 @@ function buildShortSlots(banks: BankProblem[]): ShortAnswerSlot[] {
   return slots;
 }
 
-function mergeMarkdown(banks: BankProblem[]): string {
-  if (banks.length === 1) return banks[0].markdown;
+function mergeMarkdown(
+  banks: BankProblem[],
+  project?: AuthoringProject,
+  mountByAssetId?: Map<string, string>,
+): string {
+  if (banks.length === 1) {
+    const b = banks[0];
+    if (project && mountByAssetId) {
+      return rewriteBankText(b.markdown, project, b, mountByAssetId);
+    }
+    return b.markdown;
+  }
   return banks
     .map((b, i) => {
-      const body = b.markdown.replace(/^#+\s+[^\n]+\n?/, '').trim();
+      let body = b.markdown.replace(/^#+\s+[^\n]+\n?/, '').trim();
+      if (project && mountByAssetId) {
+        body = rewriteBankText(body, project, b, mountByAssetId);
+      }
       return `## 문제 ${i + 1}\n\n${body}`;
     })
     .join('\n\n');
+}
+
+function rewriteCodePair(
+  code: { python: string; r: string } | undefined,
+  project: AuthoringProject,
+  bank: BankProblem,
+  mountByAssetId: Map<string, string>,
+): { python: string; r: string } | undefined {
+  if (!code) return undefined;
+  return {
+    python: rewriteBankText(code.python ?? '', project, bank, mountByAssetId),
+    r: rewriteBankText(code.r ?? '', project, bank, mountByAssetId),
+  };
 }
 
 function emptyCodePair(): { python: string; r: string } {
@@ -555,12 +660,15 @@ export function materializeExam(
     if (taskType === 2) {
       for (const bank of banks) {
         submitSeq += 1;
-        const files = collectQuizFiles(project, [bank]);
+        const { files, mountByAssetId } = collectQuizFiles(project, [bank]);
         const filePaths = files.map((f) => f.path);
         const bankStarter = bank.starterCode;
         const hasBankStarter = Boolean(
           bankStarter?.python?.trim() || bankStarter?.r?.trim(),
         );
+        const rewrittenStarter = hasBankStarter
+          ? rewriteCodePair(bankStarter, project, bank, mountByAssetId)
+          : undefined;
         quizzes.push({
           id: bank.id,
           number: String(submitSeq).padStart(2, '0'),
@@ -570,13 +678,28 @@ export function materializeExam(
           showNoteOnExam: Boolean(bank.showNoteOnExam && bank.note?.trim()),
           kind: 'submit',
           viewMode: 'code',
-          markdown: bank.markdown,
+          markdown: rewriteBankText(
+            bank.markdown,
+            project,
+            bank,
+            mountByAssetId,
+          ),
           language: bank.language,
-          starterCode: hasBankStarter
-            ? { ...bankStarter! }
+          starterCode: rewrittenStarter
+            ? { ...rewrittenStarter }
             : buildStarterCode(2, filePaths),
-          answerCode: bank.answerCode ? { ...bank.answerCode } : undefined,
-          gradingCode: bank.gradingCode ? { ...bank.gradingCode } : undefined,
+          answerCode: rewriteCodePair(
+            bank.answerCode,
+            project,
+            bank,
+            mountByAssetId,
+          ),
+          gradingCode: rewriteCodePair(
+            bank.gradingCode,
+            project,
+            bank,
+            mountByAssetId,
+          ),
           files,
           submitFormat: 'csv',
           submitFile: bank.submitFile || 'result.csv',
@@ -591,14 +714,15 @@ export function materializeExam(
     // Type 1 / 3: practice (code) + short-answer submit page "문제 풀이"
     // Keep asset order aligned with exam problem order so starter loads
     // the selected paper's datasets (문제 1 → first file, …).
-    const files = collectQuizFiles(project, banks);
+    const { files, mountByAssetId } = collectQuizFiles(project, banks);
     const orderedPaths: string[] = [];
     const seenPath = new Set<string>();
     for (const bank of banks) {
-      for (const f of resolveAssets(project, bank.assetIds)) {
-        if (seenPath.has(f.path)) continue;
-        seenPath.add(f.path);
-        orderedPaths.push(f.path);
+      for (const id of bank.assetIds) {
+        const p = mountByAssetId.get(id);
+        if (!p || seenPath.has(p)) continue;
+        seenPath.add(p);
+        orderedPaths.push(p);
       }
     }
     for (const f of files) {
@@ -613,6 +737,18 @@ export function materializeExam(
     const useFirstStarter =
       banks.length === 1 &&
       Boolean(firstStarter?.python?.trim() || firstStarter?.r?.trim());
+    const practiceMarkdown = mergeMarkdown(banks, project, mountByAssetId);
+    const practiceStarter = useFirstStarter
+      ? rewriteCodePair(firstStarter, project, banks[0], mountByAssetId)!
+      : buildStarterCode(taskType, orderedPaths);
+    const practiceAnswer = banks[0]?.answerCode
+      ? rewriteCodePair(
+          banks[0].answerCode,
+          project,
+          banks[0],
+          mountByAssetId,
+        )!
+      : emptyCodePair();
 
     quizzes.push({
       id: practiceId,
@@ -621,14 +757,10 @@ export function materializeExam(
       taskType,
       kind: 'practice',
       viewMode: 'code',
-      markdown: mergeMarkdown(banks),
+      markdown: practiceMarkdown,
       language: lang,
-      starterCode: useFirstStarter
-        ? { ...firstStarter! }
-        : buildStarterCode(taskType, orderedPaths),
-      answerCode: banks[0]?.answerCode
-        ? { ...banks[0].answerCode }
-        : emptyCodePair(),
+      starterCode: practiceStarter,
+      answerCode: practiceAnswer,
       files,
       submitted: false,
       notepadGroup: group,
@@ -645,7 +777,7 @@ export function materializeExam(
       showNoteOnExam: false,
       kind: 'submit',
       viewMode: 'short',
-      markdown: mergeMarkdown(banks),
+      markdown: practiceMarkdown,
       language: lang,
       starterCode: emptyCodePair(),
       shortSlots: slots,

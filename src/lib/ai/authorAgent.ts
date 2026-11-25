@@ -1,6 +1,9 @@
 import {
   chatContentToText,
   createChatCompletion,
+  RepetitionLoopError,
+  stripThinkingContent,
+  stripThinkingFromHistory,
   type ChatContentPart,
   type ChatMessage,
   type ChatToolDef,
@@ -99,8 +102,9 @@ function systemPrompt(requireSave: boolean): string {
     '',
     '## Data files = CSV only',
     '- Every data file attached to the draft MUST be a .csv (UTF-8). No xlsx, parquet, json, txt tables, or images-as-data.',
+    '- In answer_code / starter / markdown, CSV paths MUST be `data/<filename>.csv` (flat under data/). Never absolute paths, never nested folders in load code.',
     '- use_project_assets may only attach EXISTING .csv as-is (rare). Prefer MUTATE or SYNTHESIZE so the exam file is original.',
-    '- Mention the exact CSV filenames in the problem markdown.',
+    '- Mention the exact `data/*.csv` filenames in the problem markdown.',
     '',
     '## Design decision (mandatory before producing data)',
     'After analyzing references, choose ONE path and state it briefly in Korean:',
@@ -670,7 +674,9 @@ export async function runAuthorAgentTurn(opts: {
         .filter(Boolean)
         .join('\n'),
     },
-    ...opts.history.filter((m) => m.role !== 'system'),
+    ...stripThinkingFromHistory(
+      opts.history.filter((m) => m.role !== 'system'),
+    ),
     {
       role: 'user',
       content: userParts.length === 1 && userParts[0].type === 'text'
@@ -708,9 +714,13 @@ export async function runAuthorAgentTurn(opts: {
       onRetry: (attempt, error) => {
         const msg =
           error instanceof Error ? error.message : String(error ?? '');
+        const label =
+          error instanceof RepetitionLoopError
+            ? '반복 응답 감지 — 재생성'
+            : '실패 재시도 중';
         report({
           kind: 'status',
-          text: `실패 재시도 중… (${attempt})${msg ? ` · ${msg.slice(0, 80)}` : ''}`,
+          text: `${label}… (${attempt})${msg ? ` · ${msg.slice(0, 80)}` : ''}`,
         });
       },
       onDelta: (delta) => {
@@ -1113,6 +1123,8 @@ export async function runAuthorAgentTurn(opts: {
               ok: true,
               assetIds: draft.assetIds,
               paths: added.map((a) => a.path),
+              mount: added.map((a) => mountPathForAsset(a)),
+              hint: 'In answer_code / markdown load via mount paths only (data/<file>.csv).',
               rejected,
             });
           }
@@ -1312,10 +1324,13 @@ export async function runAuthorAgentTurn(opts: {
       ),
   );
 
+  // Persist final answers only — drop think/thought from stored turns.
   return {
-    messages: uiMessages.filter((m) => m.role !== 'system'),
+    messages: stripThinkingFromHistory(
+      uiMessages.filter((m) => m.role !== 'system'),
+    ),
     draft,
-    assistantText,
+    assistantText: stripThinkingContent(assistantText),
     savedProblem,
   };
 }

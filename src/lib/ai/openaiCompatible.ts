@@ -1,4 +1,6 @@
 import {
+  AI_RESERVED_BODY_KEYS,
+  DEFAULT_AI_TEMPERATURE,
   chatCompletionsUrl,
   modelsUrl,
   type AiEndpointSettings,
@@ -30,6 +32,68 @@ export function chatContentToText(content: ChatContent): string {
     .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
     .map((p) => p.text)
     .join('\n');
+}
+
+/**
+ * Remove model "thinking" / chain-of-thought blocks from assistant text.
+ * Keeps only the final answer portion for chat history / next-turn context.
+ */
+export function stripThinkingContent(text: string): string {
+  let out = String(text ?? '');
+  if (!out) return '';
+
+  // Complete tagged blocks (common local / DeepSeek / Qwen / OpenAI-compat).
+  out = out.replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '');
+  out = out.replace(/<thought\b[^>]*>[\s\S]*?<\/thought>/gi, '');
+  out = out.replace(/<thinking\b[^>]*>[\s\S]*?<\/thinking>/gi, '');
+  out = out.replace(/<reasoning\b[^>]*>[\s\S]*?<\/reasoning>/gi, '');
+  out = out.replace(
+    /<redacted_reasoning\b[^>]*>[\s\S]*?<\/redacted_reasoning>/gi,
+    '',
+  );
+
+  // Closing tag without open — drop everything before it (think dump then answer).
+  out = out.replace(/^[\s\S]*?<\/think>/i, '');
+  out = out.replace(/^[\s\S]*?<\/thought>/i, '');
+  out = out.replace(/^[\s\S]*?<\/thinking>/i, '');
+  out = out.replace(/^[\s\S]*?<\/reasoning>/i, '');
+
+  // Orphan open tags — drop trailing unfinished think.
+  out = out.replace(/<think\b[^>]*>[\s\S]*$/gi, '');
+  out = out.replace(/<thought\b[^>]*>[\s\S]*$/gi, '');
+  out = out.replace(/<thinking\b[^>]*>[\s\S]*$/gi, '');
+  out = out.replace(/<reasoning\b[^>]*>[\s\S]*$/gi, '');
+
+  return out.replace(/^\s+|\s+$/g, '');
+}
+
+function mapChatContent(
+  content: ChatContent,
+  mapText: (t: string) => string,
+): ChatContent {
+  if (content == null) return content;
+  if (typeof content === 'string') return mapText(content);
+  return content.map((p) =>
+    p.type === 'text' ? { ...p, text: mapText(p.text) } : p,
+  );
+}
+
+/** Strip think/thought from a single chat message (assistant/user text parts). */
+export function stripThinkingFromMessage(message: ChatMessage): ChatMessage {
+  if (message.role !== 'assistant' && message.role !== 'user') return message;
+  return {
+    ...message,
+    content: mapChatContent(message.content, stripThinkingContent),
+  };
+}
+
+/**
+ * Prior turns keep final answers only — drop think/thought blocks from history.
+ */
+export function stripThinkingFromHistory(
+  messages: ChatMessage[],
+): ChatMessage[] {
+  return messages.map(stripThinkingFromMessage);
 }
 
 /**
@@ -122,27 +186,139 @@ function withThoughtSignaturesForGoogle(
   });
 }
 
+/** Defaults tuned to reduce same-phrase loops during authoring. */
+export const DEFAULT_FREQUENCY_PENALTY = 0.75;
+export const DEFAULT_PRESENCE_PENALTY = 0.4;
+/** llama.cpp / vLLM style (>1 discourages repeats). Not sent to Google AI Studio. */
+export const DEFAULT_REPETITION_PENALTY = 1.2;
+
+export class RepetitionLoopError extends Error {
+  readonly regenerate = true;
+  constructor(message = 'AI 응답이 같은 문구를 반복합니다. 재생성합니다.') {
+    super(message);
+    this.name = 'RepetitionLoopError';
+  }
+}
+
+/**
+ * Detect pathological repetition (same line / phrase loop) in assistant text.
+ * Used mid-stream to abort and regenerate.
+ */
+export function detectTextRepetitionLoop(text: string): boolean {
+  const t = String(text ?? '');
+  if (t.length < 96) return false;
+
+  const lines = t
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length >= 10);
+  if (lines.length >= 4) {
+    let run = 1;
+    for (let i = 1; i < lines.length; i++) {
+      if (lines[i] === lines[i - 1]) {
+        run += 1;
+        if (run >= 4) return true;
+      } else {
+        run = 1;
+      }
+    }
+  }
+
+  const window = t.slice(-1600);
+  for (const n of [64, 40, 28]) {
+    if (window.length < n * 3) continue;
+    const needle = window.slice(-n);
+    if (needle.trim().length < Math.floor(n * 0.65)) continue;
+    let count = 0;
+    let idx = window.length;
+    while (count < 4) {
+      const at = window.lastIndexOf(needle, idx - n);
+      if (at < 0) break;
+      // Allow small gaps between repeats (spaces/newlines).
+      if (idx - (at + n) > 8 && count > 0) break;
+      count += 1;
+      idx = at;
+      if (at === 0) break;
+    }
+    if (count >= 3) return true;
+  }
+
+  const chunks = window
+    .split(/(?<=[.。!?？\n])/)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 8);
+  if (chunks.length >= 5) {
+    let run = 1;
+    for (let i = 1; i < chunks.length; i++) {
+      if (chunks[i] === chunks[i - 1]) {
+        run += 1;
+        if (run >= 4) return true;
+      } else {
+        run = 1;
+      }
+    }
+  }
+
+  return false;
+}
+
 function buildCompletionBody(opts: {
   settings: AiEndpointSettings;
   messages: ChatMessage[];
   tools?: ChatToolDef[];
   toolChoice?: ChatToolChoice;
   temperature?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
+  repetitionPenalty?: number;
   stream: boolean;
 }): Record<string, unknown> {
-  const { settings, messages, tools, toolChoice, temperature, stream } = opts;
+  const {
+    settings,
+    messages,
+    tools,
+    toolChoice,
+    temperature,
+    frequencyPenalty,
+    presencePenalty,
+    repetitionPenalty,
+    stream,
+  } = opts;
   if (!settings.model.trim()) {
     throw new Error('모델명이 비어 있습니다.');
   }
   const body: Record<string, unknown> = {
     model: settings.model,
     messages: withThoughtSignaturesForGoogle(messages, settings.baseUrl),
-    temperature: temperature ?? 0.4,
+    temperature:
+      temperature ?? settings.temperature ?? DEFAULT_AI_TEMPERATURE,
+    frequency_penalty: frequencyPenalty ?? DEFAULT_FREQUENCY_PENALTY,
+    presence_penalty: presencePenalty ?? DEFAULT_PRESENCE_PENALTY,
     stream,
   };
+  const topP = settings.topP;
+  if (topP != null && Number.isFinite(topP)) {
+    body.top_p = topP;
+  }
+  const topK = settings.topK;
+  if (topK != null && Number.isFinite(topK)) {
+    body.top_k = topK;
+  }
+  // OpenAI-official schema has no repetition_penalty; many local gateways do.
+  if (!isGoogleAiStudioBaseUrl(settings.baseUrl)) {
+    body.repetition_penalty = repetitionPenalty ?? DEFAULT_REPETITION_PENALTY;
+  }
   if (tools?.length) {
     body.tools = tools;
     body.tool_choice = toolChoice ?? 'auto';
+  }
+  const extra = settings.extraParams;
+  if (extra) {
+    for (const [key, value] of Object.entries(extra)) {
+      const k = key.trim();
+      if (!k || AI_RESERVED_BODY_KEYS.has(k)) continue;
+      body[k] = value;
+    }
   }
   return body;
 }
@@ -282,6 +458,9 @@ export async function createChatCompletion(opts: {
   tools?: ChatToolDef[];
   toolChoice?: ChatToolChoice;
   temperature?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
+  repetitionPenalty?: number;
   signal?: AbortSignal;
   onDelta?: ChatStreamDeltaHandler;
   /** @deprecated Use onRetry */
@@ -295,6 +474,10 @@ export async function createChatCompletion(opts: {
     try {
       const result = await createChatCompletionOnce(opts);
       assertNonEmptyCompletion(result);
+      const text = chatContentToText(result.message.content);
+      if (text && detectTextRepetitionLoop(text)) {
+        throw new RepetitionLoopError();
+      }
       return result;
     } catch (err) {
       if (isAbortError(err)) throw err;
@@ -315,29 +498,62 @@ async function createChatCompletionOnce(opts: {
   tools?: ChatToolDef[];
   toolChoice?: ChatToolChoice;
   temperature?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
+  repetitionPenalty?: number;
   signal?: AbortSignal;
   onDelta?: ChatStreamDeltaHandler;
 }): Promise<ChatCompletionResult> {
   const body = buildCompletionBody({ ...opts, stream: true });
-  const res = await fetch(chatCompletionsUrl(opts.settings.baseUrl), {
-    method: 'POST',
-    headers: buildCompletionHeaders(opts.settings),
-    body: JSON.stringify(body),
-    signal: opts.signal,
-  });
+  let stopForRepetition = false;
+  const localCtrl = new AbortController();
+  const onParentAbort = () => {
+    localCtrl.abort(
+      opts.signal?.reason ?? new DOMException('Generation aborted', 'AbortError'),
+    );
+  };
+  opts.signal?.addEventListener('abort', onParentAbort);
+
+  const throwIfRepetition = (text: string) => {
+    if (!detectTextRepetitionLoop(text)) return;
+    stopForRepetition = true;
+    try {
+      localCtrl.abort();
+    } catch {
+      /* ignore */
+    }
+    throw new RepetitionLoopError();
+  };
+
+  let res: Response;
+  try {
+    res = await fetch(chatCompletionsUrl(opts.settings.baseUrl), {
+      method: 'POST',
+      headers: buildCompletionHeaders(opts.settings),
+      body: JSON.stringify(body),
+      signal: localCtrl.signal,
+    });
+  } catch (err) {
+    opts.signal?.removeEventListener('abort', onParentAbort);
+    if (stopForRepetition) throw new RepetitionLoopError();
+    throw err;
+  }
 
   if (!res.ok) {
+    opts.signal?.removeEventListener('abort', onParentAbort);
     const text = await res.text();
     throw parseErrorPayload(res.status, text);
   }
 
   if (!res.body) {
+    opts.signal?.removeEventListener('abort', onParentAbort);
     throw new Error('AI 스트림 본문이 비어 있습니다.');
   }
 
   const decoder = new TextDecoder();
   let buffer = '';
   let content = '';
+  let lastRepCheckLen = 0;
   const toolAcc = new Map<number, ToolCallAcc>();
   let finishReason: string | null = null;
   let mode: 'unknown' | 'sse' | 'json' = 'unknown';
@@ -403,6 +619,8 @@ async function createChatCompletionOnce(opts: {
         if (choice.finish_reason) finishReason = choice.finish_reason;
 
         if (choice.message) {
+          const earlyText = chatContentToText(choice.message.content);
+          throwIfRepetition(earlyText);
           const early: ChatCompletionResult = {
             message: choice.message,
             finishReason: choice.finish_reason ?? finishReason,
@@ -417,6 +635,11 @@ async function createChatCompletionOnce(opts: {
         if (typeof delta.content === 'string' && delta.content) {
           content += delta.content;
           opts.onDelta?.({ content: delta.content });
+          // Check periodically to keep streaming cheap.
+          if (content.length - lastRepCheckLen >= 48) {
+            lastRepCheckLen = content.length;
+            throwIfRepetition(content);
+          }
         }
 
         if (delta.tool_calls?.length) {
@@ -434,13 +657,25 @@ async function createChatCompletionOnce(opts: {
         }
       }
     }
+  } catch (err) {
+    if (stopForRepetition || err instanceof RepetitionLoopError) {
+      throw new RepetitionLoopError();
+    }
+    throw err;
   } finally {
-    reader.releaseLock();
+    opts.signal?.removeEventListener('abort', onParentAbort);
+    try {
+      reader.releaseLock();
+    } catch {
+      /* already locked/released after abort */
+    }
     buffer += decoder.decode();
   }
 
   if (mode === 'json' || (mode === 'unknown' && buffer.trimStart().startsWith('{'))) {
-    return parseNonStreamCompletion(buffer);
+    const parsed = parseNonStreamCompletion(buffer);
+    throwIfRepetition(chatContentToText(parsed.message.content));
+    return parsed;
   }
 
   // Flush a trailing SSE line without a final newline
@@ -484,6 +719,8 @@ async function createChatCompletionOnce(opts: {
   if (!content && !tool_calls.length) {
     throw new Error('AI 스트림 응답이 비어 있습니다.');
   }
+
+  throwIfRepetition(content);
 
   if (tool_calls.length) {
     opts.onDelta?.({

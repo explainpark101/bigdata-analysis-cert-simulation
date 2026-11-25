@@ -1005,24 +1005,31 @@ body.is-resizing-y * {
 
 .editor-toolbar {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 8px;
   padding: 0 10px 0 0;
   background: var(--dq-surface);
   border-bottom: 1px solid var(--dq-border);
   color: var(--dq-text);
   min-height: 42px;
+  min-width: 0;
+  width: 100%;
 }
 
+/* File / language tabs: take remaining width and scroll horizontally. */
 .editor-toolbar__tabs {
   display: flex;
   align-items: stretch;
   gap: 0;
+  flex: 1 1 0;
   min-width: 0;
-  flex: 1 1 auto;
   overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
 }
 
 .workspace-tab {
@@ -1034,6 +1041,7 @@ body.is-resizing-y * {
   font-size: 13px;
   white-space: nowrap;
   cursor: pointer;
+  flex: 0 0 auto;
 }
 
 .workspace-tab:hover {
@@ -1047,14 +1055,18 @@ body.is-resizing-y * {
   font-weight: 600;
 }
 
+/* Language / reset / run — never shrink or wrap away under many file tabs. */
 .editor-toolbar__actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+  flex: 0 0 auto;
+  flex-shrink: 0;
   margin-left: auto;
   padding: 6px 0;
+  max-width: none;
 }
 
 .editor-toolbar select {
@@ -3255,6 +3267,57 @@ body.is-resizing-y * {
 .ai-model-row {
   display: grid;
   grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.global-settings-subhead {
+  margin: 18px 0 6px;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.ai-sampling-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+@media (max-width: 720px) {
+  .ai-sampling-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ai-extra-params {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.ai-extra-params__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ai-extra-params__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-extra-params__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
   gap: 8px;
   align-items: end;
 }

@@ -28,8 +28,10 @@ export function authorRuntimeEnvPromptEn(): string {
     `Python (Pyodide): ${AUTHOR_PYTHON_PACKAGES.join(', ')}.`,
     '  - Prefer `import pandas as pd`, `import numpy as np`, `from scipy import stats`, `import statsmodels.api as sm` / `statsmodels.formula.api`, `sklearn.*`, `xgboost`, `lightgbm`.',
     '  - Do not require packages outside this list (no selenium, no local filesystem paths beyond mounted data/).',
+    '  - CSV load paths MUST be `data/<file>.csv` only (e.g. `pd.read_csv("data/train.csv")`). No absolute paths, no nested dirs in code.',
     `R (webR): ${AUTHOR_R_PACKAGES.join(', ')} (tidyverse includes dplyr/tidyr/readr/ggplot2/stringr/purrr/tibble/forcats).`,
     '  - Prefer `library(tidyverse)`, `library(broom)`, `library(lubridate)` at the top of R answer/transform code.',
+    '  - CSV paths MUST be `data/<file>.csv` (e.g. `read.csv("data/train.csv")`).',
     '  - Do not require packages outside this list unless the user explicitly asks.',
     'Answer code and transform code MUST run in this environment — verify with run_answer_code / run_transform_code / run_dataset_code.',
   ].join('\n');
@@ -116,6 +118,7 @@ export function authorRuntimeEnvPromptKo(): string {
     '  - 예: pandas/numpy, `scipy.stats`, statsmodels, sklearn, xgboost, lightgbm',
     `- R(webR): ${AUTHOR_R_PACKAGES.join(', ')} (tidyverse = dplyr·tidyr·readr·ggplot2 등)`,
     '  - 답안/변형 코드 상단에 library(tidyverse), library(broom), library(lubridate) 사용 가능',
+    '- CSV 경로는 반드시 `data/파일명.csv` 형태 (예: `pd.read_csv("data/train.csv")`, `read.csv("data/train.csv")`). 절대경로·다른 폴더 금지.',
     '- 위 목록 밖 패키지에 의존하지 마세요. set_answer_code / transform / dataset 코드는 이 환경에서 실행·검증하세요.',
   ].join('\n');
 }

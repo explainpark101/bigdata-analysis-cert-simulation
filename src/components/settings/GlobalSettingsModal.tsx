@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Plus, Trash2, X } from 'lucide-react';
 import {
+  DEFAULT_AI_TEMPERATURE,
   PROVIDER_PRESETS,
   createProviderProfile,
+  formatExtraParamValue,
   loadAiSettingsState,
   normalizeAiSettingsState,
+  normalizeExtraParams,
+  normalizeOptionalNumber,
+  parseExtraParamValue,
   profileToEndpoint,
   saveAiSettingsState,
+  type AiExtraParamValue,
   type AiProviderKind,
   type AiProviderProfile,
   type AiSettingsState,
@@ -59,11 +65,43 @@ function collapseOverlays(root: HTMLElement | null) {
     .forEach((node) => node.dispatchEvent(new Event('ce-collapse')));
 }
 
+type ExtraParamRow = { id: string; key: string; value: string };
+
+function extraParamsToRows(
+  params: Record<string, AiExtraParamValue> | undefined,
+): ExtraParamRow[] {
+  const entries = Object.entries(params ?? {});
+  if (!entries.length) return [];
+  return entries.map(([key, value]) => ({
+    id: `extra-${key}-${crypto.randomUUID().slice(0, 6)}`,
+    key,
+    value: formatExtraParamValue(value),
+  }));
+}
+
+function rowsToExtraParams(
+  rows: ExtraParamRow[],
+): Record<string, AiExtraParamValue> {
+  const raw: Record<string, AiExtraParamValue> = {};
+  for (const row of rows) {
+    const key = row.key.trim();
+    if (!key) continue;
+    raw[key] = parseExtraParamValue(row.value);
+  }
+  return normalizeExtraParams(raw);
+}
+
+function optionalNumberInput(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '';
+  return String(value);
+}
+
 export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [state, setState] = useState<AiSettingsState>(() =>
     normalizeAiSettingsState(null),
   );
+  const [extraRows, setExtraRows] = useState<ExtraParamRow[]>([]);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -88,7 +126,13 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
     dialog.setAttribute('closedby', 'closerequest');
 
     if (open) {
-      void loadAiSettingsState().then(setState);
+      void loadAiSettingsState().then((next) => {
+        setState(next);
+        const active =
+          next.profiles.find((p) => p.id === next.activeProfileId) ??
+          next.profiles[0];
+        setExtraRows(extraParamsToRows(active?.extraParams));
+      });
       setStatus('');
       if (!dialog.open) {
         dialog.showModal();
@@ -179,24 +223,53 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
     }));
   };
 
+  const syncExtraRowsToActive = (rows: ExtraParamRow[]) => {
+    setExtraRows(rows);
+    patchActive({ extraParams: rowsToExtraParams(rows) });
+  };
+
+  const selectProfile = (activeProfileId: string) => {
+    setState((prev) => {
+      const currentId = prev.activeProfileId;
+      const withExtra = prev.profiles.map((p) =>
+        p.id === currentId
+          ? { ...p, extraParams: rowsToExtraParams(extraRows) }
+          : p,
+      );
+      const next = withExtra.find((p) => p.id === activeProfileId) ?? withExtra[0];
+      setExtraRows(extraParamsToRows(next?.extraParams));
+      return { activeProfileId: next?.id ?? '', profiles: withExtra };
+    });
+  };
+
   const addProfile = () => {
     const profile = createProviderProfile({
       label: `Provider ${state.profiles.length + 1}`,
       kind: 'compatible',
     });
-    setState((prev) => ({
-      activeProfileId: profile.id,
-      profiles: [...prev.profiles, profile],
-    }));
+    setState((prev) => {
+      const profiles = prev.profiles.map((p) =>
+        p.id === prev.activeProfileId
+          ? { ...p, extraParams: rowsToExtraParams(extraRows) }
+          : p,
+      );
+      return {
+        activeProfileId: profile.id,
+        profiles: [...profiles, profile],
+      };
+    });
+    setExtraRows([]);
   };
 
   const removeActive = () => {
     if (state.profiles.length <= 1) return;
     setState((prev) => {
       const profiles = prev.profiles.filter((p) => p.id !== prev.activeProfileId);
+      const nextId = profiles[0]?.id ?? '';
+      setExtraRows(extraParamsToRows(profiles[0]?.extraParams));
       return {
         profiles,
-        activeProfileId: profiles[0]?.id ?? '',
+        activeProfileId: nextId,
       };
     });
   };
@@ -215,13 +288,26 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
     });
   };
 
+  const stateWithExtraRows = (): AiSettingsState => ({
+    ...state,
+    profiles: state.profiles.map((p) =>
+      p.id === state.activeProfileId
+        ? { ...p, extraParams: rowsToExtraParams(extraRows) }
+        : p,
+    ),
+  });
+
   const save = async () => {
     setBusy(true);
     setStatus('');
     try {
-      const next = normalizeAiSettingsState(state);
+      const next = normalizeAiSettingsState(stateWithExtraRows());
       await saveAiSettingsState(next);
       setState(next);
+      const saved =
+        next.profiles.find((p) => p.id === next.activeProfileId) ??
+        next.profiles[0];
+      setExtraRows(extraParamsToRows(saved?.extraParams));
       setStatus('저장됨');
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
@@ -235,8 +321,9 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
     setBusy(true);
     setStatus('연결 테스트 중…');
     try {
-      const next = normalizeAiSettingsState(state);
+      const next = normalizeAiSettingsState(stateWithExtraRows());
       await saveAiSettingsState(next);
+      setState(next);
       const endpoint = profileToEndpoint(
         next.profiles.find((p) => p.id === next.activeProfileId) ??
           next.profiles[0],
@@ -327,9 +414,7 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
                     value={state.activeProfileId}
                     options={profileOptions}
                     disabled={busy}
-                    onChange={(activeProfileId) =>
-                      setState((prev) => ({ ...prev, activeProfileId }))
-                    }
+                    onChange={(activeProfileId) => selectProfile(activeProfileId)}
                   />
                 </div>
                 <button
@@ -422,6 +507,156 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
                 >
                   /models 불러오기
                 </button>
+              </div>
+
+              <h3 className="global-settings-subhead">Sampling</h3>
+              <p className="edit-page__sub">
+                Provider별로 temperature / top_p / top_k 와 추가 요청 파라미터를
+                저장합니다. 비운 항목은 API에 보내지 않습니다 (temperature 기본{' '}
+                {DEFAULT_AI_TEMPERATURE}).
+              </p>
+
+              <div className="ai-sampling-row">
+                <TextField
+                  label="temperature"
+                  name="temperature"
+                  type="number"
+                  inputMode="decimal"
+                  step="0.01"
+                  min={0}
+                  max={2}
+                  value={String(
+                    active.temperature ?? DEFAULT_AI_TEMPERATURE,
+                  )}
+                  disabled={busy}
+                  hint="0–2"
+                  onChange={(raw) => {
+                    const n = Number(raw);
+                    patchActive({
+                      temperature: Number.isFinite(n)
+                        ? Math.min(2, Math.max(0, n))
+                        : DEFAULT_AI_TEMPERATURE,
+                    });
+                  }}
+                />
+                <TextField
+                  label="top_p"
+                  name="top_p"
+                  type="number"
+                  inputMode="decimal"
+                  step="0.01"
+                  min={0}
+                  max={1}
+                  value={optionalNumberInput(active.topP)}
+                  disabled={busy}
+                  placeholder="비우면 미전송"
+                  hint="0–1 · 선택"
+                  onChange={(raw) =>
+                    patchActive({
+                      topP: normalizeOptionalNumber(raw, 0, 1),
+                    })
+                  }
+                />
+                <TextField
+                  label="top_k"
+                  name="top_k"
+                  type="number"
+                  inputMode="numeric"
+                  step="1"
+                  min={0}
+                  max={200}
+                  value={optionalNumberInput(active.topK)}
+                  disabled={busy}
+                  placeholder="비우면 미전송"
+                  hint="정수 · 로컬 게이트웨이 등"
+                  onChange={(raw) =>
+                    patchActive({
+                      topK: normalizeOptionalNumber(raw, 0, 200),
+                    })
+                  }
+                />
+              </div>
+
+              <div className="ai-extra-params">
+                <div className="ai-extra-params__head">
+                  <span>추가 파라미터</span>
+                  <button
+                    type="button"
+                    className="ghost-btn btn-with-icon"
+                    disabled={busy}
+                    onClick={() =>
+                      syncExtraRowsToActive([
+                        ...extraRows,
+                        {
+                          id: `extra-${crypto.randomUUID().slice(0, 8)}`,
+                          key: '',
+                          value: '',
+                        },
+                      ])
+                    }
+                  >
+                    <Plus size={15} />
+                    행 추가
+                  </button>
+                </div>
+                <p className="ce-field__hint">
+                  chat/completions body에 그대로 합쳐집니다. 값: 숫자 / true /
+                  false / null / 문자열 (JSON도 가능). model·messages·stream 등
+                  예약 키는 무시됩니다.
+                </p>
+                {extraRows.length === 0 ? (
+                  <p className="edit-page__sub">추가 파라미터 없음</p>
+                ) : (
+                  <ul className="ai-extra-params__list">
+                    {extraRows.map((row) => (
+                      <li key={row.id} className="ai-extra-params__row">
+                        <TextField
+                          label="key"
+                          name={`extra_key_${row.id}`}
+                          value={row.key}
+                          disabled={busy}
+                          placeholder="min_p"
+                          autoComplete="off"
+                          onChange={(key) =>
+                            syncExtraRowsToActive(
+                              extraRows.map((r) =>
+                                r.id === row.id ? { ...r, key } : r,
+                              ),
+                            )
+                          }
+                        />
+                        <TextField
+                          label="value"
+                          name={`extra_value_${row.id}`}
+                          value={row.value}
+                          disabled={busy}
+                          placeholder="0.05"
+                          autoComplete="off"
+                          onChange={(value) =>
+                            syncExtraRowsToActive(
+                              extraRows.map((r) =>
+                                r.id === row.id ? { ...r, value } : r,
+                              ),
+                            )
+                          }
+                        />
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          aria-label="행 삭제"
+                          disabled={busy}
+                          onClick={() =>
+                            syncExtraRowsToActive(
+                              extraRows.filter((r) => r.id !== row.id),
+                            )
+                          }
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
 
               {status ? (

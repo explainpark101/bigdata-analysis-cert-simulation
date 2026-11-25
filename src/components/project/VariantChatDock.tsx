@@ -6,6 +6,7 @@ import {
   chatContentToText,
   isAbortError,
   sleepAbortable,
+  stripThinkingFromHistory,
   type ChatMessage,
 } from '@/lib/ai/openaiCompatible';
 import {
@@ -90,7 +91,7 @@ export function VariantChatDock({
       const stored = await loadVariantSession(source.id);
       if (cancelled) return;
       if (stored) {
-        setMessages(stored.messages);
+        setMessages(stripThinkingFromHistory(stored.messages));
         setDraft(normalizeVariantDraft(stored.draft));
       } else {
         setMessages([]);

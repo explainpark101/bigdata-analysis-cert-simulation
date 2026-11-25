@@ -18,6 +18,49 @@ export function mountPathForAsset(asset: MediaAsset): string {
   return isImageAsset(asset) ? `images/${base}` : `data/${base}`;
 }
 
+/**
+ * Ensure mount paths are unique within a workspace.
+ * First keeps `data/foo.csv`; later collisions become `data/foo_2.csv`, `data/foo_3.csv`, …
+ */
+export function uniqueMountPath(desired: string, used: Set<string>): string {
+  const norm = desired.replace(/\\/g, '/');
+  if (!used.has(norm)) {
+    used.add(norm);
+    return norm;
+  }
+  const slash = norm.lastIndexOf('/');
+  const dir = slash >= 0 ? norm.slice(0, slash + 1) : '';
+  const file = slash >= 0 ? norm.slice(slash + 1) : norm;
+  const dot = file.lastIndexOf('.');
+  const stem = dot > 0 ? file.slice(0, dot) : file;
+  const ext = dot > 0 ? file.slice(dot) : '';
+  let n = 2;
+  while (true) {
+    const candidate = `${dir}${stem}_${n}${ext}`;
+    if (!used.has(candidate)) {
+      used.add(candidate);
+      return candidate;
+    }
+    n += 1;
+  }
+}
+
+/** Replace mount paths in markdown / code (longer `from` first). */
+export function rewriteMountPaths(
+  text: string,
+  renames: Array<{ from: string; to: string }>,
+): string {
+  let out = String(text ?? '');
+  const sorted = [...renames]
+    .filter((r) => r.from && r.to && r.from !== r.to)
+    .sort((a, b) => b.from.length - a.from.length);
+  for (const { from, to } of sorted) {
+    if (!out.includes(from)) continue;
+    out = out.split(from).join(to);
+  }
+  return out;
+}
+
 /** Normalize library tree path; keep folders but force data/ or images/ root. */
 export function normalizeLibraryPath(
   raw: string,

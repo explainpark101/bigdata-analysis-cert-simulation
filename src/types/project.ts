@@ -11,6 +11,7 @@ export interface ProjectAsset {
   /**
    * Library tree path (may be nested, e.g. data/type1/median.csv).
    * Runtime / code load path is always flat: data/<filename> or images/<filename>.
+   * Duplicate basenames in one exam workspace become data/foo_2.csv, data/foo_3.csv, …
    */
   path: string;
   name: string;
