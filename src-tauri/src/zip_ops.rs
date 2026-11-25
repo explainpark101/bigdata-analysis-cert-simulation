@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use tauri::AppHandle;
 use uuid::Uuid;
 use zip::write::SimpleFileOptions;
@@ -42,22 +42,43 @@ fn read_project_json(archive: &mut ZipArchive<File>) -> Result<Value, String> {
     serde_json::from_str(&buf).map_err(|e| format!("parse project.json: {e}"))
 }
 
+fn take_string(obj: &mut Map<String, Value>, key: &str) -> String {
+    match obj.remove(key) {
+        Some(Value::String(s)) => s,
+        Some(other) => {
+            obj.insert(key.to_string(), other);
+            String::new()
+        }
+        None => String::new(),
+    }
+}
+
 fn strip_asset_contents(project: &mut Value) {
     if let Some(assets) = project.get_mut("assets").and_then(|a| a.as_array_mut()) {
         for asset in assets {
             if let Some(obj) = asset.as_object_mut() {
-                let len = obj
-                    .get("content")
-                    .and_then(|c| c.as_str())
-                    .map(|s| s.len() as u64)
-                    .unwrap_or(0);
-                if !obj.contains_key("byteLength") && len > 0 {
-                    obj.insert("byteLength".into(), json!(len));
+                let content = take_string(obj, "content");
+                if !obj.contains_key("byteLength") && !content.is_empty() {
+                    obj.insert("byteLength".into(), json!(content.len() as u64));
                 }
                 obj.insert("content".into(), json!(""));
+                drop(content);
             }
         }
     }
+}
+
+/// Stream one zip entry to the asset store without buffering the whole file in RAM.
+fn extract_entry_to_asset(
+    app: &AppHandle,
+    archive: &mut ZipArchive<File>,
+    entry_name: &str,
+    asset_id: &str,
+) -> Result<u64, String> {
+    let mut entry = archive
+        .by_name(entry_name)
+        .map_err(|e| format!("entry {entry_name}: {e}"))?;
+    asset_store::write_reader(app, asset_id, &mut entry)
 }
 
 /// Extract each `files/{id}/...` entry straight to disk; return lean project JSON.
@@ -67,60 +88,43 @@ pub fn import_project_zip(app: &AppHandle, zip_path: &str) -> Result<Value, Stri
     let mut project = read_project_json(&mut archive)?;
     asset_store::clear_all(app)?;
 
-    let assets = project
-        .get("assets")
-        .and_then(|a| a.as_array())
-        .cloned()
+    let raw_assets = project
+        .get_mut("assets")
+        .and_then(|a| a.as_array_mut())
+        .map(std::mem::take)
         .unwrap_or_default();
 
-    let mut lean_assets = Vec::with_capacity(assets.len());
-    for asset in assets {
-        let id = asset
+    let mut lean_assets = Vec::with_capacity(raw_assets.len());
+    for mut asset in raw_assets {
+        let Some(obj) = asset.as_object_mut() else {
+            continue;
+        };
+        let id = obj
             .get("id")
             .and_then(|v| v.as_str())
             .ok_or("asset missing id")?
             .to_string();
-        let encoding = asset
+        let encoding = obj
             .get("encoding")
             .and_then(|v| v.as_str())
             .unwrap_or("utf-8")
             .to_string();
-
-        let mut byte_length = asset
-            .get("byteLength")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        // Pull content out so we never clone multi-MB strings into lean meta.
+        let content = take_string(obj, "content");
+        let mut byte_length = obj.get("byteLength").and_then(|v| v.as_u64()).unwrap_or(0);
 
         if let Some(entry_name) = find_entry_name(&archive, &id) {
-            let mut entry = archive
-                .by_name(&entry_name)
-                .map_err(|e| format!("entry {entry_name}: {e}"))?;
-            let mut bytes = Vec::with_capacity(entry.size() as usize);
-            entry
-                .read_to_end(&mut bytes)
-                .map_err(|e| format!("read {entry_name}: {e}"))?;
-            byte_length = asset_store::write_bytes(app, &id, &bytes)?;
-        } else if encoding == "base64" {
-            if let Some(content) = asset.get("content").and_then(|c| c.as_str()) {
-                if !content.is_empty() {
-                    let bytes = B64
-                        .decode(content)
-                        .map_err(|e| format!("base64 asset {id}: {e}"))?;
-                    byte_length = asset_store::write_bytes(app, &id, &bytes)?;
-                }
-            }
-        } else if let Some(content) = asset.get("content").and_then(|c| c.as_str()) {
-            if !content.is_empty() {
-                byte_length = asset_store::write_bytes(app, &id, content.as_bytes())?;
-            }
+            byte_length = extract_entry_to_asset(app, &mut archive, &entry_name, &id)?;
+        } else if encoding == "base64" && !content.is_empty() {
+            byte_length = asset_store::write_base64(app, &id, &content)?;
+        } else if !content.is_empty() {
+            byte_length = asset_store::write_bytes(app, &id, content.as_bytes())?;
         }
+        drop(content);
 
-        let mut lean = asset.clone();
-        if let Some(obj) = lean.as_object_mut() {
-            obj.insert("content".into(), json!(""));
-            obj.insert("byteLength".into(), json!(byte_length));
-        }
-        lean_assets.push(lean);
+        obj.insert("content".into(), json!(""));
+        obj.insert("byteLength".into(), json!(byte_length));
+        lean_assets.push(asset);
     }
 
     if let Some(obj) = project.as_object_mut() {
@@ -171,61 +175,64 @@ pub fn merge_project_zip(
     let mut added_assets = 0u64;
     let mut added_problems = 0u64;
 
-    if let Some(incoming_assets) = incoming.get("assets").and_then(|a| a.as_array()) {
-        for asset in incoming_assets {
-            let old_id = asset
-                .get("id")
-                .and_then(|v| v.as_str())
-                .ok_or("asset missing id")?;
-            let new_id = remap_id(old_id, &mut asset_map, "asset");
-            let name = asset
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("file")
-                .to_string();
-            let raw_path = asset
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or(name.as_str());
-            let base = Path::new(raw_path)
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or(&name)
-                .to_string();
-            let library_path = format!("imports/{label}/{base}");
-            let encoding = asset
-                .get("encoding")
-                .and_then(|v| v.as_str())
-                .unwrap_or("utf-8")
-                .to_string();
+    let incoming_assets = incoming
+        .get("assets")
+        .and_then(|a| a.as_array())
+        .cloned()
+        .unwrap_or_default();
 
-            let mut byte_length = 0u64;
-            if let Some(entry_name) = find_entry_name(&archive, old_id) {
-                let mut entry = archive
-                    .by_name(&entry_name)
-                    .map_err(|e| format!("entry {entry_name}: {e}"))?;
-                let mut bytes = Vec::new();
-                entry.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-                byte_length = asset_store::write_bytes(app, &new_id, &bytes)?;
-            }
+    for mut asset in incoming_assets {
+        let Some(obj) = asset.as_object_mut() else {
+            continue;
+        };
+        let old_id = obj
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or("asset missing id")?
+            .to_string();
+        let new_id = remap_id(&old_id, &mut asset_map, "asset");
+        let name = obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("file")
+            .to_string();
+        let raw_path = obj
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or(name.as_str())
+            .to_string();
+        let base = Path::new(&raw_path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&name)
+            .to_string();
+        let library_path = format!("imports/{label}/{base}");
+        let encoding = obj
+            .get("encoding")
+            .and_then(|v| v.as_str())
+            .unwrap_or("utf-8")
+            .to_string();
+        let content = take_string(obj, "content");
 
-            let display_name = if name.is_empty() {
-                base.clone()
-            } else {
-                name
-            };
-            let mut lean = asset.clone();
-            if let Some(obj) = lean.as_object_mut() {
-                obj.insert("id".into(), json!(new_id));
-                obj.insert("path".into(), json!(library_path));
-                obj.insert("name".into(), json!(display_name));
-                obj.insert("content".into(), json!(""));
-                obj.insert("byteLength".into(), json!(byte_length));
-                obj.insert("encoding".into(), json!(encoding));
-            }
-            assets.push(lean);
-            added_assets += 1;
+        let mut byte_length = 0u64;
+        if let Some(entry_name) = find_entry_name(&archive, &old_id) {
+            byte_length = extract_entry_to_asset(app, &mut archive, &entry_name, &new_id)?;
+        } else if encoding == "base64" && !content.is_empty() {
+            byte_length = asset_store::write_base64(app, &new_id, &content)?;
+        } else if !content.is_empty() {
+            byte_length = asset_store::write_bytes(app, &new_id, content.as_bytes())?;
         }
+        drop(content);
+
+        let display_name = if name.is_empty() { base } else { name };
+        obj.insert("id".into(), json!(new_id));
+        obj.insert("path".into(), json!(library_path));
+        obj.insert("name".into(), json!(display_name));
+        obj.insert("content".into(), json!(""));
+        obj.insert("byteLength".into(), json!(byte_length));
+        obj.insert("encoding".into(), json!(encoding));
+        assets.push(asset);
+        added_assets += 1;
     }
 
     if let Some(incoming_bank) = incoming.get("bank").and_then(|a| a.as_array()) {

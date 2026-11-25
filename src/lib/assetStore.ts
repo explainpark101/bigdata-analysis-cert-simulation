@@ -3,7 +3,7 @@
  * - Tauri: Rust disk under app_data_dir/assets (OOM-safe)
  * - Browser: IndexedDB Blob fallback
  */
-import { isImageAsset } from '@/lib/assetMedia';
+import { assetToDataUrl } from '@/lib/assetMedia';
 import {
   ensureIdbReady,
   idbClearAssetBodies,
@@ -16,6 +16,7 @@ import {
 import type { AuthoringProject, ProjectAsset } from '@/types/project';
 import { isTauriRuntime } from '@/lib/tauriRuntime';
 import {
+  rustAssetSrcUrl,
   rustClearAssetStore,
   rustDeleteAsset,
   rustReadAssetBase64,
@@ -35,20 +36,18 @@ export function clearAssetContentCache(): void {
   cachedContent = null;
 }
 
-export function usesExternalBody(asset: {
+/**
+ * Keep bodies out of React/IDB project JSON — disk (Tauri) or assetBodies (web).
+ * Images used to stay inline; hydrating every thumb then OOMd WebView2.
+ */
+export function usesExternalBody(_asset: {
   encoding: ProjectAsset['encoding'];
   name: string;
   path: string;
   mimeType?: string;
   content?: string;
 }): boolean {
-  return !isImageAsset({
-    encoding: asset.encoding,
-    name: asset.name,
-    path: asset.path,
-    mimeType: asset.mimeType,
-    content: asset.content ?? '',
-  });
+  return true;
 }
 
 export function assetByteLength(asset: ProjectAsset): number {
@@ -85,7 +84,7 @@ function mimeForAsset(
   return encoding === 'base64' ? 'application/octet-stream' : 'text/csv';
 }
 
-/** Browser-only: store raw bytes as Blob in IDB. */
+/** Store raw bytes. Tauri uses base64 IPC (not number[]) to avoid WebView OOM. */
 export async function putAssetBodyBytes(
   id: string,
   encoding: ProjectAsset['encoding'],
@@ -93,11 +92,11 @@ export async function putAssetBodyBytes(
   mimeType?: string,
 ): Promise<void> {
   if (isTauriRuntime()) {
-    // Prefer rustWriteAssetFile / import_project_zip — avoid shipping bytes via IPC.
     const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('write_asset_bytes', {
+    const { bytesToBase64 } = await import('@/lib/assetMedia');
+    await invoke('write_asset_base64', {
       assetId: id,
-      bytes: Array.from(bytes),
+      dataBase64: bytesToBase64(bytes),
     });
     if (cachedId === id) clearAssetContentCache();
     return;
@@ -117,16 +116,24 @@ export async function putAssetBody(
   content: string,
   mimeType?: string,
 ): Promise<void> {
+  if (isTauriRuntime()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    if (encoding === 'base64') {
+      await invoke('write_asset_base64', {
+        assetId: id,
+        dataBase64: content,
+      });
+    } else {
+      await invoke('write_asset_text', { assetId: id, text: content });
+    }
+    if (cachedId === id) clearAssetContentCache();
+    return;
+  }
   if (encoding === 'base64') {
     const bin = atob(content);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
     await putAssetBodyBytes(id, encoding, bytes, mimeType);
-    return;
-  }
-  if (isTauriRuntime()) {
-    const enc = new TextEncoder();
-    await putAssetBodyBytes(id, encoding, enc.encode(content), mimeType);
     return;
   }
   await ensureIdbReady();
@@ -207,15 +214,6 @@ async function recordToString(body: AssetBodyRecord): Promise<string> {
 export async function getAssetContent(asset: ProjectAsset): Promise<string> {
   if (asset.content) return asset.content;
   if (cachedId === asset.id && cachedContent != null) return cachedContent;
-  if (!usesExternalBody(asset) && !asset.content) {
-    // Image may live on disk in Tauri too.
-    if (isTauriRuntime()) {
-      const content = await rustReadAssetBase64(asset.id);
-      setCache(asset.id, content);
-      return content;
-    }
-    return '';
-  }
   if (isTauriRuntime()) {
     const content =
       asset.encoding === 'base64'
@@ -295,4 +293,51 @@ export async function withProjectAssetContents(
     ...project,
     assets: await withAssetContents(project.assets, ids),
   };
+}
+
+export type AssetDisplayUrl = {
+  url: string;
+  /** Revoke blob: URLs when the consumer unmounts. */
+  revoke: () => void;
+};
+
+/**
+ * Display URL for a single image without stuffing every asset into React state.
+ * Tauri: asset protocol (disk). Browser: data URL or one-shot blob URL.
+ */
+export async function getAssetDisplayUrl(
+  asset: ProjectAsset,
+): Promise<AssetDisplayUrl> {
+  if (isTauriRuntime()) {
+    try {
+      const url = await rustAssetSrcUrl(asset.id);
+      return { url, revoke: () => undefined };
+    } catch {
+      /* fall through */
+    }
+  }
+  if (asset.content) {
+    return { url: assetToDataUrl(asset), revoke: () => undefined };
+  }
+  if (isTauriRuntime()) {
+    const content = await getAssetContent(asset);
+    if (!content) return { url: '', revoke: () => undefined };
+    return {
+      url: assetToDataUrl({ ...asset, content }),
+      revoke: () => undefined,
+    };
+  }
+  await ensureIdbReady();
+  const body = await idbGetAssetBody(asset.id);
+  if (body?.blob) {
+    const url = URL.createObjectURL(body.blob);
+    return { url, revoke: () => URL.revokeObjectURL(url) };
+  }
+  if (body?.content) {
+    return {
+      url: assetToDataUrl({ ...asset, content: body.content }),
+      revoke: () => undefined,
+    };
+  }
+  return { url: '', revoke: () => undefined };
 }

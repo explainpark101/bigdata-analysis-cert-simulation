@@ -25,7 +25,7 @@ export default function HomePage() {
     selectExam,
     exportExamPackage,
     pushExamToSession,
-    importProject,
+    importProjectSources,
   } = useProject();
   const { exam, clear, importExamZip, setExam } = useExamSession();
   const navigate = useNavigate();
@@ -80,15 +80,15 @@ export default function HomePage() {
     }
   };
 
-  const openProjectZip = async (source: File | string) => {
+  const openProjectZips = async (sources: Array<File | string>) => {
     setBusyId('project-zip');
     try {
-      await importProject(source);
-      const label =
-        typeof source === 'string'
-          ? source.split(/[\\/]/).pop() || source
-          : source.name;
-      setMessage(`프로젝트 로드: ${label}`);
+      const result = await importProjectSources(sources);
+      setMessage(
+        result.merged
+          ? `프로젝트 병합 로드: ${result.labels.join(', ')}`
+          : `프로젝트 로드: ${result.labels[0]}`,
+      );
       navigate('/project');
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
@@ -155,9 +155,12 @@ export default function HomePage() {
                 const { isTauriRuntime } = await import('@/lib/tauriRuntime');
                 if (isTauriRuntime()) {
                   const { pickZipPath } = await import('@/lib/tauriAssets');
-                  const selected = await pickZipPath();
-                  if (!selected || Array.isArray(selected)) return;
-                  await openProjectZip(selected);
+                  const selected = await pickZipPath({ multiple: true });
+                  if (!selected) return;
+                  const paths = Array.isArray(selected)
+                    ? selected
+                    : [selected];
+                  await openProjectZips(paths);
                   return;
                 }
                 projectZipRef.current?.click();
@@ -251,10 +254,11 @@ export default function HomePage() {
         className="hidden-file"
         type="file"
         accept=".zip,application/zip,.project.zip"
+        multiple
         onChange={(e) => {
-          const file = e.target.files?.[0];
+          const files = Array.from(e.target.files ?? []);
           e.target.value = '';
-          if (file) void openProjectZip(file);
+          if (files.length) void openProjectZips(files);
         }}
       />
       <input

@@ -43,6 +43,21 @@ fn write_asset_bytes(app: AppHandle, asset_id: String, bytes: Vec<u8>) -> Result
     asset_store::write_bytes(&app, &asset_id, &bytes)
 }
 
+/// Prefer this over write_asset_bytes — avoids JSON number[] IPC blow-ups.
+#[tauri::command]
+fn write_asset_base64(
+    app: AppHandle,
+    asset_id: String,
+    data_base64: String,
+) -> Result<u64, String> {
+    asset_store::write_base64(&app, &asset_id, &data_base64)
+}
+
+#[tauri::command]
+fn write_asset_text(app: AppHandle, asset_id: String, text: String) -> Result<u64, String> {
+    asset_store::write_bytes(&app, &asset_id, text.as_bytes())
+}
+
 #[tauri::command]
 fn write_asset_file(app: AppHandle, asset_id: String, src_path: String) -> Result<u64, String> {
     asset_store::write_file(&app, &asset_id, std::path::Path::new(&src_path))
@@ -85,6 +100,11 @@ fn asset_exists(app: AppHandle, asset_id: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
+fn asset_abs_path(app: AppHandle, asset_id: String) -> Result<String, String> {
+    asset_store::asset_path(&app, &asset_id).map(|p| p.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
 fn peek_zip_kind(path: String) -> Result<String, String> {
     zip_ops::peek_zip_kind(&path)
 }
@@ -101,11 +121,14 @@ pub fn run() {
             read_asset_text,
             read_asset_base64,
             write_asset_bytes,
+            write_asset_base64,
+            write_asset_text,
             write_asset_file,
             ingest_asset_file,
             delete_asset,
             clear_asset_store,
             asset_exists,
+            asset_abs_path,
             peek_zip_kind,
         ])
         .run(tauri::generate_context!())

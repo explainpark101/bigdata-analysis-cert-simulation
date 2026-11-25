@@ -95,6 +95,18 @@ export async function rustAssetExists(assetId: string): Promise<boolean> {
   return invoke<boolean>('asset_exists', { assetId });
 }
 
+/** Absolute disk path for convertFileSrc — avoids base64 in the WebView heap. */
+export async function rustAssetAbsPath(assetId: string): Promise<string> {
+  return invoke<string>('asset_abs_path', { assetId });
+}
+
+/** asset: URL for img src without reading file bytes into JS. */
+export async function rustAssetSrcUrl(assetId: string): Promise<string> {
+  const { convertFileSrc } = await import('@tauri-apps/api/core');
+  const abs = await rustAssetAbsPath(assetId);
+  return convertFileSrc(abs);
+}
+
 export async function rustPeekZipKind(
   path: Stringish,
 ): Promise<'exam' | 'project' | 'unknown'> {

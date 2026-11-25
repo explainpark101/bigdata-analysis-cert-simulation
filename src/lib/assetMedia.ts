@@ -4,7 +4,7 @@ import type { ProjectAsset } from '@/types/project';
 export type MediaAsset = Pick<
   ExamAsset | ProjectAsset,
   'path' | 'name' | 'encoding' | 'content' | 'mimeType'
->;
+> & { id?: string };
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
 
@@ -43,24 +43,50 @@ export function assetToDataUrl(asset: MediaAsset): string {
   return `data:${mime};charset=utf-8,${encodeURIComponent(asset.content)}`;
 }
 
+/** Index common path aliases for one resolved image URL. */
+export function indexAssetUrl(
+  map: Map<string, string>,
+  asset: MediaAsset,
+  url: string,
+): void {
+  if (!url) return;
+  const path = asset.path.replace(/^\.\//, '');
+  map.set(path, url);
+  map.set(`./${path}`, url);
+  map.set(asset.name, url);
+  const base = asset.name || path.split('/').pop() || path;
+  const mount = `images/${base}`;
+  map.set(mount, url);
+  map.set(`./${mount}`, url);
+}
+
+export function assetMatchesImagePath(
+  asset: MediaAsset,
+  imgPath: string,
+): boolean {
+  const key = imgPath.replace(/^\.\//, '');
+  const path = asset.path.replace(/^\.\//, '');
+  const base = asset.name || path.split('/').pop() || path;
+  const mount = `images/${base}`;
+  return (
+    key === path ||
+    key === asset.name ||
+    key === mount ||
+    key === base ||
+    key === `./${path}` ||
+    key === `./${mount}`
+  );
+}
+
 /**
  * Map mount/library paths → data URLs for markdown/img preview.
- * Images only: encoding every CSV with encodeURIComponent OOM'd Tauri WebView
- * (gichul ~9MB raw → ~15MB+ URI strings on top of React state).
+ * Images only; skips empty content (bodies live on disk / IDB).
  */
 export function buildAssetUrlMap(assets: MediaAsset[]): Map<string, string> {
   const map = new Map<string, string>();
   for (const asset of assets) {
-    if (!isImageAsset(asset)) continue;
-    const url = assetToDataUrl(asset);
-    const path = asset.path.replace(/^\.\//, '');
-    map.set(path, url);
-    map.set(`./${path}`, url);
-    map.set(asset.name, url);
-    const base = asset.name || path.split('/').pop() || path;
-    const mount = `images/${base}`;
-    map.set(mount, url);
-    map.set(`./${mount}`, url);
+    if (!isImageAsset(asset) || !asset.content) continue;
+    indexAssetUrl(map, asset, assetToDataUrl(asset));
   }
   return map;
 }

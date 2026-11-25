@@ -16,8 +16,8 @@ export interface ProjectAsset {
   name: string;
   encoding: 'utf-8' | 'base64';
   /**
-   * Inline bytes for small/image assets. Large CSV/text bodies live in IndexedDB
-   * (`assetStore`) and this field stays empty in React state.
+   * Usually empty in React state — bodies live on disk (Tauri) or IndexedDB
+   * (`assetStore`). May be filled briefly during import / exam materialize.
    */
   content: string;
   /** Uncompressed size in characters/bytes; used when content is externalized. */

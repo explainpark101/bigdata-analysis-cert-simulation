@@ -16,13 +16,17 @@ import { ImagePlus } from 'lucide-react';
 import { useTheme } from '@/context/ThemeContext';
 import { htmlToMarkdown, markdownToHtmlFragment } from '@/lib/markdown';
 import {
+  assetMatchesImagePath,
   assetToDataUrl,
-  buildAssetUrlMap,
+  extractMarkdownImagePaths,
+  indexAssetUrl,
   isImageAsset,
   isImageFileName,
   markdownImageSnippet,
   type MediaAsset,
 } from '@/lib/assetMedia';
+import { getAssetDisplayUrl } from '@/lib/assetStore';
+import type { ProjectAsset } from '@/types/project';
 
 type ViewMode = 'wysiwyg' | 'source';
 
@@ -49,24 +53,62 @@ export function ProblemMarkdownEditor({
   const [mode, setMode] = useState<ViewMode>('wysiwyg');
   const { theme } = useTheme();
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const [urlMap, setUrlMap] = useState<Map<string, string>>(() => new Map());
+  const dataUrlToPathRef = useRef<Map<string, string>>(new Map());
 
-  // Images only — CSV data-URLs from full project.assets OOMd the WebView.
-  const imageAssets = useMemo(
-    () => assets.filter(isImageAsset),
-    [assets],
-  );
-  const urlMap = useMemo(() => buildAssetUrlMap(imageAssets), [imageAssets]);
-  const dataUrlToPath = useMemo(() => {
-    const rev = new Map<string, string>();
-    for (const [path, url] of urlMap) {
-      if (!path.startsWith('./')) rev.set(url, path);
-    }
-    return rev;
-  }, [urlMap]);
+  // Resolve only images referenced in this markdown — never all project images.
+  useEffect(() => {
+    let cancelled = false;
+    const revokers: Array<() => void> = [];
+    void (async () => {
+      const wanted = extractMarkdownImagePaths(value);
+      const map = new Map<string, string>();
+      if (!wanted.length) {
+        if (!cancelled) {
+          dataUrlToPathRef.current = new Map();
+          setUrlMap(map);
+        }
+        return;
+      }
+      const images = assets.filter(
+        (a) =>
+          isImageAsset(a) && wanted.some((p) => assetMatchesImagePath(a, p)),
+      );
+      for (const asset of images) {
+        if (cancelled) return;
+        if (asset.content) {
+          indexAssetUrl(map, asset, assetToDataUrl(asset));
+          continue;
+        }
+        if (!asset.id) continue;
+        try {
+          const display = await getAssetDisplayUrl(asset as ProjectAsset);
+          revokers.push(display.revoke);
+          if (display.url) indexAssetUrl(map, asset, display.url);
+        } catch {
+          /* missing body */
+        }
+      }
+      if (cancelled) {
+        for (const revoke of revokers) revoke();
+        return;
+      }
+      const rev = new Map<string, string>();
+      for (const [path, url] of map) {
+        if (!path.startsWith('./')) rev.set(url, path);
+      }
+      dataUrlToPathRef.current = rev;
+      setUrlMap(map);
+    })();
+    return () => {
+      cancelled = true;
+      for (const revoke of revokers) revoke();
+    };
+  }, [value, assets]);
 
   const resolvedHtml = useMemo(
-    () => markdownToHtmlFragment(value, imageAssets),
-    [value, imageAssets],
+    () => markdownToHtmlFragment(value, undefined, urlMap),
+    [value, urlMap],
   );
 
   const editor = useEditor({
@@ -88,7 +130,11 @@ export function ProblemMarkdownEditor({
     shouldRerenderOnTransaction: true,
     onUpdate: ({ editor: ed }) => {
       if (readOnly) return;
-      onChange(htmlToMarkdown(ed.getHTML(), { dataUrlToPath }));
+      onChange(
+        htmlToMarkdown(ed.getHTML(), {
+          dataUrlToPath: dataUrlToPathRef.current,
+        }),
+      );
     },
   });
 
@@ -99,10 +145,12 @@ export function ProblemMarkdownEditor({
 
   useEffect(() => {
     if (!editor || mode !== 'wysiwyg') return;
-    const current = htmlToMarkdown(editor.getHTML(), { dataUrlToPath });
+    const current = htmlToMarkdown(editor.getHTML(), {
+      dataUrlToPath: dataUrlToPathRef.current,
+    });
     if (current.trim() === value.trim()) return;
     editor.commands.setContent(resolvedHtml, { emitUpdate: false });
-  }, [value, mode, editor, resolvedHtml, dataUrlToPath]);
+  }, [value, mode, editor, resolvedHtml]);
 
   const cmTheme = useMemo(
     () =>
@@ -258,7 +306,7 @@ export function ProblemMarkdownEditor({
 
 /** Helper for parent UIs that insert markdown image tags. */
 export function previewAssetThumb(asset: MediaAsset): string | null {
-  if (!isImageAsset(asset)) return null;
+  if (!isImageAsset(asset) || !asset.content) return null;
   try {
     return assetToDataUrl(asset);
   } catch {

@@ -94,7 +94,7 @@ export default function ProjectPage() {
     setExamProblemIds,
     updateExamMeta,
     exportProject,
-    importProject,
+    importProjectSources,
     mergeBankZips,
     exportExamPackage,
     pushExamToSession,
@@ -288,11 +288,24 @@ export default function ProjectPage() {
                   const { isTauriRuntime } = await import('@/lib/tauriRuntime');
                   if (isTauriRuntime()) {
                     const { pickZipPath } = await import('@/lib/tauriAssets');
-                    const selected = await pickZipPath();
-                    if (!selected || Array.isArray(selected)) return;
-                    await importProject(selected);
+                    const selected = await pickZipPath({ multiple: true });
+                    if (!selected) return;
+                    const paths = Array.isArray(selected)
+                      ? selected
+                      : [selected];
                     setMessage(
-                      `프로젝트 로드: ${selected.split(/[\\/]/).pop()}`,
+                      paths.length > 1
+                        ? `프로젝트 ${paths.length}개 불러오는 중…`
+                        : '프로젝트 불러오는 중…',
+                    );
+                    const result = await importProjectSources(paths);
+                    setMessage(
+                      result.merged
+                        ? `프로젝트 병합 로드: ${result.labels.join(', ')}` +
+                            (result.addedProblems != null
+                              ? ` · 문제 +${result.addedProblems}`
+                              : '')
+                        : `프로젝트 로드: ${result.labels[0]}`,
                     );
                     return;
                   }
@@ -339,13 +352,26 @@ export default function ProjectPage() {
           className="hidden-file"
           type="file"
           accept=".zip,application/zip"
+          multiple
           onChange={async (e) => {
-            const file = e.target.files?.[0];
+            const files = Array.from(e.target.files ?? []);
             e.target.value = '';
-            if (!file) return;
+            if (!files.length) return;
             try {
-              await importProject(file);
-              setMessage(`프로젝트 로드: ${file.name}`);
+              setMessage(
+                files.length > 1
+                  ? `프로젝트 ${files.length}개 불러오는 중…`
+                  : '프로젝트 불러오는 중…',
+              );
+              const result = await importProjectSources(files);
+              setMessage(
+                result.merged
+                  ? `프로젝트 병합 로드: ${result.labels.join(', ')}` +
+                      (result.addedProblems != null
+                        ? ` · 문제 +${result.addedProblems}`
+                        : '')
+                  : `프로젝트 로드: ${result.labels[0]}`,
+              );
             } catch (err) {
               setMessage(err instanceof Error ? err.message : String(err));
             }
@@ -828,7 +854,6 @@ export default function ProjectPage() {
           addAssetsFromFiles={addAssetsFromFiles}
           addBankProblem={addBankProblem}
           mergeBankZips={mergeBankZips}
-          importProject={importProject}
           onMessage={setMessage}
           onSavedNavigate={(created) => {
             setSelectedId(created.id);

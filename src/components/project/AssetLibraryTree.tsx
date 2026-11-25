@@ -5,13 +5,11 @@ import {
   FileSpreadsheet,
   Folder,
   FolderOpen,
+  Image as ImageIcon,
   Trash2,
 } from 'lucide-react';
 import type { ProjectAsset } from '@/types/project';
-import {
-  assetToDataUrl,
-  isImageAsset,
-} from '@/lib/assetMedia';
+import { isImageAsset } from '@/lib/assetMedia';
 import { assetByteLength } from '@/lib/assetStore';
 import {
   buildAssetTree,
@@ -26,29 +24,6 @@ interface AssetLibraryTreeProps {
   onSelect: (id: string) => void;
   onUpdatePath: (id: string, path: string) => void;
   onRemove: (id: string) => void;
-}
-
-function AssetThumb({ asset }: { asset: ProjectAsset }) {
-  const [src, setSrc] = useState(() =>
-    asset.content ? assetToDataUrl(asset) : '',
-  );
-  useEffect(() => {
-    let cancelled = false;
-    if (asset.content) {
-      setSrc(assetToDataUrl(asset));
-      return;
-    }
-    void (async () => {
-      const { withAssetContent } = await import('@/lib/assetStore');
-      const full = await withAssetContent(asset);
-      if (!cancelled && full.content) setSrc(assetToDataUrl(full));
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [asset]);
-  if (!src) return <FileSpreadsheet size={16} aria-hidden />;
-  return <img className="asset-thumb" src={src} alt="" />;
 }
 
 function AssetFileRow({
@@ -89,7 +64,7 @@ function AssetFileRow({
       style={{ paddingLeft: 8 + depth * 14 }}
     >
       {image ? (
-        <AssetThumb asset={asset} />
+        <ImageIcon size={16} aria-hidden />
       ) : (
         <FileSpreadsheet size={16} aria-hidden />
       )}

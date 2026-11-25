@@ -5,7 +5,7 @@ import {
   CSV_PREVIEW_MAX_ROWS,
 } from '@/lib/csvPreview';
 import { isImageAsset } from '@/lib/assetMedia';
-import { getAssetContentPreview } from '@/lib/assetStore';
+import { getAssetContentPreview, getAssetDisplayUrl } from '@/lib/assetStore';
 import type { ProjectAsset } from '@/types/project';
 import type { ExamAsset } from '@/types/exam';
 
@@ -53,6 +53,29 @@ export function CsvPreviewPane({ asset }: CsvPreviewPaneProps) {
   const [viewMode, setViewMode] = useState<CsvViewMode>('table');
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(false);
+  const [imageSrc, setImageSrc] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    let revoke = () => undefined as void;
+    if (!asset || !isImageAsset(asset) || !asset.id) {
+      setImageSrc('');
+      return;
+    }
+    void (async () => {
+      const display = await getAssetDisplayUrl(asset as ProjectAsset);
+      if (cancelled) {
+        display.revoke();
+        return;
+      }
+      revoke = display.revoke;
+      setImageSrc(display.url);
+    })();
+    return () => {
+      cancelled = true;
+      revoke();
+    };
+  }, [asset]);
 
   useEffect(() => {
     let cancelled = false;
@@ -129,10 +152,19 @@ export function CsvPreviewPane({ asset }: CsvPreviewPaneProps) {
       <aside className="csv-preview">
         <div className="csv-preview__head">
           <h3>{asset.name}</h3>
-          <p className="edit-page__sub">
-            이미지 자산입니다. CSV 미리보기 대상이 아닙니다.
-          </p>
+          <p className="edit-page__sub">선택 중인 이미지만 미리봅니다.</p>
         </div>
+        {imageSrc ? (
+          <img
+            className="csv-preview__image"
+            src={imageSrc}
+            alt={asset.name}
+            loading="lazy"
+            decoding="async"
+          />
+        ) : (
+          <p className="edit-page__sub">이미지 불러오는 중…</p>
+        )}
       </aside>
     );
   }

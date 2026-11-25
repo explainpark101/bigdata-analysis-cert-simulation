@@ -64,10 +64,13 @@ function rewriteImageSrcs(html: string, urlMap: Map<string, string>): string {
 export function renderMarkdown(
   source: string,
   assets?: MediaAsset[],
+  urlMap?: Map<string, string>,
 ): string {
   let html = md.render(source ?? '');
-  if (assets?.length) {
-    html = rewriteImageSrcs(html, buildAssetUrlMap(assets));
+  const map =
+    urlMap ?? (assets?.length ? buildAssetUrlMap(assets) : undefined);
+  if (map?.size) {
+    html = rewriteImageSrcs(html, map);
   }
   return html;
 }
@@ -82,6 +85,7 @@ export function htmlToMarkdown(
 export function markdownToHtmlFragment(
   source: string,
   assets?: MediaAsset[],
+  urlMap?: Map<string, string>,
 ): string {
-  return renderMarkdown(source, assets);
+  return renderMarkdown(source, assets, urlMap);
 }

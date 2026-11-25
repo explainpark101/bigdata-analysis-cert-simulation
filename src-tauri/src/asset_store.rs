@@ -43,8 +43,31 @@ pub fn write_bytes(app: &AppHandle, asset_id: &str, bytes: &[u8]) -> Result<u64,
     Ok(bytes.len() as u64)
 }
 
+/// Stream any reader straight to the asset file (zip entry → disk).
+pub fn write_reader<R: std::io::Read>(
+    app: &AppHandle,
+    asset_id: &str,
+    reader: &mut R,
+) -> Result<u64, String> {
+    let path = asset_path(app, asset_id)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut out = fs::File::create(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
+    let written = std::io::copy(reader, &mut out).map_err(|e| format!("copy {}: {e}", path.display()))?;
+    Ok(written)
+}
+
 pub fn write_file(app: &AppHandle, asset_id: &str, src: &Path) -> Result<u64, String> {
-    let bytes = fs::read(src).map_err(|e| format!("read {}: {e}", src.display()))?;
+    let mut file =
+        fs::File::open(src).map_err(|e| format!("read {}: {e}", src.display()))?;
+    write_reader(app, asset_id, &mut file)
+}
+
+pub fn write_base64(app: &AppHandle, asset_id: &str, data_base64: &str) -> Result<u64, String> {
+    let bytes = B64
+        .decode(data_base64)
+        .map_err(|e| format!("base64 decode: {e}"))?;
     write_bytes(app, asset_id, &bytes)
 }
 

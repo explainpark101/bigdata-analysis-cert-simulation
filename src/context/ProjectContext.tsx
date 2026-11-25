@@ -40,6 +40,7 @@ import {
   rustExportProjectZip,
   rustImportProjectZip,
   rustMergeProjectZip,
+  rustPeekZipKind,
 } from '@/lib/tauriAssets';
 import type {
   AuthoringProject,
@@ -81,6 +82,18 @@ interface ProjectContextValue {
   exportProject: () => Promise<void>;
   /** File (web) or absolute filesystem path (Tauri dialog). */
   importProject: (source: File | string) => Promise<void>;
+  /**
+   * Open one zip (replace), or open the first and merge the rest.
+   * Top-bar multi-select "프로젝트 불러오기".
+   */
+  importProjectSources: (
+    sources: Array<File | string>,
+  ) => Promise<{
+    merged: boolean;
+    labels: string[];
+    addedProblems?: number;
+    addedAssets?: number;
+  }>;
   /** Merge one or more .project.zip / .exam.zip banks into the current project */
   mergeBankZips: (files: Array<File | string>) => Promise<{
     addedProblems: number;
@@ -365,7 +378,9 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const importProject = useCallback(async (source: File | string) => {
     // Drop prior project + exam session so WebView can GC before inflate.
     clearAssetContentCache();
-    setProjectState(createEmptyProject({ title: '불러오는 중…' }));
+    const empty = createEmptyProject({ title: '불러오는 중…' });
+    projectRef.current = empty;
+    setProjectState(empty);
     await clearExamSession();
     await new Promise<void>((r) => {
       window.setTimeout(r, 0);
@@ -373,7 +388,9 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
     if (isTauriRuntime() && typeof source === 'string') {
       const next = await rustImportProjectZip(source);
-      setProjectState({ ...next, updatedAt: new Date().toISOString() });
+      const stamped = { ...next, updatedAt: new Date().toISOString() };
+      projectRef.current = stamped;
+      setProjectState(stamped);
       return;
     }
     if (!(source instanceof File)) {
@@ -381,7 +398,9 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     }
     const next = await importProjectZip(source);
     const lean = await persistExternalAssets(next);
-    setProjectState({ ...lean, updatedAt: new Date().toISOString() });
+    const stamped = { ...lean, updatedAt: new Date().toISOString() };
+    projectRef.current = stamped;
+    setProjectState(stamped);
   }, []);
 
   const mergeBankZips = useCallback(async (files: Array<File | string>) => {
@@ -390,17 +409,26 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       return { addedProblems: 0, addedAssets: 0, labels: [] as string[] };
     }
 
+    // Always merge into the latest project (import-then-merge must not use stale state).
+    let snapshot = await persistExternalAssets(projectRef.current);
+    let addedProblems = 0;
+    let addedAssets = 0;
+    const labels: string[] = [];
+
     if (isTauriRuntime() && list.every((f) => typeof f === 'string')) {
-      let snapshot = await persistExternalAssets(project);
-      let addedProblems = 0;
-      let addedAssets = 0;
-      const labels: string[] = [];
       for (const path of list as string[]) {
         const label =
           path.replace(/^.*[\\/]/, '').replace(/\.(project|exam)?\.zip$/i, '') ||
           'import';
+        const kind = await rustPeekZipKind(path);
+        if (kind === 'exam') {
+          throw new Error(
+            `${label}: Tauri에서는 .project.zip 병합을 지원합니다. .exam.zip 은 브라우저에서 열어 주세요.`,
+          );
+        }
         const result = await rustMergeProjectZip(path, snapshot, label);
         snapshot = result.project;
+        projectRef.current = snapshot;
         addedProblems += result.addedProblems;
         addedAssets += result.addedAssets;
         labels.push(result.label);
@@ -410,15 +438,42 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     }
 
     const fileList = list.filter((f): f is File => f instanceof File);
-    const snapshot = await persistExternalAssets(project);
     const result = await mergeBankFromZips(snapshot, fileList);
+    projectRef.current = result.project;
     setProjectState(result.project);
     return {
       addedProblems: result.addedProblems,
       addedAssets: result.addedAssets,
       labels: result.labels,
     };
-  }, [project]);
+  }, []);
+
+  /**
+   * Open one project zip (replace), or open the first and merge the rest.
+   * Used by top-bar "프로젝트 불러오기" multi-select.
+   */
+  const importProjectSources = useCallback(
+    async (sources: Array<File | string>) => {
+      const list = sources.filter(Boolean);
+      if (!list.length) return { merged: false, labels: [] as string[] };
+      const labelOf = (s: File | string) =>
+        typeof s === 'string'
+          ? s.split(/[\\/]/).pop() || s
+          : s.name;
+      await importProject(list[0]);
+      if (list.length === 1) {
+        return { merged: false, labels: [labelOf(list[0])] };
+      }
+      const result = await mergeBankZips(list.slice(1));
+      return {
+        merged: true,
+        labels: [labelOf(list[0]), ...result.labels],
+        addedProblems: result.addedProblems,
+        addedAssets: result.addedAssets,
+      };
+    },
+    [importProject, mergeBankZips],
+  );
 
   const exportExamPackage = useCallback(
     async (examId?: string) => {
@@ -467,6 +522,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       updateExamMeta,
       exportProject,
       importProject,
+      importProjectSources,
       mergeBankZips,
       exportExamPackage,
       pushExamToSession,
@@ -493,6 +549,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       updateExamMeta,
       exportProject,
       importProject,
+      importProjectSources,
       mergeBankZips,
       exportExamPackage,
       pushExamToSession,
