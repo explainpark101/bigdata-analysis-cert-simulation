@@ -580,6 +580,20 @@ body.is-resizing-y * {
   border-right: 1px solid var(--dq-border);
 }
 
+.problem-panel .katex-display-wrap,
+.exam-assemble-preview .katex-display-wrap,
+.grade-report-item .katex-display-wrap {
+  overflow-x: auto;
+  margin: 0.6em 0;
+  padding: 0.15em 0;
+}
+
+.problem-panel .katex-fallback,
+.problem-panel .katex-error {
+  font-family: var(--dq-mono, ui-monospace, monospace);
+  color: var(--dq-danger-text, #b91c1c);
+}
+
 .panel-tabs {
   display: flex;
   align-items: center;

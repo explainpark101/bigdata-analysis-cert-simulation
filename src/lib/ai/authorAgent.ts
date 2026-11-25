@@ -10,6 +10,7 @@ import type { AuthorDraft } from '@/lib/ai/authorChatStore';
 import {
   authorDifficultyPromptEn,
   authorRuntimeEnvPromptEn,
+  authorStatsResearchPromptEn,
   authorType13AnswerFormatPromptEn,
   authorType2BandPromptEn,
   validateNumericShortAnswers,
@@ -85,6 +86,8 @@ function systemPrompt(requireSave: boolean): string {
     '',
     authorRuntimeEnvPromptEn(),
     '',
+    authorStatsResearchPromptEn(),
+    '',
     authorDifficultyPromptEn(),
     '',
     authorType13AnswerFormatPromptEn(),
@@ -109,7 +112,7 @@ function systemPrompt(requireSave: boolean): string {
     'Type 1/3: CSV ready (mutate or synthesize) → update_draft → set_answer_code → run_answer_code → set_short_answers.',
     'Type 2: CSV ready → update_draft with markdown 구간표 + grading_python/r (SCORE_BANDS) → verify.',
     'Never invent final numeric answers yourself — compute via tools, then set answers from stdout.',
-    'When you need external facts/docs: web_search then fetch_url. Do not invent API signatures.',
+    'For stats formulas/metrics: lookup_statistic and/or web_search → fetch_url. Do not invent formulas or API signatures.',
   ];
   if (requireSave) {
     lines.push(
@@ -610,7 +613,7 @@ export async function runAuthorAgentTurn(opts: {
         'Analyze references with list_references / get_reference, then invent a NEW exam-realistic item.',
         'DATA_POLICY=csv_only — choose MUTATE (list_project_csvs / transform) or SYNTHESIZE (dataset_code) at design time.',
         'RUNTIME=python(pandas,numpy,scipy.stats,statsmodels,sklearn,xgboost,lightgbm) | r(tidyverse,broom,lubridate).',
-        'DIFFICULTY=hard formula items allowed (e.g. pooled variance) — implement formula in answer_code, never invent numbers.',
+        'DIFFICULTY=hard custom metrics via lookup_statistic/web_search/fetch_url + KaTeX; do NOT default to 합동분산; no formulas for package one-liners.',
         'TYPE1_3_ANSWERS=numeric only after 반올림 or 절사; never letters/labels.',
         requireSave
           ? 'REQUIRE_SAVE=true — end this turn with save_problem(confirm=true).'
@@ -654,6 +657,12 @@ export async function runAuthorAgentTurn(opts: {
       tools: TOOLS,
       toolChoice: 'auto',
       signal,
+      onEmptyStreamRetry: (attempt) => {
+        report({
+          kind: 'status',
+          text: `빈 스트림 응답 — 재시도 중… (${attempt})`,
+        });
+      },
       onDelta: (delta) => {
         if (delta.content) {
           report({ kind: 'assistant_delta', text: delta.content });

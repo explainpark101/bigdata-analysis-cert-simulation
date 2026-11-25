@@ -221,7 +221,89 @@ export type ChatToolChoice =
   | 'required'
   | { type: 'function'; function: { name: string } };
 
+const EMPTY_STREAM_MESSAGES = [
+  'AI 스트림 응답이 비어 있습니다.',
+  'AI 스트림 본문이 비어 있습니다.',
+] as const;
+
+const EMPTY_STREAM_RETRY_MS = 800;
+
+function isEmptyStreamError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return EMPTY_STREAM_MESSAGES.some((m) => msg.includes(m));
+}
+
+function isAbortError(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === 'AbortError') return true;
+  if (err instanceof Error && err.name === 'AbortError') return true;
+  return false;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  if (typeof signal.throwIfAborted === 'function') {
+    signal.throwIfAborted();
+  }
+  throw new DOMException('Generation aborted', 'AbortError');
+}
+
+async function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+  if (ms <= 0) return;
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException('Generation aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function assertNonEmptyCompletion(result: ChatCompletionResult): void {
+  const text = chatContentToText(result.message.content).trim();
+  const tools = result.message.tool_calls?.length ?? 0;
+  if (!text && tools === 0) {
+    throw new Error('AI 스트림 응답이 비어 있습니다.');
+  }
+}
+
+/**
+ * OpenAI-compatible chat.completions. Retries forever on empty stream bodies
+ * until a usable message/tool_calls arrives or `signal` aborts.
+ */
 export async function createChatCompletion(opts: {
+  settings: AiEndpointSettings;
+  messages: ChatMessage[];
+  tools?: ChatToolDef[];
+  toolChoice?: ChatToolChoice;
+  temperature?: number;
+  signal?: AbortSignal;
+  onDelta?: ChatStreamDeltaHandler;
+  /** Called before each empty-stream retry (attempt starts at 1). */
+  onEmptyStreamRetry?: (attempt: number) => void;
+}): Promise<ChatCompletionResult> {
+  let attempt = 0;
+  while (true) {
+    throwIfAborted(opts.signal);
+    try {
+      const result = await createChatCompletionOnce(opts);
+      assertNonEmptyCompletion(result);
+      return result;
+    } catch (err) {
+      if (isAbortError(err)) throw err;
+      if (!isEmptyStreamError(err)) throw err;
+      attempt += 1;
+      opts.onEmptyStreamRetry?.(attempt);
+      await sleepAbortable(EMPTY_STREAM_RETRY_MS, opts.signal);
+    }
+  }
+}
+
+async function createChatCompletionOnce(opts: {
   settings: AiEndpointSettings;
   messages: ChatMessage[];
   tools?: ChatToolDef[];
@@ -315,10 +397,12 @@ export async function createChatCompletion(opts: {
         if (choice.finish_reason) finishReason = choice.finish_reason;
 
         if (choice.message) {
-          return {
+          const early: ChatCompletionResult = {
             message: choice.message,
             finishReason: choice.finish_reason ?? finishReason,
           };
+          assertNonEmptyCompletion(early);
+          return early;
         }
 
         const delta = choice.delta;

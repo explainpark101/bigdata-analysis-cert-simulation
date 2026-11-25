@@ -17,13 +17,14 @@ export const WEB_TOOL_DEFS: ChatToolDef[] = [
     function: {
       name: 'web_search',
       description:
-        'Search the public web for documentation, facts, APIs, exam tips, or examples. Prefer this before guessing. Returns titles, URLs, and short snippets.',
+        'Search the public web (Wikipedia KO/EN, DuckDuckGo) for documentation, statistical formulas/metrics, APIs, exam tips, or examples. Prefer this before inventing formulas. Returns titles, URLs, and short snippets.',
       parameters: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: 'Search query (Korean or English)',
+            description:
+              'Search query (Korean or English). For stats, include words like formula / definition / 수식.',
           },
           limit: {
             type: 'integer',
@@ -39,7 +40,7 @@ export const WEB_TOOL_DEFS: ChatToolDef[] = [
     function: {
       name: 'fetch_url',
       description:
-        'Fetch a URL and return readable text/markdown for the main content. Use after web_search when you need details from a specific page (docs, blog, Wikipedia, GitHub README, etc.).',
+        'Fetch a URL and return readable text/markdown for the main content. Use after web_search / lookup_statistic when you need the full definition or formula (Wikipedia, CrossValidated, docs, GitHub README, etc.).',
       parameters: {
         type: 'object',
         properties: {
@@ -56,10 +57,42 @@ export const WEB_TOOL_DEFS: ChatToolDef[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'lookup_statistic',
+      description:
+        'Look up a statistical metric / index / test formula via Wikipedia + web search APIs. Use when designing hard exam items so formulas are not invented. Returns search hits; call fetch_url on the best URL for the full formula.',
+      parameters: {
+        type: 'object',
+        properties: {
+          topic: {
+            type: 'string',
+            description:
+              'Metric or concept name, e.g. "Gini coefficient", "Cohen kappa", "population attributable fraction", "Herfindahl index"',
+          },
+          aspect: {
+            type: 'string',
+            description:
+              'Optional focus: formula | definition | interpretation | example (default formula)',
+          },
+          limit: {
+            type: 'integer',
+            description: 'Max results (1–8, default 6)',
+          },
+        },
+        required: ['topic'],
+      },
+    },
+  },
 ];
 
 export function isWebToolName(name: string): boolean {
-  return name === 'web_search' || name === 'fetch_url';
+  return (
+    name === 'web_search' ||
+    name === 'fetch_url' ||
+    name === 'lookup_statistic'
+  );
 }
 
 function clip(text: string, max: number): string {
@@ -392,7 +425,73 @@ export async function fetchUrl(
   };
 }
 
-/** Execute web_search / fetch_url and return a JSON string for the tool channel. */
+/**
+ * Multi-query stats lookup (Wikipedia + DDG) so authors can diversify
+ * hard metrics beyond a fixed hint list.
+ */
+export async function lookupStatistic(
+  topic: string,
+  aspect = 'formula',
+  limit = 6,
+): Promise<{
+  ok: boolean;
+  topic: string;
+  aspect: string;
+  queries: string[];
+  results: WebSearchHit[];
+  suggested_fetch?: string;
+  error?: string;
+}> {
+  const t = topic.trim();
+  if (!t) {
+    return {
+      ok: false,
+      topic: t,
+      aspect,
+      queries: [],
+      results: [],
+      error: 'empty topic',
+    };
+  }
+  const focus = (aspect || 'formula').trim().toLowerCase();
+  const queries = [
+    `${t} ${focus}`,
+    `${t} statistical formula definition`,
+    `${t} 통계 수식 정의`,
+    `site:en.wikipedia.org ${t}`,
+    `site:ko.wikipedia.org ${t}`,
+  ];
+  const n = Math.min(8, Math.max(1, Number(limit) || 6));
+  const batches = await Promise.all(
+    queries.map((q) => webSearch(q, Math.min(4, n))),
+  );
+  const results = dedupeHits(
+    batches.flatMap((b) => b.results),
+    n,
+  );
+  if (!results.length) {
+    return {
+      ok: false,
+      topic: t,
+      aspect: focus,
+      queries,
+      results: [],
+      error:
+        'No results. Try a different English/Korean topic name, or web_search with a known metric.',
+    };
+  }
+  const wiki = results.find((r) => /wikipedia\.org/i.test(r.url));
+  return {
+    ok: true,
+    topic: t,
+    aspect: focus,
+    queries,
+    results,
+    suggested_fetch: (wiki ?? results[0])?.url,
+  };
+}
+
+/** Execute web_search / fetch_url / lookup_statistic for the tool channel. */
 export async function runWebTool(
   name: string,
   args: Record<string, unknown>,
@@ -406,6 +505,12 @@ export async function runWebTool(
     const url = String(args.url ?? '');
     const maxChars = Number(args.max_chars ?? MAX_PAGE_CHARS);
     return JSON.stringify(await fetchUrl(url, maxChars));
+  }
+  if (name === 'lookup_statistic') {
+    const topic = String(args.topic ?? '');
+    const aspect = String(args.aspect ?? 'formula');
+    const limit = Number(args.limit ?? 6);
+    return JSON.stringify(await lookupStatistic(topic, aspect, limit));
   }
   return JSON.stringify({ ok: false, error: `unknown web tool ${name}` });
 }

@@ -9,6 +9,7 @@ import type { VariantDraft } from '@/lib/ai/variantChatStore';
 import {
   authorDifficultyPromptEn,
   authorRuntimeEnvPromptEn,
+  authorStatsResearchPromptEn,
   authorType13AnswerFormatPromptEn,
   authorType2BandPromptEn,
   validateNumericShortAnswers,
@@ -82,13 +83,15 @@ function systemPrompt(source: BankProblem): string {
     '',
     authorRuntimeEnvPromptEn(),
     '',
+    authorStatsResearchPromptEn(),
+    '',
     authorDifficultyPromptEn(),
     '',
     type === 1 || type === 3 ? authorType13AnswerFormatPromptEn() : '',
     type === 2 ? authorType2BandPromptEn() : '',
     '',
     'Always explain briefly in natural language what you changed.',
-    'When you need docs, formulas, or examples from the web: use web_search then fetch_url.',
+    'For stats formulas/metrics: lookup_statistic → fetch_url (or web_search). Do not invent formulas.',
     'Call save_variant only when the user asks to save or the draft is complete.',
   ].join('\n');
 }

@@ -39,8 +39,10 @@ import {
 import {
   authorDifficultyPromptKo,
   authorRuntimeEnvPromptKo,
+  authorStatsResearchPromptKo,
   authorType13AnswerFormatPromptKo,
   authorType2BandPromptKo,
+  pickHardMetricHint,
 } from '@/lib/ai/authorRuntimePrompt';
 import type {
   AuthoringProject,
@@ -235,10 +237,13 @@ function autoPromptForType(
     '',
     authorRuntimeEnvPromptKo(),
     '',
+    authorStatsResearchPromptKo(),
+    '',
     authorDifficultyPromptKo({
       // Last type-1/3 item in a paper leans formula / custom-metric hard.
       preferHard:
         taskType !== 2 && ordinalInType >= OFFICIAL_COUNTS[taskType],
+      metricHint: pickHardMetricHint(taskType, ordinalInType),
     }),
     '- 단순 사칙/한 줄 집계 장난감 문제는 금지합니다.',
     '- 결측·형변환·그룹집계·피처/인코딩·모델지표·가설검정 등 실기에서 쓰는 다단계 파이프라인을 포함하세요.',

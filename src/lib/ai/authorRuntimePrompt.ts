@@ -35,17 +35,75 @@ export function authorRuntimeEnvPromptEn(): string {
   ].join('\n');
 }
 
+/**
+ * Hard custom metrics that are NOT a single call in pandas/numpy/scipy/sklearn/statsmodels.
+ * Rotate — never default every hard item to pooled variance.
+ */
+export const HARD_CUSTOM_METRIC_IDEAS = [
+  'population attributable fraction (PAF) with given risk formula',
+  'Herfindahl–Hirschman index (HHI) / concentration index from shares',
+  'Gini coefficient (discrete) from value shares',
+  'Theil index or entropy-based inequality measure',
+  'winsorized mean or trimmed mean with explicit cut rules',
+  'coefficient of quartile variation or robust CV using MAD',
+  'Brier score or log-loss computed by hand from probability columns',
+  'Matthews correlation components assembled from a confusion table by formula',
+  'Cohen\'s kappa from agreement counts (explicit formula)',
+  'odds ratio / risk ratio then a specified transform (e.g. log-OR)',
+  'Spearman rank correlation computed via rank averages without scipy.stats shortcut when asked to show steps',
+  'weighted RMSE / MAPE with problem-defined weights',
+  'stratified rate standardization (direct standardization) with given weights',
+  'Lorenz-curve gap or area-style summary from ordered shares',
+  'geometric mean of positive ratios with explicit product formula',
+] as const;
+
+/** Research statistical knowledge via web tools before inventing formulas. */
+export function authorStatsResearchPromptEn(): string {
+  return [
+    '## Research stats knowledge (web / APIs — use freely)',
+    '- Tools: `lookup_statistic` (preferred for metrics), `web_search`, then `fetch_url` on the best page.',
+    '- Sources to prefer: Wikipedia (ko/en), textbooks/docs, CrossValidated, package docs. Verify the formula before putting it in the problem.',
+    '- When designing a hard custom metric: look it up first — do not invent LaTeX or definitions from memory alone.',
+    '- After fetch, rewrite the formula in KaTeX (`$...$` / `$$...$$`) in Korean exam tone; cite the idea in `note` briefly (no need for a bibliography).',
+    '- Still reject package one-liners (mean/std/ttest/AUC/F1…): those need no pasted formula.',
+  ].join('\n');
+}
+
+export function authorStatsResearchPromptKo(): string {
+  return [
+    '## 통계 지식 조사 (웹검색·API · 적극 사용)',
+    '- 도구: `lookup_statistic`(지표 조회 우선) → `web_search` → 필요 시 `fetch_url`로 본문 확인.',
+    '- 위키백과(한/영), 교재·공식 문서, CrossValidated 등에서 수식·정의를 확인한 뒤 출제하세요. 기억만으로 수식을 만들지 마세요.',
+    '- 조사한 지표를 KaTeX(`$...$` / `$$...$$`)로 본문에 넣고, `note`에 어떤 지표를 참고했는지 한 줄로 남겨도 됩니다.',
+    '- 패키지 한 줄로 되는 값(평균·표준편차·t검정·AUC 등)은 조사해도 본문에 수식을 넣지 마세요.',
+  ].join('\n');
+}
+
 /** English difficulty + formula-implementation guidance. */
-export function authorDifficultyPromptEn(): string {
+export function authorDifficultyPromptEn(opts?: {
+  preferHard?: boolean;
+  metricHint?: string;
+}): string {
+  const hint =
+    opts?.metricHint?.trim() ||
+    HARD_CUSTOM_METRIC_IDEAS[
+      Math.floor(Math.random() * HARD_CUSTOM_METRIC_IDEAS.length)
+    ];
   return [
     '## Difficulty (medium baseline; hard allowed)',
     '- Baseline: multi-step cleaning → transform/feature → aggregate or model/test → formatted answer.',
-    '- Hard items are encouraged when they still match 빅데이터분석기사 실기 style:',
-    '  * Give an explicit formula in the problem markdown for a statistically meaningful quantity that is NOT a single library one-liner',
-    '    (examples: pooled variance / 합동분산, custom weighted index, hand-derived residual metric, stratified rate).',
-    '  * Examinees must implement that formula in code (pandas/numpy or tidyverse); answer_code must implement the SAME formula.',
+    '- Hard items (when used) must match 빅데이터분석기사 실기 style:',
+    '  * Put an explicit formula in markdown with KaTeX delimiters: inline `$...$` or block `$$...$$`.',
+    '  * Formula ONLY for quantities that are NOT a one-liner in the allowed stack',
+    '    (do NOT paste formulas for mean/median/std/var/corr/ttest/chi2/AUC/F1 that pandas/numpy/scipy/sklearn/statsmodels already compute — just name the function/metric).',
+    '  * Diversify custom metrics. Do NOT reuse 합동분산/pooled variance as the default hard item.',
+    `  * Seed idea for this turn (optional — you may replace after lookup_statistic / web_search): ${hint}.`,
+    '  * Prefer looking up a different real-world metric via tools rather than repeating the seed.',
+    '  * Examinees implement that formula in code; answer_code must implement the SAME formula.',
     '  * Never invent the final number — compute via tools after implementing the formula.',
-    '  * Still use the allowed package stack for I/O, grouping, modeling wrappers, and standard tests when appropriate.',
+    opts?.preferHard
+      ? '- This turn: prefer a hard custom-metric item (research + KaTeX formula), not a toy aggregate.'
+      : '- Hard formula items are optional; when used, research a fresh metric (not pooled variance again).',
     '- Avoid unfair obscurity: state units, filters, ddof/rounding, and which groups enter the formula.',
   ].join('\n');
 }
@@ -64,16 +122,35 @@ export function authorRuntimeEnvPromptKo(): string {
 
 export function authorDifficultyPromptKo(opts?: {
   preferHard?: boolean;
+  metricHint?: string;
 }): string {
+  const hint =
+    opts?.metricHint?.trim() ||
+    HARD_CUSTOM_METRIC_IDEAS[
+      Math.floor(Math.random() * HARD_CUSTOM_METRIC_IDEAS.length)
+    ];
   const prefer = opts?.preferHard
-    ? '- 이번 문항은 고난도(수식 직접 구현)를 우선하세요.'
-    : '- 기본은 실전형 중난도 다단계 파이프라인이며, 고난도 문항도 적극 허용합니다.';
+    ? '- 이번 문항은 고난도(커스텀 지표·수식 직접 구현)를 우선하세요.'
+    : '- 기본은 실전형 중난도 다단계 파이프라인이며, 고난도 문항도 허용합니다.';
   return [
-    '## 난이도',
+    '## 난이도 · 수식',
     prefer,
-    '- 고난도 예: 합동분산(pooled variance)처럼 패키지 한 줄 함수가 아니어도 통계적으로 의미 있는 지표를 문제 본문에 수식으로 제시하고, 응시자·정답 코드가 동일 수식을 구현해 답을 산출.',
-    '- 수식·필터·ddof·반올림·대상 집단을 본문에 명확히 적고, 숫자는 절대 추측하지 말고 run_answer_code 결과로 set_short_answers 하세요.',
+    '- 기초 패키지(pandas/numpy/scipy.stats/sklearn/statsmodels 등)로 한 줄 계산되는 값(평균·중앙값·표준편차·상관계수·t검정 p값·AUC·F1 등)은 본문에 수식을 넣지 마세요. 이름만 지시하세요.',
+    '- 고난도는 패키지 원라이너가 아닌 통계적으로 의미 있는 지표만 본문에 KaTeX 수식(`$...$` / `$$...$$`)으로 제시하고, 응시자·정답 코드가 동일 수식을 구현하세요.',
+    '- 합동분산(pooled variance)을 기본/반복 출제하지 마세요. `lookup_statistic` / `web_search`로 다른 실존 지표를 찾아 쓰세요.',
+    `- 시드 아이디어(선택 · 조사 후 바꿔도 됨): ${hint}`,
+    '- 필터·ddof·반올림·대상 집단을 본문에 명시하고, 숫자는 run_answer_code 결과로만 set_short_answers 하세요.',
   ].join('\n');
+}
+
+/** Stable-ish pick for auto-gen so papers do not all collapse to pooled variance. */
+export function pickHardMetricHint(
+  taskType: 1 | 2 | 3,
+  ordinalInType: number,
+): string {
+  const idx =
+    (taskType * 17 + ordinalInType * 31) % HARD_CUSTOM_METRIC_IDEAS.length;
+  return HARD_CUSTOM_METRIC_IDEAS[idx];
 }
 
 /**

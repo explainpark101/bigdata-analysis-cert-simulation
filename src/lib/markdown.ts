@@ -1,6 +1,7 @@
 import MarkdownIt from 'markdown-it';
 import TurndownService from 'turndown';
 import { betterMdMarkdownItPlugin } from './betterMdMarkdownItPlugin';
+import { katexMarkdownItPlugin } from './katexMarkdownItPlugin';
 import { buildAssetUrlMap, type MediaAsset } from './assetMedia';
 
 const md = new MarkdownIt({
@@ -10,6 +11,7 @@ const md = new MarkdownIt({
   typographer: false,
 });
 betterMdMarkdownItPlugin(md);
+katexMarkdownItPlugin(md);
 
 function createTurndown(dataUrlToPath?: Map<string, string>): TurndownService {
   const turndown = new TurndownService({
