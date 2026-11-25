@@ -45,6 +45,18 @@ import type { ExamLanguage, QuizKind, SubmitFormat } from '@/types/exam';
 import type { BankProblem, TaskType } from '@/types/project';
 import { mountPathForAsset } from '@/lib/assetPaths';
 import { buildStarterCode } from '@/lib/starterCode';
+import {
+  OFFICIAL_COUNTS,
+  OFFICIAL_MAX_RUN_SECONDS,
+  OFFICIAL_POINTS_PER_ITEM,
+  OFFICIAL_TIME_LIMIT_MINUTES,
+  OFFICIAL_TOTAL_ITEMS,
+  OFFICIAL_TOTAL_POINTS,
+  countIdsByType,
+  isOfficialStructure,
+  officialStructureSummary,
+  pickOfficialProblemIds,
+} from '@/lib/examOfficialSpec';
 
 interface PendingImportSession {
   ready: PendingAssetImport[];
@@ -204,6 +216,12 @@ export default function ProjectPage() {
     return groups;
   }, [project.bank]);
 
+  const examTypeCounts = useMemo(
+    () => countIdsByType(activeExam.problemIds, project.bank),
+    [activeExam.problemIds, project.bank],
+  );
+  const examIsOfficial = isOfficialStructure(examTypeCounts);
+
   const patch = (p: Partial<NonNullable<typeof problem>>) => {
     if (!problem) return;
     updateBankProblem(problem.id, p);
@@ -248,7 +266,8 @@ export default function ProjectPage() {
         <div>
           <h1>프로젝트 · 문제은행</h1>
           <p className="edit-page__sub">
-            CSV·문제은행을 모은 뒤 시험지를 여러 장 조립합니다. 시험지마다{' '}
+            CSV·문제은행을 모은 뒤 시험지를 조립합니다. 공식 구성은 1유형 3·2유형
+            1·3유형 2(100점). 시험지마다{' '}
             <code>.exam.zip</code> 내보내기·응시가 가능합니다.
           </p>
         </div>
@@ -854,15 +873,15 @@ export default function ProjectPage() {
             });
             const exam = addExam({
               title: `AI 자동 시험 ${stamp}`,
-              description: `1·2·3유형 자동 생성으로 조립 (${ordered
+              description: `제13회 가이드 공식 구성(3+1+2) 자동 생성 조립 · ${ordered
                 .map((p) => `제${p.taskType}유형`)
-                .join(' · ')})`,
+                .join(' · ')}`,
               problemIds: ordered.map((p) => p.id),
-              timeLimitMinutes: 180,
-              maxRunSeconds: 60,
+              timeLimitMinutes: OFFICIAL_TIME_LIMIT_MINUTES,
+              maxRunSeconds: OFFICIAL_MAX_RUN_SECONDS,
             });
             setMessage(
-              `시험 조립 완료: ${exam.title} · ${ordered.length}문항`,
+              `시험 조립 완료: ${exam.title} · ${ordered.length}문항 (만점 ${OFFICIAL_TOTAL_POINTS}점)`,
             );
             setTab('exam');
           }}
@@ -976,13 +995,14 @@ export default function ProjectPage() {
                     updateExamMeta({
                       timeLimitMinutes: Number.isFinite(n)
                         ? Math.max(0, Math.round(n))
-                        : 180,
+                        : OFFICIAL_TIME_LIMIT_MINUTES,
                     });
                   }}
                 />
               </label>
               <p className="edit-page__sub" style={{ marginTop: -4 }}>
-                시험지 단위 제한입니다. 기본 180분(3시간). 비우면 제한 없음.
+                제13회 가이드 기준 {OFFICIAL_TIME_LIMIT_MINUTES}분(3시간).
+                비우면 제한 없음.
               </p>
               <label>
                 코드 최대 실행시간 (초)
@@ -990,19 +1010,20 @@ export default function ProjectPage() {
                   type="number"
                   min={1}
                   step={1}
-                  value={activeExam.maxRunSeconds ?? 60}
+                  value={activeExam.maxRunSeconds ?? OFFICIAL_MAX_RUN_SECONDS}
                   onChange={(e) => {
                     const n = Number(e.target.value);
                     updateExamMeta({
                       maxRunSeconds: Number.isFinite(n)
                         ? Math.max(1, Math.round(n))
-                        : 60,
+                        : OFFICIAL_MAX_RUN_SECONDS,
                     });
                   }}
                 />
               </label>
               <p className="edit-page__sub" style={{ marginTop: -4 }}>
-                코드 실행 1회당 제한입니다. 기본 60초.
+                코드 실행 1회당 제한입니다. 가이드 기준{' '}
+                {OFFICIAL_MAX_RUN_SECONDS}초(1분), 초과 시 강제 취소.
               </p>
               <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
                 <button
@@ -1033,7 +1054,38 @@ export default function ProjectPage() {
             </section>
             <section className="edit-card">
               <h2>포함할 문제 (유형별 선택 · 순서 = 응시 순서)</h2>
+              <p className="edit-page__sub" style={{ marginTop: 0 }}>
+                제13회 공식 구성: 1유형 {OFFICIAL_COUNTS[1]}문항(각{' '}
+                {OFFICIAL_POINTS_PER_ITEM[1]}점) · 2유형 {OFFICIAL_COUNTS[2]}
+                문항({OFFICIAL_POINTS_PER_ITEM[2]}점) · 3유형{' '}
+                {OFFICIAL_COUNTS[3]}문항(각 {OFFICIAL_POINTS_PER_ITEM[3]}점) ={' '}
+                {OFFICIAL_TOTAL_ITEMS}문항 / {OFFICIAL_TOTAL_POINTS}점
+              </p>
+              <p
+                className="edit-page__sub"
+                style={{
+                  marginTop: 4,
+                  color: examIsOfficial
+                    ? 'var(--dq-ok-text, inherit)'
+                    : 'var(--dq-danger-text, inherit)',
+                }}
+                role="status"
+              >
+                현재 선택: {officialStructureSummary(examTypeCounts)}
+                {examIsOfficial ? ' — 공식 구성과 일치' : ' — 공식 구성과 다름 (연습용 허용)'}
+              </p>
               <div className="row" style={{ marginBottom: 10 }}>
+                <button
+                  type="button"
+                  className="ghost-btn btn-with-icon"
+                  onClick={() =>
+                    setExamProblemIds(pickOfficialProblemIds(project.bank))
+                  }
+                  title="유형별로 은행 앞에서부터 3·1·2개를 골라 공식 구성으로 맞춤"
+                >
+                  <ListChecks size={16} />
+                  공식 구성으로 맞추기
+                </button>
                 <button
                   type="button"
                   className="ghost-btn btn-with-icon"

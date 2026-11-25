@@ -15,7 +15,7 @@ function statusLabel(quiz: QuizProblem): { text: string; className: string } {
     return { text: '안내', className: 'quiz-status quiz-status--info' };
   }
   if (quiz.submitted) {
-    return { text: '제출', className: 'quiz-status quiz-status--ok' };
+    return { text: '제출 완료', className: 'quiz-status quiz-status--ok' };
   }
   return { text: '미제출', className: 'quiz-status quiz-status--warn' };
 }

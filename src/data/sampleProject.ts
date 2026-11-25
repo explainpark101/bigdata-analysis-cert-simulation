@@ -445,7 +445,8 @@ print(round(t.test(a, b)$p.value, 4))
     {
       id: 'bigdata-knight-exam-v1',
       title: '빅데이터분석기사 실기 체험',
-      description: '문제은행에서 조립한 전체 유형 시험',
+      description:
+        '제13회 가이드 공식 구성(1유형 3·2유형 1·3유형 2 = 6문항 / 100점)',
       timeLimitMinutes: 180,
       maxRunSeconds: 60,
       problemIds: ['t1-q1', 't1-q2', 't1-q3', 't2-ml', 't3-q1', 't3-q2'],
@@ -453,7 +454,7 @@ print(round(t.test(a, b)$p.value, 4))
     {
       id: 'bigdata-knight-exam-type1',
       title: '제1유형만 연습',
-      description: '작업형 1유형 단답 연습',
+      description: '작업형 1유형 단답 연습 (비공식·연습용)',
       timeLimitMinutes: 180,
       maxRunSeconds: 60,
       problemIds: ['t1-q1', 't1-q2', 't1-q3'],

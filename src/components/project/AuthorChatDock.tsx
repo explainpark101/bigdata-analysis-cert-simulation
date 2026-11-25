@@ -33,6 +33,14 @@ import type {
   ProjectAsset,
   TaskType,
 } from '@/types/project';
+import {
+  OFFICIAL_AUTOGEN_SEQUENCE,
+  OFFICIAL_COUNTS,
+  OFFICIAL_POINTS_PER_ITEM,
+  OFFICIAL_TOTAL_ITEMS,
+  countBankByType,
+  isOfficialStructure,
+} from '@/lib/examOfficialSpec';
 import { ConfirmModal } from '@/components/exam/ConfirmModal';
 import { EdgeResizeHandle } from '@/components/layout/EdgeResizeHandle';
 import {
@@ -129,12 +137,67 @@ function visibleContent(m: ChatMessage): string {
   return '';
 }
 
-function autoPromptForType(taskType: TaskType, refCount: number): string {
+/** Cap context size while still covering the bank. */
+const AUTO_REF_MAX = 16;
+
+/**
+ * Pick bank problems to feed the author agent for a given task type.
+ * - Prefer user selection when present (plus same-type peers).
+ * - Else use all same-type items; if none, the whole bank.
+ * - Exclude ids from the current auto-gen batch (avoid copying ourselves).
+ */
+function pickReferencesForSituation(
+  bank: BankProblem[],
+  taskType: TaskType,
+  selectedIds: string[],
+  excludeIds: Iterable<string>,
+  max = AUTO_REF_MAX,
+): string[] {
+  const exclude = new Set(excludeIds);
+  const pool = bank.filter((b) => !exclude.has(b.id));
+  if (!pool.length) return [];
+
+  const selected = pool.filter((b) => selectedIds.includes(b.id));
+  const sameType = pool.filter((b) => b.taskType === taskType);
+  const otherType = pool.filter((b) => b.taskType !== taskType);
+
+  const merged = new Map<string, BankProblem>();
+  if (selected.length) {
+    for (const b of selected) merged.set(b.id, b);
+    for (const b of sameType) merged.set(b.id, b);
+  } else if (sameType.length) {
+    for (const b of sameType) merged.set(b.id, b);
+    // Sprinkle a few other-type items for cross-skill texture.
+    for (const b of otherType.slice(0, 4)) merged.set(b.id, b);
+  } else {
+    for (const b of pool) merged.set(b.id, b);
+  }
+
+  const ordered = [
+    ...[...merged.values()].filter((b) => b.taskType === taskType),
+    ...[...merged.values()].filter((b) => b.taskType !== taskType),
+  ];
+  return ordered.slice(0, max).map((b) => b.id);
+}
+
+function autoPromptForType(
+  taskType: TaskType,
+  refCount: number,
+  ordinalInType: number,
+  refMode: 'selected' | 'auto',
+): string {
+  const pts = OFFICIAL_POINTS_PER_ITEM[taskType];
+  const refLine =
+    refMode === 'auto'
+      ? `문제은행에서 상황에 맞게 가져온 참고 문제 ${refCount}개(제${taskType}유형 우선)를 분석한 뒤, 빅데이터분석기사 실기(제13회 가이드) 작업형 ${taskType}유형 새 문항을 작성·저장하세요.`
+      : `선택된 참고 문제 ${refCount}개를 분석한 뒤, 빅데이터분석기사 실기(제13회 가이드) 작업형 ${taskType}유형 새 문항을 작성·저장하세요.`;
   return [
-    `선택된 참고 문제 ${refCount}개를 분석한 뒤, 빅데이터분석기사 실기에 나올 법한 작업형 ${taskType}유형 새 문항을 작성·저장하세요.`,
+    refLine,
+    `이번 생성은 제${taskType}유형 ${ordinalInType}/${OFFICIAL_COUNTS[taskType]}번째 · 문항 배점 ${pts}점입니다.`,
     '',
     '## 참고 분석',
     '- list_references → get_reference 로 참고 문항의 도메인·스키마·요구 스킬·답안 형식을 파악하세요.',
+    '- 같은 유형 참고를 우선 보고, 다른 유형은 스킬·난이도만 참고하세요.',
     '- 같은 스킬군/시험 의도를 유지하되, 스토리·컬럼명·시드·분포·문구는 완전히 새로 만드세요. 베끼지 마세요.',
     '',
     '## 실전형 난이도',
@@ -148,8 +211,8 @@ function autoPromptForType(taskType: TaskType, refCount: number): string {
     '',
     '## 유형별 마무리',
     taskType === 2
-      ? '- 2유형: grading 코드를 채우고 제출 CSV 규칙을 본문에 적으세요.'
-      : '- 1·3유형: set_answer_code → run_answer_code → set_short_answers 로 정답을 확정하세요.',
+      ? '- 2유형(40점): grading 코드 + result.csv(예측 칼럼 1개, index 제거, 지시 파일명/칼럼명) 규칙을 본문에 적으세요.'
+      : `- ${taskType}유형(${pts}점): set_answer_code → run_answer_code → set_short_answers 로 정답을 확정하세요. 제출은 별도 답안 제출 화면(단답)입니다.`,
     '- 마지막에 반드시 save_problem(confirm=true). 저장 없이 끝내면 실패입니다.',
     '- 이번 턴에서는 해당 유형 하나만 작업·저장하세요.',
   ].join('\n');
@@ -159,6 +222,17 @@ function isAbortError(err: unknown): boolean {
   if (err instanceof DOMException && err.name === 'AbortError') return true;
   if (err instanceof Error && err.name === 'AbortError') return true;
   return false;
+}
+
+/** AbortSignal.throwIfAborted is missing on some WebViews — polyfill inline. */
+function throwIfAborted(signal: AbortSignal): void {
+  if (!signal.aborted) return;
+  if (typeof signal.throwIfAborted === 'function') {
+    signal.throwIfAborted();
+  }
+  const reason = signal.reason;
+  if (reason instanceof Error) throw reason;
+  throw new DOMException('Generation aborted', 'AbortError');
 }
 
 export function AuthorChatDock({
@@ -190,6 +264,7 @@ export function AuthorChatDock({
   const messagesRef = useRef(messages);
   const projectRef = useRef(project);
   const referenceIdsRef = useRef(referenceIds);
+  const busyRef = useRef(false);
   const liveStreamRef = useRef('');
   const abortRef = useRef<AbortController | null>(null);
   const bodyIdPrefix = useId();
@@ -220,7 +295,11 @@ export function AuthorChatDock({
       if (stored) {
         setMessages(stored.messages);
         onDraftChange(stored.draft);
-        onReferenceIdsChange?.(stored.referenceIds ?? []);
+        // Do not clobber refs the user already picked while this load was in flight
+        // (otherwise the 123 button stays disabled / generation sees empty refs).
+        if (referenceIdsRef.current.length === 0) {
+          onReferenceIdsChange?.(stored.referenceIds ?? []);
+        }
       } else {
         setMessages([]);
         onDraftChange(emptyAuthorDraft(1));
@@ -255,8 +334,8 @@ export function AuthorChatDock({
     const web =
       '필요하면 웹 검색·문서 조회(web_search / fetch_url)로 자료를 가져옵니다.';
     return n
-      ? `참고 문제 ${n}개 선택 · ${web}`
-      : `좌측에서 참고 문제를 고르거나, 새 문항 아이디어를 말해 주세요. ${web}`;
+      ? `참고 ${n}개 선택(자동 생성 시 같은 유형 은행 문제와 함께 사용) · ${web}`
+      : `자동 생성은 문제은행을 유형별로 자동 참고합니다. 원하면 좌측에서 강조할 참고를 고르세요. ${web}`;
   }, [referenceIds.length]);
 
   const handleProgress = (event: AuthorAgentProgress) => {
@@ -325,18 +404,20 @@ export function AuthorChatDock({
     draftOverride?: AuthorDraft;
     signal: AbortSignal;
     requireSave?: boolean;
+    /** Locked refs for batch auto-gen (avoids session-restore races). */
+    referenceIds?: string[];
   }) => {
     setLiveStatus('요청 준비 중…');
     setStream('');
     setLiveTools([]);
     const settings = await loadAiSettings();
-    opts.signal.throwIfAborted();
+    throwIfAborted(opts.signal);
     const result = await runAuthorAgentTurn({
       ctx: {
         settings,
         project: projectRef.current,
         draft: opts.draftOverride ?? draftRef.current,
-        referenceIds: referenceIdsRef.current,
+        referenceIds: opts.referenceIds ?? referenceIdsRef.current,
         addProjectAssets,
       },
       history: opts.history,
@@ -367,7 +448,7 @@ export function AuthorChatDock({
     const trimmed = (opts?.text ?? input).trim();
     const userText =
       trimmed || (images.length ? '첨부 이미지를 참고해 주세요.' : '');
-    if ((!userText && !images.length) || busy) return;
+    if ((!userText && !images.length) || busyRef.current) return;
 
     const historyBefore = messagesRef.current;
     const userMsg = buildUserMessage(userText, images);
@@ -377,6 +458,7 @@ export function AuthorChatDock({
       setAttachments([]);
     }
     const ctrl = beginAbortable();
+    busyRef.current = true;
     setBusy(true);
     setError('');
 
@@ -407,6 +489,7 @@ export function AuthorChatDock({
       handleAbortCatch(err);
     } finally {
       if (abortRef.current === ctrl) abortRef.current = null;
+      busyRef.current = false;
       setBusy(false);
       setStream('');
       setLiveTools([]);
@@ -414,22 +497,57 @@ export function AuthorChatDock({
   };
 
   const generateAllTypes = async () => {
-    if (busy) return;
-    if (!referenceIds.length) {
-      setError('먼저 참고 문제를 하나 이상 선택하세요.');
+    if (busyRef.current) return;
+    const preferredIds = [...referenceIdsRef.current];
+    const bankSnapshot = projectRef.current.bank;
+    if (!bankSnapshot.length) {
+      setError(
+        '문제은행이 비어 있습니다. ZIP 병합이나 문제 추가 후 다시 시도하세요.',
+      );
       return;
     }
 
     const ctrl = beginAbortable();
+    busyRef.current = true;
     setBusy(true);
     setError('');
     let history = messagesRef.current;
     const savedProblems: BankProblem[] = [];
+    const excludeCreated = new Set<string>();
 
     try {
-      for (const taskType of [1, 2, 3] as TaskType[]) {
-        ctrl.signal.throwIfAborted();
-        const prompt = autoPromptForType(taskType, referenceIds.length);
+      const typeOrdinal: Record<TaskType, number> = { 1: 0, 2: 0, 3: 0 };
+      for (let i = 0; i < OFFICIAL_AUTOGEN_SEQUENCE.length; i++) {
+        const taskType = OFFICIAL_AUTOGEN_SEQUENCE[i];
+        typeOrdinal[taskType] += 1;
+        const ordinalInType = typeOrdinal[taskType];
+        throwIfAborted(ctrl.signal);
+
+        // Fresh bank each turn (includes problems saved earlier in this batch,
+        // but those ids stay in excludeCreated so we do not reference them).
+        const bankNow = projectRef.current.bank;
+        const turnRefs = pickReferencesForSituation(
+          bankNow,
+          taskType,
+          preferredIds,
+          excludeCreated,
+        );
+        if (!turnRefs.length) {
+          setError(
+            `제${taskType}유형 참고 문제를 찾을 수 없습니다. 문제은행에 문항을 추가하세요.`,
+          );
+          break;
+        }
+        const refMode = preferredIds.length ? 'selected' : 'auto';
+        // Reflect auto-picked refs in the UI checklist for transparency.
+        onReferenceIdsChange?.(turnRefs);
+
+        const prompt = autoPromptForType(
+          taskType,
+          turnRefs.length,
+          ordinalInType,
+          refMode,
+        );
         const userMsg = buildUserMessage(prompt, []);
         const historyBefore = history;
         history = [...historyBefore, userMsg];
@@ -437,7 +555,9 @@ export function AuthorChatDock({
         onDraftChange(emptyAuthorDraft(taskType));
         draftRef.current = emptyAuthorDraft(taskType);
 
-        setLiveStatus(`${taskType}유형 자동 생성 중…`);
+        setLiveStatus(
+          `제${taskType}유형 ${ordinalInType}/${OFFICIAL_COUNTS[taskType]} · 참고 ${turnRefs.length}개 · 생성 중… (${savedProblems.length + 1}/${OFFICIAL_TOTAL_ITEMS})`,
+        );
         setStream('');
         setLiveTools([]);
 
@@ -447,12 +567,13 @@ export function AuthorChatDock({
           draftOverride: emptyAuthorDraft(taskType),
           signal: ctrl.signal,
           requireSave: true,
+          referenceIds: turnRefs,
         });
 
         // If still unsaved, one explicit save-only follow-up turn.
         if (!result.savedProblem) {
-          ctrl.signal.throwIfAborted();
-          setLiveStatus(`${taskType}유형 저장 재시도…`);
+          throwIfAborted(ctrl.signal);
+          setLiveStatus(`제${taskType}유형 저장 재시도…`);
           const savePrompt =
             '추가 수정 없이 지금 초안으로 save_problem(confirm=true)만 호출하세요.';
           const saveUser = buildUserMessage(savePrompt, []);
@@ -464,12 +585,13 @@ export function AuthorChatDock({
             draftOverride: result.draft,
             signal: ctrl.signal,
             requireSave: true,
+            referenceIds: turnRefs,
           });
         }
 
         // Last resort: persist a filled draft from the client.
         if (!result.savedProblem && isDraftReadyForSave(result.draft)) {
-          setLiveStatus(`${taskType}유형 초안 직접 저장…`);
+          setLiveStatus(`제${taskType}유형 초안 직접 저장…`);
           const created = onSaveProblem({
             title: result.draft.title,
             note: result.draft.note,
@@ -482,7 +604,7 @@ export function AuthorChatDock({
             gradingCode: result.draft.gradingCode,
             datasetCode: result.draft.datasetCode || undefined,
             assetIds: result.draft.assetIds,
-            sourceProblemId: referenceIds[0],
+            sourceProblemId: turnRefs[0],
             submitFormat: result.draft.taskType === 2 ? 'csv' : 'short',
             submitFile:
               result.draft.taskType === 2 ? 'result.csv' : undefined,
@@ -515,15 +637,17 @@ export function AuthorChatDock({
 
         if (result.savedProblem) {
           savedProblems.push(result.savedProblem);
+          excludeCreated.add(result.savedProblem.id);
           onSaved(result.savedProblem, { navigate: false });
-          const nextDraft = emptyAuthorDraft(
-            taskType < 3 ? ((taskType + 1) as TaskType) : 1,
-          );
+          const nextType =
+            OFFICIAL_AUTOGEN_SEQUENCE[i + 1] ??
+            (taskType < 3 ? ((taskType + 1) as TaskType) : 1);
+          const nextDraft = emptyAuthorDraft(nextType);
           onDraftChange(nextDraft);
           draftRef.current = nextDraft;
         } else {
           setError(
-            `${taskType}유형 저장에 실패했습니다. 초안(본문·정답)이 충분히 채워지지 않았을 수 있습니다. 채팅에서 이어서 저장하거나 다시 시도하세요.`,
+            `제${taskType}유형 저장에 실패했습니다. 초안(본문·정답)이 충분히 채워지지 않았을 수 있습니다. 채팅에서 이어서 저장하거나 다시 시도하세요.`,
           );
           break;
         }
@@ -534,19 +658,29 @@ export function AuthorChatDock({
 
       let summary =
         savedProblems.length > 0
-          ? `자동 생성 완료 (${savedProblems.length}/3):\n${savedProblems
+          ? `자동 생성 완료 (${savedProblems.length}/${OFFICIAL_TOTAL_ITEMS}):\n${savedProblems
               .map((p, i) => `${i + 1}. [제${p.taskType}유형] ${p.title}`)
               .join('\n')}`
           : '';
 
-      if (savedProblems.length === 3 && onAssembleExam) {
+      const counts = countBankByType(savedProblems);
+      // Assemble whatever was saved — do not require a perfect 3+1+2 batch
+      // (partial success still produces a usable exam paper).
+      if (savedProblems.length > 0 && onAssembleExam) {
         setLiveStatus('시험지 조립 중…');
         try {
           onAssembleExam(
-            [...savedProblems].sort((a, b) => a.taskType - b.taskType),
+            [...savedProblems].sort(
+              (a, b) =>
+                a.taskType - b.taskType || a.title.localeCompare(b.title),
+            ),
           );
-          summary +=
-            '\n\n시험 조립 완료: 1·2·3유형 문항을 새 시험지에 넣었습니다.';
+          if (isOfficialStructure(counts)) {
+            summary +=
+              '\n\n시험 조립 완료: 공식 구성(1유형 3 · 2유형 1 · 3유형 2)으로 새 시험지에 넣었습니다.';
+          } else {
+            summary += `\n\n시험 조립 완료 (부분): 1유형 ${counts[1]} · 2유형 ${counts[2]} · 3유형 ${counts[3]} / 목표 3+1+2.`;
+          }
         } catch (assembleErr) {
           setError(
             assembleErr instanceof Error
@@ -555,9 +689,6 @@ export function AuthorChatDock({
           );
           summary += '\n\n시험 조립에 실패했습니다.';
         }
-      } else if (savedProblems.length > 0 && savedProblems.length < 3) {
-        summary +=
-          '\n\n3유형이 모두 저장되지 않아 시험 조립은 건너뛰었습니다.';
       }
 
       if (summary) {
@@ -574,6 +705,7 @@ export function AuthorChatDock({
       handleAbortCatch(err);
     } finally {
       if (abortRef.current === ctrl) abortRef.current = null;
+      busyRef.current = false;
       setBusy(false);
       setStream('');
       setLiveTools([]);
@@ -596,6 +728,7 @@ export function AuthorChatDock({
     setAttachments([]);
     setError('');
     clearLive();
+    busyRef.current = false;
     setBusy(false);
     setClearConfirmOpen(false);
     await clearAuthorSession(project.id);
@@ -801,16 +934,16 @@ export function AuthorChatDock({
             <button
               type="button"
               className="ghost-btn btn-with-icon"
-              disabled={busy || !referenceIds.length}
+              disabled={busy || project.bank.length === 0}
               title={
-                referenceIds.length
-                  ? '선택 참고 문제로 1·2·3유형 생성·저장 후 시험지까지 조립'
-                  : '참고 문제를 먼저 선택하세요'
+                project.bank.length
+                  ? '문제은행을 유형별로 자동 참고해 공식 6문항(3+1+2) 생성·조립 (선택 참고가 있으면 우선)'
+                  : '문제은행에 문항이 필요합니다'
               }
               onClick={() => void generateAllTypes()}
             >
               <Layers size={14} />
-              1·2·3 자동 생성·조립
+              1·2·3 자동 생성·조립 (3+1+2)
             </button>
             <button
               type="button"

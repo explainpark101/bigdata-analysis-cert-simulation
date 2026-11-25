@@ -9,6 +9,13 @@ import {
   type MetricDirection,
   type Type2MlKind,
 } from '@/lib/type2Scoring';
+import {
+  OFFICIAL_MAX_RUN_SECONDS,
+  OFFICIAL_POINTS_PER_ITEM,
+  TYPE2_FORMAT_PENALTY,
+  roundType2ToBand,
+  type2MaxPoints,
+} from '@/lib/examOfficialSpec';
 
 export type GradeStatus = 'pass' | 'fail' | 'partial' | 'unsubmitted' | 'ungradable';
 
@@ -120,13 +127,32 @@ function baseFields(quiz: QuizProblem) {
   };
 }
 
+function slotMaxPoints(
+  quiz: QuizProblem,
+  slot: { points?: number },
+  slotCount: number,
+): number {
+  if (typeof slot.points === 'number' && Number.isFinite(slot.points)) {
+    return slot.points;
+  }
+  if (quiz.taskType === 1 || quiz.taskType === 3) {
+    return OFFICIAL_POINTS_PER_ITEM[quiz.taskType] / Math.max(1, slotCount);
+  }
+  return 1;
+}
+
 function gradeShortQuiz(quiz: QuizProblem): GradeItem {
   const slots = quiz.shortSlots ?? [];
   const base = baseFields(quiz);
+  const legacyItemMax =
+    quiz.taskType === 1 || quiz.taskType === 3
+      ? OFFICIAL_POINTS_PER_ITEM[quiz.taskType]
+      : 1;
 
   if (!slots.length) {
     const draft = (quiz.answerDraft ?? '').trim();
     const expected = (quiz.shortAnswer ?? '').trim();
+    const max = legacyItemMax;
     const answers: GradeAnswerRow[] = [
       {
         label: '단답',
@@ -141,7 +167,7 @@ function gradeShortQuiz(quiz: QuizProblem): GradeItem {
         status: 'unsubmitted',
         detail: '미제출',
         earned: 0,
-        max: 1,
+        max,
         answers,
       };
     }
@@ -150,8 +176,8 @@ function gradeShortQuiz(quiz: QuizProblem): GradeItem {
         ...base,
         status: draft ? 'pass' : 'fail',
         detail: draft ? `제출됨: ${draft}` : '답안 없음',
-        earned: draft ? 1 : 0,
-        max: 1,
+        earned: draft ? max : 0,
+        max,
         answers,
       };
     }
@@ -162,13 +188,12 @@ function gradeShortQuiz(quiz: QuizProblem): GradeItem {
       detail: ok
         ? `정답 · ${draft}`
         : `오답 · 제출 ${draft || '(미입력)'} / 정답 ${expected}`,
-      earned: ok ? 1 : 0,
-      max: 1,
+      earned: ok ? max : 0,
+      max,
       answers,
     };
   }
 
-  const max = slots.length;
   const answers: GradeAnswerRow[] = slots.map((s) => {
     const draft = (s.draft ?? '').trim();
     const expected = (s.expected ?? '').trim();
@@ -181,11 +206,16 @@ function gradeShortQuiz(quiz: QuizProblem): GradeItem {
     };
   });
 
+  const max = slots.reduce(
+    (sum, s) => sum + slotMaxPoints(quiz, s, slots.length),
+    0,
+  );
+
   if (!quiz.submitted) {
     return {
       ...base,
       status: 'unsubmitted',
-      detail: `미제출 (단답 ${max}칸)`,
+      detail: `미제출 (단답 ${slots.length}칸 · 만점 ${max}점)`,
       earned: 0,
       max,
       answers,
@@ -194,28 +224,30 @@ function gradeShortQuiz(quiz: QuizProblem): GradeItem {
 
   const lines: string[] = [];
   let earned = 0;
-  for (const row of answers) {
+  for (let i = 0; i < answers.length; i++) {
+    const row = answers[i];
+    const pts = slotMaxPoints(quiz, slots[i], slots.length);
     if (!row.expected) {
       if (row.submitted) {
-        earned += 1;
-        lines.push(`${row.label}: 제출 (${row.submitted})`);
+        earned += pts;
+        lines.push(`${row.label}: 제출 (${row.submitted}) · ${pts}점`);
       } else {
-        lines.push(`${row.label}: 미입력`);
+        lines.push(`${row.label}: 미입력 · 0/${pts}`);
       }
       continue;
     }
     if (row.ok) {
-      earned += 1;
-      lines.push(`${row.label}: 정답`);
+      earned += pts;
+      lines.push(`${row.label}: 정답 · ${pts}점`);
     } else {
       lines.push(
-        `${row.label}: 오답 (제출 ${row.submitted || '(미입력)'} / 정답 ${row.expected})`,
+        `${row.label}: 오답 (제출 ${row.submitted || '(미입력)'} / 정답 ${row.expected}) · 0/${pts}`,
       );
     }
   }
 
   const status: GradeStatus =
-    earned === max ? 'pass' : earned === 0 ? 'fail' : 'partial';
+    earned >= max - 1e-9 ? 'pass' : earned <= 0 ? 'fail' : 'partial';
 
   return {
     ...base,
@@ -225,6 +257,35 @@ function gradeShortQuiz(quiz: QuizProblem): GradeItem {
     max,
     answers,
   };
+}
+
+/** Inspect submitted CSV for 제13회 type-2 format penalties. */
+export function type2FormatPenalties(csv: string): {
+  penalty: number;
+  reasons: string[];
+} {
+  const reasons: string[] = [];
+  const lines = csv.replace(/\r\n/g, '\n').split('\n').filter((l) => l.trim());
+  if (!lines.length) {
+    return { penalty: 0, reasons };
+  }
+  const header = lines[0];
+  const cols = header.split(',').map((c) => c.trim().replace(/^"|"$/g, ''));
+  const looksLikeIndex =
+    cols[0] === '' ||
+    /^unnamed/i.test(cols[0]) ||
+    /^index$/i.test(cols[0]);
+  const dataCols = looksLikeIndex ? cols.slice(1) : cols;
+  if (dataCols.length > 1) {
+    reasons.push(
+      `제출 칼럼 1개 초과 (${dataCols.length}개) −${TYPE2_FORMAT_PENALTY}`,
+    );
+  }
+  if (looksLikeIndex) {
+    reasons.push(`index/Unnamed 칼럼 포함 −${TYPE2_FORMAT_PENALTY}`);
+  }
+  const penalty = reasons.length * TYPE2_FORMAT_PENALTY;
+  return { penalty, reasons };
 }
 
 async function writeRuntimeFile(
@@ -281,9 +342,10 @@ async function gradeType2Quiz(
   quiz: QuizProblem,
   timeoutMs: number,
 ): Promise<GradeItem> {
+  const max = type2MaxPoints();
   const base = {
     ...baseFields(quiz),
-    max: 1 as const,
+    max,
   };
 
   if (!quiz.submitted || !quiz.submittedCsv?.trim()) {
@@ -296,16 +358,29 @@ async function gradeType2Quiz(
   }
 
   const preview = csvPreview(quiz.submittedCsv);
+  const format = type2FormatPenalties(quiz.submittedCsv);
   const lang = quiz.language;
   const path = quiz.submitFile || 'result.csv';
   const grading = quiz.gradingCode?.[lang]?.trim();
 
+  const applyFormatAndBand = (raw: number): number => {
+    const afterPenalty = Math.max(0, raw - format.penalty);
+    return roundType2ToBand(afterPenalty, max);
+  };
+
   if (!grading) {
+    const earned = applyFormatAndBand(max);
     return {
       ...base,
-      status: 'pass',
-      detail: `제출 CSV 확인 (${quiz.submittedCsv.split(/\r?\n/).length} lines) · 채점 코드 없음`,
-      earned: 1,
+      status: earned >= max - 1e-9 ? 'pass' : earned <= 0 ? 'fail' : 'partial',
+      detail: [
+        `제출 CSV 확인 (${quiz.submittedCsv.split(/\r?\n/).length} lines) · 채점 코드 없음`,
+        format.reasons.length
+          ? `형식 감점: ${format.reasons.join(' · ')}`
+          : '형식 감점 없음',
+        `earned=${earned}/${max} (5점 단위)`,
+      ].join('\n'),
+      earned,
       submittedCsvPreview: preview,
     };
   }
@@ -322,23 +397,22 @@ async function gradeType2Quiz(
         : await runR(grading, { timeoutMs });
     const type2Score = parseType2Score(out.stdout, grading);
     const hasMetric = type2Score.achieved != null;
-    // Structural / runtime failure without a metric → 0.
-    // If metrics printed, score by REF comparison even when script exited non-ok
-    // only when stdout still parsed (e.g. SCORE then SystemExit).
     let earned = 0;
     let status: GradeStatus = 'fail';
     if (!out.ok && !hasMetric) {
       earned = 0;
       status = 'fail';
     } else if (!hasMetric) {
-      // Script ran but did not emit STUDENT/SCORE — cannot auto-score.
       earned = 0;
       status = 'ungradable';
     } else {
-      earned = roundType2Earned(type2Score.earnedRatio ?? 0, base.max);
-      if (type2Score.fullCredit || earned >= base.max - 1e-9) {
+      const ratioPts = roundType2Earned(type2Score.earnedRatio ?? 0, max);
+      earned = applyFormatAndBand(
+        type2Score.fullCredit ? max : ratioPts,
+      );
+      if (earned >= max - 1e-9) {
         status = 'pass';
-        earned = base.max;
+        earned = max;
       } else if (earned <= 0) {
         status = 'fail';
       } else {
@@ -363,7 +437,10 @@ async function gradeType2Quiz(
           : '',
         type2Score.expected != null ? `REF=${type2Score.expected}` : '',
         type2Score.yScale != null ? `Y_SCALE=${type2Score.yScale}` : '',
-        `earned=${earned}/${base.max}${type2Score.fullCredit ? ' (만점 허용범위)' : ''}`,
+        format.reasons.length
+          ? `형식 감점: ${format.reasons.join(' · ')}`
+          : '형식 감점 없음',
+        `earned=${earned}/${max}${type2Score.fullCredit ? ' (만점 허용범위)' : ''} · 5점 단위`,
         out.stdout.trim(),
         out.stderr.trim() ? `[stderr]\n${out.stderr.trim()}` : '',
       ]
@@ -389,7 +466,7 @@ export async function gradeExam(
   exam: ExamSet,
   opts?: { timeoutMs?: number },
 ): Promise<GradeReport> {
-  const timeoutMs = opts?.timeoutMs ?? 60_000;
+  const timeoutMs = opts?.timeoutMs ?? OFFICIAL_MAX_RUN_SECONDS * 1000;
   const submit = listSubmitQuizzes(exam);
   const unsubmittedCount = submit.filter((q) => !q.submitted).length;
   const items: GradeItem[] = [];

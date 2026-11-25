@@ -1177,7 +1177,9 @@ export default function ExamPage() {
       />
 
       <footer className="exam-footer">
-        <span className="exam-footer__label">빅데이터분석기사 실기 체험환경</span>
+        <span className="exam-footer__label">
+          빅데이터분석기사 실기 체험 · 실행 1분 · 자동완성 없음
+        </span>
         <div className="exam-footer__nav" role="navigation" aria-label="문제 이동">
           <button
             type="button"
@@ -1217,17 +1219,18 @@ export default function ExamPage() {
             className="exam-footer__grade-btn"
             disabled={gradeBusy}
             onClick={requestGrade}
+            title="시험 종료 후 답안을 채점합니다. 종료 뒤에는 추가 제출이 불가합니다."
           >
-            {gradeBusy ? '채점 중…' : '채점'}
+            {gradeBusy ? '채점 중…' : '시험 끝내기'}
           </button>
         </div>
       </footer>
 
       <ConfirmModal
         open={gradeConfirmOpen}
-        title="미제출 확인"
-        message={`미제출 문항이 ${listUnsubmitted(exam).length}건 있습니다.\n현재 입력된 답안으로 제출한 뒤 채점할까요?`}
-        confirmLabel="제출 후 채점"
+        title="시험 끝내기 · 미제출 확인"
+        message={`미제출 문항이 ${listUnsubmitted(exam).length}건 있습니다.\n현재 입력된 답안으로 제출한 뒤 시험을 끝내고 채점할까요?\n(종료 후에는 답안을 더 제출할 수 없습니다.)`}
+        confirmLabel="제출 후 시험 끝내기"
         cancelLabel="취소"
         busy={gradeBusy}
         onConfirm={() => void runGrading({ submitPending: true })}

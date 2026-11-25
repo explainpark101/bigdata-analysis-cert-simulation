@@ -19,13 +19,14 @@ export interface ExamUiSettings {
   tabSize: number;
 }
 
+/** Defaults aligned with DataQ CBT (제13회: 단축키·자동완성 미제공). */
 export const DEFAULT_EXAM_UI_SETTINGS: ExamUiSettings = {
   contentLineHeightPct: 200,
   contentZoomPct: 100,
   editorLineHeightPct: 150,
   editorFontSize: 14,
   editorTheme: 'dark',
-  editorKeymap: 'sublime',
+  editorKeymap: 'default',
   indentUnit: 'tab',
   tabSize: 2,
 };

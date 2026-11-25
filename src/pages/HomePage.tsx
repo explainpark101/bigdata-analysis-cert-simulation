@@ -135,7 +135,8 @@ export default function HomePage() {
       <div className="home-card home-card--wide">
         <h1>박재형 빅분기 실기 연습</h1>
         <p>
-          빅데이터분석기사 시험환경을 체험하여 커스텀 시험을 응시할 수 있습니다.
+          제13회 가이드 기준(6문항 · 180분 · 실행 1분)으로 실기 환경을 체험할 수
+          있습니다.
         </p>
         <div className="home-actions">
           <Link className="primary-btn home-btn" to="/project">

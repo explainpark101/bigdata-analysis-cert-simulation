@@ -105,7 +105,7 @@ const DEFAULT_PREFS: CodeEditorPrefs = {
   fontSize: 14,
   lineHeightPct: 150,
   theme: 'dark',
-  keymap: 'sublime',
+  keymap: 'default',
   indentUnit: 'tab',
   tabSize: 2,
 };

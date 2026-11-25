@@ -31,6 +31,11 @@ export interface ShortAnswerSlot {
   expected?: string;
   /** Examinee draft */
   draft?: string;
+  /**
+   * Max points for this slot (제13회: type1 item 10 / type3 item 15,
+   * split evenly across 소문항). Defaults to 1 when missing (legacy exams).
+   */
+  points?: number;
 }
 
 /** Self-contained quiz for the exam runner (*.exam.zip). */

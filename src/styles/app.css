@@ -193,7 +193,8 @@ button {
 }
 
 .primary-btn:disabled,
-.tool-btn:disabled {
+.tool-btn:disabled,
+.ghost-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }

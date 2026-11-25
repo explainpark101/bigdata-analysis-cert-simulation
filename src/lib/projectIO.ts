@@ -14,6 +14,11 @@ import { extractMarkdownImagePaths } from '@/lib/assetMedia';
 import { mountPathForAsset, normalizeLibraryPath } from '@/lib/assetPaths';
 import { ensureIdbReady, idbDelete, idbGet, idbSet } from '@/lib/idb';
 import { buildStarterCode } from '@/lib/starterCode';
+import {
+  OFFICIAL_MAX_RUN_SECONDS,
+  OFFICIAL_TIME_LIMIT_MINUTES,
+  shortSlotPoints,
+} from '@/lib/examOfficialSpec';
 
 const CIRCLED = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩'];
 
@@ -56,15 +61,20 @@ export function createEmptyExamBlueprint(
     id: partial?.id ?? `exam-${crypto.randomUUID().slice(0, 8)}`,
     title: partial?.title ?? '새 시험지',
     description: partial?.description ?? '',
-    /** Default 180 min (3h) per exam paper; null = no limit when explicitly cleared */
+    /** Default 180 min (3h) per 13th guide; null = no limit when explicitly cleared */
     timeLimitMinutes:
       partial?.timeLimitMinutes === undefined
-        ? 180
+        ? OFFICIAL_TIME_LIMIT_MINUTES
         : partial.timeLimitMinutes,
     maxRunSeconds:
       partial?.maxRunSeconds === undefined
-        ? 60
-        : Math.max(1, Math.round(Number(partial.maxRunSeconds) || 60)),
+        ? OFFICIAL_MAX_RUN_SECONDS
+        : Math.max(
+            1,
+            Math.round(
+              Number(partial.maxRunSeconds) || OFFICIAL_MAX_RUN_SECONDS,
+            ),
+          ),
     problemIds: partial?.problemIds ? [...partial.problemIds] : [],
     createdAt: partial?.createdAt ?? now,
     updatedAt: partial?.updatedAt ?? now,
@@ -454,12 +464,14 @@ function buildShortSlots(banks: BankProblem[]): ShortAnswerSlot[] {
   let idx = 0;
   for (const bank of banks) {
     const answers = bankExpectedAnswers(bank);
+    const points = shortSlotPoints(bank.taskType, answers.length);
     for (const expected of answers) {
       slots.push({
         id: `${bank.id}-slot-${idx}`,
         label: `답안 ${circledLabel(idx)}`,
         expected: expected || undefined,
         draft: '',
+        points,
       });
       idx += 1;
     }
@@ -484,10 +496,10 @@ function emptyCodePair(): { python: string; r: string } {
 /**
  * Build a take-home ExamSet from one exam paper + bank.
  *
- * DataQ layout:
- * - 제1유형 (풀이용) code practice + 문제 풀이 short-answer submit (3 slots)
- * - 제2유형 code + result.csv submit
- * - 제3유형 (풀이용) code practice + 문제 풀이 short-answer submit
+ * DataQ / 제13회 가이드 layout (official 3+1+2):
+ * - 제1유형 (풀이용) + 문제 풀이 short-answer submit (3 items × 10점)
+ * - 제2유형 code + result.csv submit (1 item × 40점, 5점 단위)
+ * - 제3유형 (풀이용) + 문제 풀이 short-answer submit (2 items × 15점)
  */
 /** Hydrate external asset bodies needed for one exam, then materialize. */
 export async function materializeExamAsync(
@@ -650,7 +662,7 @@ export function materializeExam(
     maxRunSeconds:
       typeof blueprint.maxRunSeconds === 'number' && blueprint.maxRunSeconds > 0
         ? Math.round(blueprint.maxRunSeconds)
-        : 60,
+        : OFFICIAL_MAX_RUN_SECONDS,
     quizzes,
     notepads,
     createdAt: blueprint.createdAt ?? new Date().toISOString(),
@@ -670,7 +682,7 @@ export function validateExam(data: unknown): ExamSet {
   const maxRun =
     typeof exam.maxRunSeconds === 'number' && exam.maxRunSeconds > 0
       ? Math.round(exam.maxRunSeconds)
-      : 60;
+      : OFFICIAL_MAX_RUN_SECONDS;
   // Legacy materialize set answerDraft: '' which hid starter via ?? —
   // treat blank draft as unset so placeholder code shows again.
   const quizzes = exam.quizzes.map((q) =>
