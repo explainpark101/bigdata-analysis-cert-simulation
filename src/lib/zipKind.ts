@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { listZipEntries, zipKindFromEntries } from '@/lib/zipStream';
 
 export type ZipKind = 'exam' | 'project' | 'unknown';
 
@@ -13,9 +14,24 @@ export function zipKindFrom(zip: JSZip): ZipKind {
   return 'unknown';
 }
 
+/**
+ * Detect zip kind by scanning the central directory only (Blob.slice).
+ * Does NOT inflate the archive — safe before a streaming import.
+ */
+export async function peekZipKind(blob: Blob): Promise<ZipKind> {
+  try {
+    return zipKindFromEntries(await listZipEntries(blob));
+  } catch {
+    return 'unknown';
+  }
+}
+
 /** Peek zip kind. Prefer {@link loadZip} + {@link zipKindFrom} when parsing follows. */
 export async function detectZipKind(
   blob: Blob | ArrayBuffer,
 ): Promise<ZipKind> {
+  if (typeof Blob !== 'undefined' && blob instanceof Blob) {
+    return peekZipKind(blob);
+  }
   return zipKindFrom(await loadZip(blob));
 }

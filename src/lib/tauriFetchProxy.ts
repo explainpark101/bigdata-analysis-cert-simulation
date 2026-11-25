@@ -6,14 +6,7 @@
  * Browser (`bun run dev`) keeps native fetch unchanged.
  */
 
-function isTauriRuntime(): boolean {
-  if (typeof window === 'undefined') return false;
-  const w = window as Window & {
-    __TAURI_INTERNALS__?: unknown;
-    isTauri?: boolean;
-  };
-  return Boolean(w.__TAURI_INTERNALS__ || w.isTauri);
-}
+import { isTauriRuntime } from '@/lib/tauriRuntime';
 
 function requestUrl(input: RequestInfo | URL): string {
   if (typeof input === 'string') return input;

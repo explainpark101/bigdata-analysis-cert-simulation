@@ -16,7 +16,12 @@ export type IdbKey =
 
 export interface AssetBodyRecord {
   encoding: 'utf-8' | 'base64';
-  content: string;
+  /**
+   * Preferred: binary Blob (avoids UTF-16 string clone OOM in WebView2 IDB).
+   * Legacy records may still have `content` string.
+   */
+  blob?: Blob;
+  content?: string;
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null;

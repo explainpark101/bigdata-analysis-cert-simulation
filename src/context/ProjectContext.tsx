@@ -34,6 +34,13 @@ import {
   replaceAllAssetBodies,
   usesExternalBody,
 } from '@/lib/assetStore';
+import { isTauriRuntime } from '@/lib/tauriRuntime';
+import {
+  pickSaveZipPath,
+  rustExportProjectZip,
+  rustImportProjectZip,
+  rustMergeProjectZip,
+} from '@/lib/tauriAssets';
 import type {
   AuthoringProject,
   BankProblem,
@@ -72,9 +79,10 @@ interface ProjectContextValue {
   toggleExamProblem: (id: string) => void;
   updateExamMeta: (patch: Partial<ExamBlueprint>) => void;
   exportProject: () => Promise<void>;
-  importProject: (file: File) => Promise<void>;
+  /** File (web) or absolute filesystem path (Tauri dialog). */
+  importProject: (source: File | string) => Promise<void>;
   /** Merge one or more .project.zip / .exam.zip banks into the current project */
-  mergeBankZips: (files: FileList | File[]) => Promise<{
+  mergeBankZips: (files: Array<File | string>) => Promise<{
     addedProblems: number;
     addedAssets: number;
     labels: string[];
@@ -343,10 +351,18 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const exportProject = useCallback(async () => {
+    if (isTauriRuntime()) {
+      const dest = await pickSaveZipPath(
+        `${project.id || 'project'}.project.zip`,
+      );
+      if (!dest) return;
+      await rustExportProjectZip(project, dest);
+      return;
+    }
     await exportProjectZip(project);
   }, [project]);
 
-  const importProject = useCallback(async (file: File) => {
+  const importProject = useCallback(async (source: File | string) => {
     // Drop prior project + exam session so WebView can GC before inflate.
     clearAssetContentCache();
     setProjectState(createEmptyProject({ title: '불러오는 중…' }));
@@ -355,18 +371,47 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       window.setTimeout(r, 0);
     });
 
-    const next = await importProjectZip(file);
+    if (isTauriRuntime() && typeof source === 'string') {
+      const next = await rustImportProjectZip(source);
+      setProjectState({ ...next, updatedAt: new Date().toISOString() });
+      return;
+    }
+    if (!(source instanceof File)) {
+      throw new Error('브라우저에서는 ZIP 파일이 필요합니다.');
+    }
+    const next = await importProjectZip(source);
     const lean = await persistExternalAssets(next);
     setProjectState({ ...lean, updatedAt: new Date().toISOString() });
   }, []);
 
-  const mergeBankZips = useCallback(async (files: FileList | File[]) => {
+  const mergeBankZips = useCallback(async (files: Array<File | string>) => {
     const list = Array.from(files);
     if (!list.length) {
       return { addedProblems: 0, addedAssets: 0, labels: [] as string[] };
     }
+
+    if (isTauriRuntime() && list.every((f) => typeof f === 'string')) {
+      let snapshot = await persistExternalAssets(project);
+      let addedProblems = 0;
+      let addedAssets = 0;
+      const labels: string[] = [];
+      for (const path of list as string[]) {
+        const label =
+          path.replace(/^.*[\\/]/, '').replace(/\.(project|exam)?\.zip$/i, '') ||
+          'import';
+        const result = await rustMergeProjectZip(path, snapshot, label);
+        snapshot = result.project;
+        addedProblems += result.addedProblems;
+        addedAssets += result.addedAssets;
+        labels.push(result.label);
+      }
+      setProjectState(snapshot);
+      return { addedProblems, addedAssets, labels };
+    }
+
+    const fileList = list.filter((f): f is File => f instanceof File);
     const snapshot = await persistExternalAssets(project);
-    const result = await mergeBankFromZips(snapshot, list);
+    const result = await mergeBankFromZips(snapshot, fileList);
     setProjectState(result.project);
     return {
       addedProblems: result.addedProblems,

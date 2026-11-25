@@ -5,7 +5,7 @@ import {
   CSV_PREVIEW_MAX_ROWS,
 } from '@/lib/csvPreview';
 import { isImageAsset } from '@/lib/assetMedia';
-import { getAssetContent } from '@/lib/assetStore';
+import { getAssetContentPreview } from '@/lib/assetStore';
 import type { ProjectAsset } from '@/types/project';
 import type { ExamAsset } from '@/types/exam';
 
@@ -36,9 +36,13 @@ function buildTextPreview(content: string): { text: string; truncated: boolean }
 }
 
 async function resolvePreviewContent(asset: PreviewAsset): Promise<string> {
-  if (asset.content) return asset.content;
+  if (asset.content) {
+    return asset.content.length > 2_000_000
+      ? asset.content.slice(0, 2_000_000)
+      : asset.content;
+  }
   if (asset.id) {
-    return getAssetContent(asset as ProjectAsset);
+    return getAssetContentPreview(asset as ProjectAsset);
   }
   return '';
 }

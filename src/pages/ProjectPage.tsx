@@ -282,7 +282,26 @@ export default function ProjectPage() {
           <button
             type="button"
             className="ghost-btn btn-with-icon"
-            onClick={() => zipRef.current?.click()}
+            onClick={() => {
+              void (async () => {
+                try {
+                  const { isTauriRuntime } = await import('@/lib/tauriRuntime');
+                  if (isTauriRuntime()) {
+                    const { pickZipPath } = await import('@/lib/tauriAssets');
+                    const selected = await pickZipPath();
+                    if (!selected || Array.isArray(selected)) return;
+                    await importProject(selected);
+                    setMessage(
+                      `프로젝트 로드: ${selected.split(/[\\/]/).pop()}`,
+                    );
+                    return;
+                  }
+                  zipRef.current?.click();
+                } catch (err) {
+                  setMessage(err instanceof Error ? err.message : String(err));
+                }
+              })();
+            }}
           >
             <Upload size={16} />
             프로젝트 불러오기
@@ -809,6 +828,7 @@ export default function ProjectPage() {
           addAssetsFromFiles={addAssetsFromFiles}
           addBankProblem={addBankProblem}
           mergeBankZips={mergeBankZips}
+          importProject={importProject}
           onMessage={setMessage}
           onSavedNavigate={(created) => {
             setSelectedId(created.id);

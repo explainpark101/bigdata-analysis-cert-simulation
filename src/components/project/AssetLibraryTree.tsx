@@ -28,6 +28,29 @@ interface AssetLibraryTreeProps {
   onRemove: (id: string) => void;
 }
 
+function AssetThumb({ asset }: { asset: ProjectAsset }) {
+  const [src, setSrc] = useState(() =>
+    asset.content ? assetToDataUrl(asset) : '',
+  );
+  useEffect(() => {
+    let cancelled = false;
+    if (asset.content) {
+      setSrc(assetToDataUrl(asset));
+      return;
+    }
+    void (async () => {
+      const { withAssetContent } = await import('@/lib/assetStore');
+      const full = await withAssetContent(asset);
+      if (!cancelled && full.content) setSrc(assetToDataUrl(full));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [asset]);
+  if (!src) return <FileSpreadsheet size={16} aria-hidden />;
+  return <img className="asset-thumb" src={src} alt="" />;
+}
+
 function AssetFileRow({
   asset,
   depth,
@@ -66,7 +89,7 @@ function AssetFileRow({
       style={{ paddingLeft: 8 + depth * 14 }}
     >
       {image ? (
-        <img className="asset-thumb" src={assetToDataUrl(asset)} alt="" />
+        <AssetThumb asset={asset} />
       ) : (
         <FileSpreadsheet size={16} aria-hidden />
       )}

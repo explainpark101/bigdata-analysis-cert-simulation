@@ -1,22 +1,29 @@
 import { loadZip, zipKindFrom } from '@/lib/zipKind';
-import { parseProjectZipMeta } from '@/lib/projectZip';
 import { parseExamZipFrom } from '@/lib/examZip';
 import {
   createEmptyBankProblem,
   createProjectAsset,
+  validateProject,
 } from '@/lib/projectIO';
 import {
   persistExternalAssets,
   putAssetBody,
+  putAssetBodyBytes,
   usesExternalBody,
 } from '@/lib/assetStore';
+import { bytesToBase64 } from '@/lib/assetMedia';
+import {
+  listZipEntries,
+  readZipEntryBytes,
+  readZipEntryText,
+  zipKindFromEntries,
+} from '@/lib/zipStream';
 import type {
   AuthoringProject,
   BankProblem,
   ProjectAsset,
 } from '@/types/project';
 import type { ExamSet, QuizProblem } from '@/types/exam';
-import type JSZip from 'jszip';
 
 export interface MergeBankZipResult {
   project: AuthoringProject;
@@ -26,6 +33,7 @@ export interface MergeBankZipResult {
 }
 
 const FILES_PREFIX = 'files/';
+const PROJECT_JSON = 'project.json';
 
 function stem(name: string): string {
   return name.replace(/\.(project|exam)?\.zip$/i, '').replace(/\.zip$/i, '') || 'import';
@@ -43,28 +51,37 @@ function remapIds(
   return next;
 }
 
-function findAssetEntry(
-  zip: JSZip,
+function findStreamAssetEntry(
+  entries: Awaited<ReturnType<typeof listZipEntries>>,
   assetId: string,
-): { path: string; entry: JSZip.JSZipObject } | null {
+) {
   const prefix = `${FILES_PREFIX}${assetId}/`;
-  for (const path of Object.keys(zip.files)) {
-    const entry = zip.files[path];
-    if (!entry || entry.dir) continue;
-    if (path.startsWith(prefix)) return { path, entry };
+  for (const entry of entries) {
+    if (entry.name.endsWith('/')) continue;
+    if (entry.name.startsWith(prefix)) return entry;
   }
   return null;
 }
 
-async function mergeProjectZipFromArchive(
+async function mergeProjectZipFromFile(
   current: AuthoringProject,
-  zip: JSZip,
-  meta: AuthoringProject,
+  file: File,
   label: string,
 ): Promise<MergeBankZipResult> {
+  const entries = await listZipEntries(file);
+  const metaEntry = entries.find(
+    (e) => e.name === PROJECT_JSON || e.name.endsWith(`/${PROJECT_JSON}`),
+  );
+  if (!metaEntry) {
+    throw new Error('ZIP must contain project.json (authoring project)');
+  }
+
+  const meta = validateProject(
+    JSON.parse(await readZipEntryText(file, metaEntry)),
+  );
+
   const assetMap = new Map<string, string>();
   const problemMap = new Map<string, string>();
-
   const assets: ProjectAsset[] = [...current.assets];
   let addedAssets = 0;
 
@@ -73,18 +90,8 @@ async function mergeProjectZipFromArchive(
     const folder = `imports/${label}`;
     const base = a.path.includes('/') ? a.path.split('/').pop()! : a.path;
     const path = `${folder}/${base}`;
-
-    const found = findAssetEntry(zip, a.id);
-    let content = '';
-    let byteLength = a.byteLength ?? 0;
-    if (found) {
-      content =
-        a.encoding === 'base64'
-          ? await found.entry.async('base64')
-          : await found.entry.async('string');
-      zip.remove(found.path);
-      byteLength = content.length;
-    }
+    const found = findStreamAssetEntry(entries, a.id);
+    let byteLength = a.byteLength ?? a.content?.length ?? 0;
 
     const stub: ProjectAsset = {
       ...a,
@@ -95,15 +102,30 @@ async function mergeProjectZipFromArchive(
       byteLength,
     };
 
-    if (content && usesExternalBody(stub)) {
-      await putAssetBody(newId, a.encoding, content);
-      assets.push(stub);
-    } else if (content) {
-      assets.push({ ...stub, content });
+    if (found) {
+      const bytes = await readZipEntryBytes(file, found);
+      byteLength = bytes.byteLength;
+      stub.byteLength = byteLength;
+
+      if (usesExternalBody(stub)) {
+        await putAssetBodyBytes(newId, a.encoding, bytes, a.mimeType);
+        assets.push(stub);
+      } else if (a.encoding === 'base64') {
+        assets.push({ ...stub, content: bytesToBase64(bytes) });
+      } else {
+        assets.push({
+          ...stub,
+          content: new TextDecoder('utf-8').decode(bytes),
+        });
+      }
     } else {
       assets.push(stub);
     }
+
     addedAssets += 1;
+    await new Promise<void>((r) => {
+      window.setTimeout(r, 0);
+    });
   }
 
   const bank: BankProblem[] = [...current.bank];
@@ -205,7 +227,7 @@ async function mergeExamZip(
         libraryPath,
       );
       if (usesExternalBody(asset)) {
-        await putAssetBody(asset.id, asset.encoding, asset.content);
+        await putAssetBody(asset.id, asset.encoding, asset.content, asset.mimeType);
         assets.push({ ...asset, content: '' });
       } else {
         assets.push(asset);
@@ -235,14 +257,19 @@ export async function mergeBankFromZip(
   current: AuthoringProject,
   file: File,
 ): Promise<MergeBankZipResult> {
-  const zip = await loadZip(file);
-  const kind = zipKindFrom(zip);
   const label = stem(file.name);
+  const entries = await listZipEntries(file);
+  const kind = zipKindFromEntries(entries);
+
   if (kind === 'project') {
-    const meta = await parseProjectZipMeta(zip);
-    return mergeProjectZipFromArchive(current, zip, meta, label);
+    return mergeProjectZipFromFile(current, file, label);
   }
   if (kind === 'exam') {
+    // Exam zips are usually smaller; keep JSZip path for nested asset layout.
+    const zip = await loadZip(file);
+    if (zipKindFrom(zip) !== 'exam') {
+      throw new Error(`${file.name}: exam.json 이 필요합니다.`);
+    }
     const exam = await parseExamZipFrom(zip);
     return mergeExamZip(current, exam, label);
   }

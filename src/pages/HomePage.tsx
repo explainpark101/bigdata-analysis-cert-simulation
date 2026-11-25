@@ -80,11 +80,15 @@ export default function HomePage() {
     }
   };
 
-  const openProjectZip = async (file: File) => {
+  const openProjectZip = async (source: File | string) => {
     setBusyId('project-zip');
     try {
-      await importProject(file);
-      setMessage(`프로젝트 로드: ${file.name}`);
+      await importProject(source);
+      const label =
+        typeof source === 'string'
+          ? source.split(/[\\/]/).pop() || source
+          : source.name;
+      setMessage(`프로젝트 로드: ${label}`);
       navigate('/project');
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
@@ -146,7 +150,19 @@ export default function HomePage() {
             type="button"
             className="ghost-btn home-btn"
             disabled={busyId === 'project-zip'}
-            onClick={() => projectZipRef.current?.click()}
+            onClick={() => {
+              void (async () => {
+                const { isTauriRuntime } = await import('@/lib/tauriRuntime');
+                if (isTauriRuntime()) {
+                  const { pickZipPath } = await import('@/lib/tauriAssets');
+                  const selected = await pickZipPath();
+                  if (!selected || Array.isArray(selected)) return;
+                  await openProjectZip(selected);
+                  return;
+                }
+                projectZipRef.current?.click();
+              })();
+            }}
           >
             <span className="home-btn__row">
               <FolderOpen size={16} />

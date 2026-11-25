@@ -4,13 +4,21 @@ import { validateProject } from './projectIO';
 import { downloadBlob } from './download';
 import { loadZip } from './zipKind';
 import {
-  putAssetBody,
+  getAssetContent,
+  putAssetBodyBytes,
   replaceAllAssetBodies,
   stripExternalContents,
   usesExternalBody,
   withAssetContent,
-  withProjectAssetContents,
 } from './assetStore';
+import { bytesToBase64 } from './assetMedia';
+import {
+  listZipEntries,
+  readZipEntryBytes,
+  readZipEntryText,
+  type ZipCdEntry,
+  zipKindFromEntries,
+} from './zipStream';
 
 const PROJECT_JSON = 'project.json';
 const FILES_PREFIX = 'files/';
@@ -45,26 +53,36 @@ function findAssetEntry(
   return null;
 }
 
-async function readAssetContent(
-  entry: JSZip.JSZipObject,
-  encoding: ProjectAsset['encoding'],
-): Promise<string> {
-  return encoding === 'base64'
-    ? entry.async('base64')
-    : entry.async('string');
+function findStreamAssetEntry(
+  entries: ZipCdEntry[],
+  assetId: string,
+): ZipCdEntry | null {
+  const prefix = `${FILES_PREFIX}${assetId}/`;
+  for (const entry of entries) {
+    if (entry.name.endsWith('/')) continue;
+    if (entry.name.startsWith(prefix)) return entry;
+  }
+  return null;
 }
 
-export async function buildProjectZip(project: AuthoringProject): Promise<Blob> {
-  const hydrated = await withProjectAssetContents(project);
-  const zip = new JSZip();
-  zip.file(PROJECT_JSON, JSON.stringify(metaWithoutBytes(hydrated), null, 2));
+function yieldToUi(): Promise<void> {
+  return new Promise((r) => {
+    window.setTimeout(r, 0);
+  });
+}
 
-  for (const asset of hydrated.assets) {
+/** Build zip one asset at a time — never hydrate all CSV strings together. */
+export async function buildProjectZip(project: AuthoringProject): Promise<Blob> {
+  const zip = new JSZip();
+  zip.file(PROJECT_JSON, JSON.stringify(metaWithoutBytes(project), null, 2));
+
+  for (const asset of project.assets) {
+    const content = await getAssetContent(asset);
     const entry = `${FILES_PREFIX}${asset.id}/${asset.path}`;
     if (asset.encoding === 'base64') {
-      zip.file(entry, asset.content, { base64: true });
+      zip.file(entry, content, { base64: true });
     } else {
-      zip.file(entry, asset.content);
+      zip.file(entry, content);
     }
   }
 
@@ -91,8 +109,8 @@ export async function parseProjectZipMeta(
 }
 
 /**
- * Fill asset.content from zip entries.
- * When `assetIds` is set, only those ids are inflated (others stay empty).
+ * Fill asset.content from zip entries (in-memory; exam pending flow).
+ * When `assetIds` is set, only those ids are inflated.
  */
 export async function hydrateProjectAssets(
   zip: JSZip,
@@ -116,21 +134,81 @@ export async function hydrateProjectAssets(
       assets.push(asset);
       continue;
     }
-    const content = await readAssetContent(found.entry, asset.encoding);
-    assets.push({
-      ...asset,
-      content,
-      byteLength: content.length,
-    });
+    if (asset.encoding === 'base64') {
+      const bytes = await found.entry.async('uint8array');
+      const content = bytesToBase64(bytes);
+      assets.push({ ...asset, content, byteLength: content.length });
+    } else {
+      const content = await found.entry.async('string');
+      assets.push({ ...asset, content, byteLength: content.length });
+    }
   }
 
   return { ...project, assets };
 }
 
 /**
- * Inflate zip assets one-by-one into IDB (external) or inline (images).
- * Does not clear existing IDB bodies — caller decides (full import vs merge).
+ * Import a .project.zip without JSZip.loadAsync (no full-buffer inflate).
+ * Each entry: Blob.slice → inflate → IDB Blob → drop bytes.
  */
+export async function importProjectZip(file: File): Promise<AuthoringProject> {
+  const entries = await listZipEntries(file);
+  if (zipKindFromEntries(entries) !== 'project') {
+    throw new Error('ZIP must contain project.json (authoring project)');
+  }
+
+  const metaEntry = entries.find(
+    (e) => e.name === PROJECT_JSON || e.name.endsWith(`/${PROJECT_JSON}`),
+  );
+  if (!metaEntry) {
+    throw new Error('ZIP must contain project.json (authoring project)');
+  }
+
+  const metaJson = await readZipEntryText(file, metaEntry);
+  const meta = validateProject(JSON.parse(metaJson));
+  const leanMeta: AuthoringProject = {
+    ...meta,
+    assets: meta.assets.map((a) => ({
+      ...a,
+      content: '',
+      byteLength: a.byteLength ?? a.content?.length ?? 0,
+    })),
+  };
+
+  await replaceAllAssetBodies();
+
+  const assets: ProjectAsset[] = [];
+  for (const asset of leanMeta.assets) {
+    const found = findStreamAssetEntry(entries, asset.id);
+    if (!found) {
+      assets.push({ ...asset, content: '', byteLength: asset.byteLength ?? 0 });
+      continue;
+    }
+
+    const bytes = await readZipEntryBytes(file, found);
+
+    if (usesExternalBody(asset)) {
+      await putAssetBodyBytes(asset.id, asset.encoding, bytes, asset.mimeType);
+      assets.push({
+        ...asset,
+        content: '',
+        byteLength: bytes.byteLength,
+      });
+    } else if (asset.encoding === 'base64') {
+      const content = bytesToBase64(bytes);
+      assets.push({ ...asset, content, byteLength: content.length });
+    } else {
+      const content = new TextDecoder('utf-8').decode(bytes);
+      assets.push({ ...asset, content, byteLength: content.length });
+    }
+
+    await yieldToUi();
+  }
+
+  return stripExternalContents({ ...leanMeta, assets });
+}
+
+/** @deprecated Prefer {@link importProjectZip} for File inputs. */
 export async function ingestProjectZipAssets(
   zip: JSZip,
   meta: AuthoringProject,
@@ -142,40 +220,21 @@ export async function ingestProjectZipAssets(
       assets.push({ ...asset, content: '', byteLength: asset.byteLength ?? 0 });
       continue;
     }
-
-    const content = await readAssetContent(found.entry, asset.encoding);
-    // Free compressed copy as soon as we have the string.
+    const bytes = await found.entry.async('uint8array');
     zip.remove(found.path);
-
     if (usesExternalBody(asset)) {
-      await putAssetBody(asset.id, asset.encoding, content);
-      assets.push({
-        ...asset,
-        content: '',
-        byteLength: content.length,
-      });
+      await putAssetBodyBytes(asset.id, asset.encoding, bytes, asset.mimeType);
+      assets.push({ ...asset, content: '', byteLength: bytes.byteLength });
+    } else if (asset.encoding === 'base64') {
+      const content = bytesToBase64(bytes);
+      assets.push({ ...asset, content, byteLength: content.length });
     } else {
-      assets.push({
-        ...asset,
-        content,
-        byteLength: content.length,
-      });
+      const content = new TextDecoder('utf-8').decode(bytes);
+      assets.push({ ...asset, content, byteLength: content.length });
     }
+    await yieldToUi();
   }
   return assets;
-}
-
-/**
- * Import a .project.zip without holding every CSV string in RAM at once.
- * Each entry: inflate → IndexedDB → drop zip entry → clear local string.
- * Returns a project safe for React state (external bodies stripped).
- */
-export async function importProjectZip(file: File): Promise<AuthoringProject> {
-  const zip = await loadZip(file);
-  const meta = await parseProjectZipMeta(zip);
-  await replaceAllAssetBodies();
-  const assets = await ingestProjectZipAssets(zip, meta);
-  return stripExternalContents({ ...meta, assets });
 }
 
 export async function parseProjectZipFrom(
@@ -188,9 +247,12 @@ export async function parseProjectZipFrom(
 export async function parseProjectZip(
   blob: Blob | ArrayBuffer,
 ): Promise<AuthoringProject> {
-  // Prefer streaming import for File (project tab / home).
   if (typeof File !== 'undefined' && blob instanceof File) {
     return importProjectZip(blob);
+  }
+  if (typeof Blob !== 'undefined' && blob instanceof Blob) {
+    // Treat generic Blob like File for streaming import.
+    return importProjectZip(new File([blob], 'project.zip'));
   }
   return parseProjectZipFrom(await loadZip(blob));
 }
@@ -200,7 +262,6 @@ export async function exportProjectZip(project: AuthoringProject): Promise<void>
   downloadBlob(`${project.id || 'project'}.project.zip`, blob);
 }
 
-/** Hydrate one asset for UI that still expects inline content. */
 export async function loadAssetForPreview(
   asset: ProjectAsset,
 ): Promise<ProjectAsset> {

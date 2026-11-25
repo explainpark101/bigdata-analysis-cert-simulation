@@ -39,11 +39,13 @@ interface ProblemAuthorTabProps {
   addProjectAssets: (assets: ProjectAsset[]) => Promise<ProjectAsset[]>;
   addAssetsFromFiles: (files: FileList | File[]) => Promise<ProjectAsset[]>;
   addBankProblem: (partial?: Partial<BankProblem>) => BankProblem;
-  mergeBankZips: (files: File[]) => Promise<{
+  mergeBankZips: (files: Array<File | string>) => Promise<{
     addedProblems: number;
     addedAssets: number;
     labels: string[];
   }>;
+  /** Full replace load for .project.zip (File or Tauri filesystem path). */
+  importProject: (source: File | string) => Promise<void>;
   onMessage: (msg: string) => void;
   onSavedNavigate: (problem: BankProblem) => void;
   onAssembleExam?: (problems: BankProblem[]) => void;
@@ -55,6 +57,7 @@ export function ProblemAuthorTab({
   addAssetsFromFiles,
   addBankProblem,
   mergeBankZips,
+  importProject,
   onMessage,
   onSavedNavigate,
   onAssembleExam,
@@ -199,7 +202,41 @@ export function ProblemAuthorTab({
             <button
               type="button"
               className="ghost-btn btn-with-icon"
-              onClick={() => zipRef.current?.click()}
+              onClick={() => {
+                void (async () => {
+                  try {
+                    const { isTauriRuntime } = await import('@/lib/tauriRuntime');
+                    if (isTauriRuntime()) {
+                      const { pickZipPath, rustPeekZipKind } = await import(
+                        '@/lib/tauriAssets'
+                      );
+                      const selected = await pickZipPath({ multiple: true });
+                      if (!selected) return;
+                      const paths = Array.isArray(selected)
+                        ? selected
+                        : [selected];
+                      for (const path of paths) {
+                        const kind = await rustPeekZipKind(path);
+                        const base = path.split(/[\\/]/).pop() || path;
+                        if (kind === 'project') {
+                          onMessage(`프로젝트 불러오는 중: ${base}…`);
+                          await importProject(path);
+                          onMessage(`프로젝트 로드: ${base}`);
+                        } else {
+                          const result = await mergeBankZips([path]);
+                          onMessage(
+                            `문제은행 병합: 문제 +${result.addedProblems} · 파일 +${result.addedAssets} (${base})`,
+                          );
+                        }
+                      }
+                      return;
+                    }
+                    zipRef.current?.click();
+                  } catch (err) {
+                    onMessage(err instanceof Error ? err.message : String(err));
+                  }
+                })();
+              }}
             >
               <Upload size={14} />
               ZIP
@@ -215,13 +252,28 @@ export function ProblemAuthorTab({
                 e.target.value = '';
                 if (!files.length) return;
                 try {
-                  const result = await mergeBankZips(files);
-                  onMessage(
-                    `문제은행 병합: 문제 +${result.addedProblems} · 파일 +${result.addedAssets}` +
-                      (result.labels.length
-                        ? ` (${result.labels.join(', ')})`
-                        : ''),
-                  );
+                  const { peekZipKind } = await import('@/lib/zipKind');
+                  const projectFiles: File[] = [];
+                  const mergeFiles: File[] = [];
+                  for (const file of files) {
+                    const kind = await peekZipKind(file);
+                    if (kind === 'project') projectFiles.push(file);
+                    else mergeFiles.push(file);
+                  }
+                  for (const file of projectFiles) {
+                    onMessage(`프로젝트 불러오는 중: ${file.name}…`);
+                    await importProject(file);
+                    onMessage(`프로젝트 로드: ${file.name}`);
+                  }
+                  if (mergeFiles.length) {
+                    const result = await mergeBankZips(mergeFiles);
+                    onMessage(
+                      `문제은행 병합: 문제 +${result.addedProblems} · 파일 +${result.addedAssets}` +
+                        (result.labels.length
+                          ? ` (${result.labels.join(', ')})`
+                          : ''),
+                    );
+                  }
                 } catch (err) {
                   onMessage(err instanceof Error ? err.message : String(err));
                 }
