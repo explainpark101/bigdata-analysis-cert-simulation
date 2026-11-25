@@ -248,7 +248,14 @@ async function runAnswer(
   ctx: VariantAgentContext,
   language: 'python' | 'r',
 ): Promise<{ ok: boolean; stdout: string; stderr: string }> {
-  const files = resolveAssets(ctx.project, ctx.draft.assetIds);
+  // Asset bodies live in IDB/disk (lean project.assets have content: '').
+  const { withProjectAssetContents } = await import('@/lib/assetStore');
+  const hydrated = await withProjectAssetContents(
+    ctx.project,
+    ctx.draft.assetIds,
+  );
+  ctx.project.assets = hydrated.assets;
+  const files = resolveAssets(hydrated, ctx.draft.assetIds);
   const source =
     language === 'python'
       ? ctx.draft.answerCode.python
@@ -463,10 +470,16 @@ export async function runVariantAgentTurn(opts: {
               );
             }
             const added = await ctx.addProjectAssets(created);
-            for (const a of added) {
-              const idx = ctx.project.assets.findIndex((x) => x.id === a.id);
-              if (idx >= 0) ctx.project.assets[idx] = a;
-              else ctx.project.assets.push(a);
+            // Keep just-read bodies on the turn-local project (lean return).
+            for (let i = 0; i < added.length; i++) {
+              const lean = added[i];
+              const full: ProjectAsset = {
+                ...lean,
+                content: created[i]?.content ?? lean.content,
+              };
+              const idx = ctx.project.assets.findIndex((x) => x.id === lean.id);
+              if (idx >= 0) ctx.project.assets[idx] = full;
+              else ctx.project.assets.push(full);
             }
             draft.assetIds = added.map((a) => a.id);
             onDraft?.(draft);

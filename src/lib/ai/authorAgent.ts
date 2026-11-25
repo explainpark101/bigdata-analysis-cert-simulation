@@ -334,7 +334,16 @@ async function runAnswer(
   ctx: AuthorAgentContext,
   language: 'python' | 'r',
 ): Promise<{ ok: boolean; stdout: string; stderr: string }> {
-  const files = resolveAssets(ctx.project, ctx.draft.assetIds);
+  // Asset bodies live in IDB/disk (lean project.assets have content: '').
+  // Hydrate before mounting — same pattern as AnswerAuthorPanel.
+  const { withProjectAssetContents } = await import('@/lib/assetStore');
+  const hydrated = await withProjectAssetContents(
+    ctx.project,
+    ctx.draft.assetIds,
+  );
+  // Keep hydrated bodies on the turn-local project so later tools reuse them.
+  ctx.project.assets = hydrated.assets;
+  const files = resolveAssets(hydrated, ctx.draft.assetIds);
   const source =
     language === 'python'
       ? ctx.draft.answerCode.python
@@ -648,10 +657,17 @@ export async function runAuthorAgentTurn(opts: {
               );
             }
             const added = await ctx.addProjectAssets(created);
-            for (const a of added) {
-              const idx = ctx.project.assets.findIndex((x) => x.id === a.id);
-              if (idx >= 0) ctx.project.assets[idx] = a;
-              else ctx.project.assets.push(a);
+            // addProjectAssets returns lean assets (content stripped). Keep the
+            // just-read CSV bodies on the turn-local project for run_answer.
+            for (let i = 0; i < added.length; i++) {
+              const lean = added[i];
+              const full: ProjectAsset = {
+                ...lean,
+                content: created[i]?.content ?? lean.content,
+              };
+              const idx = ctx.project.assets.findIndex((x) => x.id === lean.id);
+              if (idx >= 0) ctx.project.assets[idx] = full;
+              else ctx.project.assets.push(full);
             }
             draft.assetIds = added.map((a) => a.id);
             onDraft?.(draft);

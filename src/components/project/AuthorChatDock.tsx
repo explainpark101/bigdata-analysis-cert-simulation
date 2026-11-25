@@ -188,11 +188,15 @@ export function AuthorChatDock({
   const bottomRef = useRef<HTMLDivElement>(null);
   const draftRef = useRef(draft);
   const messagesRef = useRef(messages);
+  const projectRef = useRef(project);
+  const referenceIdsRef = useRef(referenceIds);
   const liveStreamRef = useRef('');
   const abortRef = useRef<AbortController | null>(null);
   const bodyIdPrefix = useId();
   draftRef.current = draft;
   messagesRef.current = messages;
+  projectRef.current = project;
+  referenceIdsRef.current = referenceIds;
 
   const setStream = (value: string | ((prev: string) => string)) => {
     setLiveStream((prev) => {
@@ -330,9 +334,9 @@ export function AuthorChatDock({
     const result = await runAuthorAgentTurn({
       ctx: {
         settings,
-        project,
+        project: projectRef.current,
         draft: opts.draftOverride ?? draftRef.current,
-        referenceIds,
+        referenceIds: referenceIdsRef.current,
         addProjectAssets,
       },
       history: opts.history,
