@@ -37,8 +37,7 @@ import {
 } from '@/lib/assetStore';
 import { isTauriRuntime, tauriFilePath } from '@/lib/tauriRuntime';
 import {
-  pickSaveZipPath,
-  rustExportProjectZip,
+  rustExportProjectZipAsk,
   rustImportProjectZip,
   rustMergeProjectZip,
   rustPeekZipKind,
@@ -367,12 +366,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const exportProject = useCallback(async () => {
     const lean = stripExternalContents(projectRef.current);
     if (isTauriRuntime()) {
-      const dest = await pickSaveZipPath(
+      // Save dialog + zip write both run in Rust (JS dialog plugin OOMs).
+      await rustExportProjectZipAsk(
+        lean,
         `${lean.id || 'project'}.project.zip`,
       );
-      if (!dest) return;
-      // Rust streams disk assets into the zip — never JSZip / getAssetContent.
-      await rustExportProjectZip(lean, dest);
       return;
     }
     await exportProjectZip(lean);

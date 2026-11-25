@@ -56,6 +56,20 @@ export async function rustExportProjectZip(
   });
 }
 
+/**
+ * Native save dialog + export entirely in Rust.
+ * Do not use JS `@tauri-apps/plugin-dialog` — it OOMs in WebView2 before paint.
+ */
+export async function rustExportProjectZipAsk(
+  project: AuthoringProject,
+  defaultName: string,
+): Promise<string | null> {
+  return invoke<string | null>('export_project_zip_ask', {
+    project: leanProjectForIpc(project),
+    defaultName,
+  });
+}
+
 export async function rustReadAssetText(
   assetId: string,
   maxChars?: number,
@@ -132,53 +146,24 @@ export async function rustPeekZipKind(
 
 type Stringish = string;
 
-/** Native open dialog → filesystem path (Tauri only). */
-export async function pickZipPath(opts?: {
+/**
+ * @deprecated Do not call from the WebView — JS plugin-dialog OOMs before paint.
+ * Use a hidden `<input type="file">` and {@link tauriFilePath} / Rust import instead.
+ */
+export async function pickZipPath(_opts?: {
   multiple?: boolean;
   title?: string;
 }): Promise<string | string[] | null> {
-  const { open } = await import('@tauri-apps/plugin-dialog');
-  const selected = await open({
-    multiple: Boolean(opts?.multiple),
-    title: opts?.title ?? 'ZIP 선택',
-    filters: [{ name: 'ZIP', extensions: ['zip'] }],
-  });
-  if (selected == null) return null;
-  return selected as string | string[];
+  throw new Error(
+    'pickZipPath is disabled (WebView dialog OOM). Use <input type="file">.',
+  );
 }
 
-export async function pickSaveZipPath(defaultName: string): Promise<string | null> {
-  const { save } = await import('@tauri-apps/plugin-dialog');
-  const selected = await save({
-    title: '프로젝트 ZIP 저장',
-    defaultPath: defaultName,
-    filters: [{ name: 'ZIP', extensions: ['zip'] }],
-  });
-  return selected;
-}
-
-export async function pickDataFiles(): Promise<string[] | null> {
-  const { open } = await import('@tauri-apps/plugin-dialog');
-  const selected = await open({
-    multiple: true,
-    title: 'CSV / 이미지 선택',
-    filters: [
-      {
-        name: 'Data',
-        extensions: [
-          'csv',
-          'tsv',
-          'txt',
-          'png',
-          'jpg',
-          'jpeg',
-          'gif',
-          'webp',
-          'svg',
-        ],
-      },
-    ],
-  });
-  if (selected == null) return null;
-  return Array.isArray(selected) ? selected : [selected];
+/**
+ * @deprecated Prefer {@link rustExportProjectZipAsk} (Rust-side save dialog).
+ */
+export async function pickSaveZipPath(_defaultName: string): Promise<string | null> {
+  throw new Error(
+    'pickSaveZipPath is disabled (WebView dialog OOM). Use rustExportProjectZipAsk.',
+  );
 }

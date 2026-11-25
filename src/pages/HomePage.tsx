@@ -151,20 +151,8 @@ export default function HomePage() {
             className="ghost-btn home-btn"
             disabled={busyId === 'project-zip'}
             onClick={() => {
-              void (async () => {
-                const { isTauriRuntime } = await import('@/lib/tauriRuntime');
-                if (isTauriRuntime()) {
-                  const { pickZipPath } = await import('@/lib/tauriAssets');
-                  const selected = await pickZipPath({ multiple: true });
-                  if (!selected) return;
-                  const paths = Array.isArray(selected)
-                    ? selected
-                    : [selected];
-                  await openProjectZips(paths);
-                  return;
-                }
-                projectZipRef.current?.click();
-              })();
+              // HTML file picker only — Tauri JS dialog plugin OOMs before paint.
+              projectZipRef.current?.click();
             }}
           >
             <span className="home-btn__row">

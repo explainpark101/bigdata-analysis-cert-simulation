@@ -201,33 +201,8 @@ export function ProblemAuthorTab({
               className="ghost-btn btn-with-icon"
               title="프로젝트/시험 ZIP을 여러 개 선택해 문제은행으로 병합"
               onClick={() => {
-                void (async () => {
-                  try {
-                    const { isTauriRuntime } = await import('@/lib/tauriRuntime');
-                    if (isTauriRuntime()) {
-                      const { pickZipPath } = await import('@/lib/tauriAssets');
-                      const selected = await pickZipPath({ multiple: true });
-                      if (!selected) return;
-                      const paths = Array.isArray(selected)
-                        ? selected
-                        : [selected];
-                      onMessage(
-                        `문제은행 병합 중… (${paths.length}개 ZIP)`,
-                      );
-                      const result = await mergeBankZips(paths);
-                      onMessage(
-                        `문제은행 병합: 문제 +${result.addedProblems} · 파일 +${result.addedAssets}` +
-                          (result.labels.length
-                            ? ` (${result.labels.join(', ')})`
-                            : ''),
-                      );
-                      return;
-                    }
-                    zipRef.current?.click();
-                  } catch (err) {
-                    onMessage(err instanceof Error ? err.message : String(err));
-                  }
-                })();
+                // HTML file picker only — Tauri JS dialog plugin OOMs before paint.
+                zipRef.current?.click();
               }}
             >
               <Upload size={14} />

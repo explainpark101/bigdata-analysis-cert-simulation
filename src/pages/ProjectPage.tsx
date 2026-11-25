@@ -293,37 +293,9 @@ export default function ProjectPage() {
             type="button"
             className="ghost-btn btn-with-icon"
             onClick={() => {
-              void (async () => {
-                try {
-                  const { isTauriRuntime } = await import('@/lib/tauriRuntime');
-                  if (isTauriRuntime()) {
-                    const { pickZipPath } = await import('@/lib/tauriAssets');
-                    const selected = await pickZipPath({ multiple: true });
-                    if (!selected) return;
-                    const paths = Array.isArray(selected)
-                      ? selected
-                      : [selected];
-                    setMessage(
-                      paths.length > 1
-                        ? `프로젝트 ${paths.length}개 불러오는 중…`
-                        : '프로젝트 불러오는 중…',
-                    );
-                    const result = await importProjectSources(paths);
-                    setMessage(
-                      result.merged
-                        ? `프로젝트 병합 로드: ${result.labels.join(', ')}` +
-                            (result.addedProblems != null
-                              ? ` · 문제 +${result.addedProblems}`
-                              : '')
-                        : `프로젝트 로드: ${result.labels[0]}`,
-                    );
-                    return;
-                  }
-                  zipRef.current?.click();
-                } catch (err) {
-                  setMessage(err instanceof Error ? err.message : String(err));
-                }
-              })();
+              // Always use the HTML file picker. The JS @tauri-apps/plugin-dialog
+              // open() path OOMs in WebView2 before the native dialog paints.
+              zipRef.current?.click();
             }}
           >
             <Upload size={16} />
@@ -361,7 +333,7 @@ export default function ProjectPage() {
           ref={zipRef}
           className="hidden-file"
           type="file"
-          accept=".zip,application/zip"
+          accept=".zip,application/zip,.project.zip,.exam.zip"
           multiple
           onChange={async (e) => {
             const files = Array.from(e.target.files ?? []);
@@ -373,6 +345,7 @@ export default function ProjectPage() {
                   ? `프로젝트 ${files.length}개 불러오는 중…`
                   : '프로젝트 불러오는 중…',
               );
+              // Prefer filesystem paths when WebView attaches File.path (Tauri).
               const result = await importProjectSources(files);
               setMessage(
                 result.merged

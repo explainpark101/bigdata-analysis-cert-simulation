@@ -24,6 +24,34 @@ fn export_project_zip(app: AppHandle, project: Value, dest_path: String) -> Resu
     zip_ops::export_project_zip(&app, &project, &dest_path)
 }
 
+/// Save dialog on the Rust side (avoids JS @tauri-apps/plugin-dialog which OOMs
+/// in WebView2 before the picker paints), then stream-export the zip.
+#[tauri::command]
+fn export_project_zip_ask(
+    app: AppHandle,
+    project: Value,
+    default_name: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("ZIP", &["zip"])
+        .set_file_name(&default_name)
+        .blocking_save_file();
+
+    let Some(file_path) = picked else {
+        return Ok(None);
+    };
+    let dest = file_path
+        .into_path()
+        .map_err(|e| format!("save path: {e}"))?;
+    let dest_str = dest.to_string_lossy().to_string();
+    zip_ops::export_project_zip(&app, &project, &dest_str)?;
+    Ok(Some(dest_str))
+}
+
 #[tauri::command]
 fn read_asset_text(
     app: AppHandle,
@@ -132,6 +160,7 @@ pub fn run() {
             import_project_zip,
             merge_project_zip,
             export_project_zip,
+            export_project_zip_ask,
             read_asset_text,
             read_asset_base64,
             write_asset_bytes,
