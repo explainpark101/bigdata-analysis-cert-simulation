@@ -62,10 +62,15 @@ import {
   summarizeActivity,
 } from '@/lib/examActivityLog';
 import { saveGradeResult } from '@/lib/gradeResultStore';
-import { materializeExam } from '@/lib/projectIO';
-import { parseProjectZip } from '@/lib/projectZip';
-import { detectZipKind } from '@/lib/zipKind';
+import { collectExamAssetIds, materializeExam } from '@/lib/projectIO';
+import {
+  hydrateProjectAssets,
+  parseProjectZipMeta,
+} from '@/lib/projectZip';
+import { parseExamZipFrom } from '@/lib/examZip';
+import { loadZip, zipKindFrom } from '@/lib/zipKind';
 import type { AuthoringProject } from '@/types/project';
+import type JSZip from 'jszip';
 import {
   downloadPyodideFile,
   readPyodideFileText,
@@ -112,7 +117,6 @@ export default function ExamPage() {
     setExam,
     updateQuiz,
     updateNotepad,
-    importExamZip,
     exportZip,
     loadSampleExam,
     clear,
@@ -121,6 +125,8 @@ export default function ExamPage() {
   const { runtime, ensureRuntimes } = useRuntime();
   const navigate = useNavigate();
   const zipRef = useRef<HTMLInputElement>(null);
+  /** Keep loaded project zip so we hydrate only the selected exam's assets. */
+  const pendingZipRef = useRef<JSZip | null>(null);
 
   const [activeId, setActiveId] = useState('');
   const [notepadOpen, setNotepadOpen] = useState(false);
@@ -642,10 +648,12 @@ export default function ExamPage() {
       setZipBusy(true);
       setZipMessage('');
       try {
-        const buf = await file.arrayBuffer();
-        const kind = await detectZipKind(buf);
+        // One JSZip.loadAsync — previous path did arrayBuffer + detect + parse (2–3× RAM).
+        const zip = await loadZip(file);
+        const kind = zipKindFrom(zip);
         if (kind === 'project') {
-          const project = await parseProjectZip(buf);
+          const project = await parseProjectZipMeta(zip);
+          pendingZipRef.current = zip;
           setExam(null);
           setPendingProject(project);
           setPendingExamId(
@@ -654,30 +662,44 @@ export default function ExamPage() {
           return;
         }
         if (kind === 'exam') {
+          pendingZipRef.current = null;
           setPendingProject(null);
           setPendingExamId('');
-          await importExamZip(file);
+          const next = await parseExamZipFrom(zip);
+          setExam({
+            ...next,
+            kind: 'exam',
+            updatedAt: new Date().toISOString(),
+          });
           return;
         }
+        pendingZipRef.current = null;
         setZipMessage(
           '지원하지 않는 ZIP입니다. exam.json 또는 project.json 이 필요합니다.',
         );
       } catch (err) {
+        pendingZipRef.current = null;
         setZipMessage(err instanceof Error ? err.message : String(err));
       } finally {
         setZipBusy(false);
       }
     },
-    [importExamZip, setExam],
+    [setExam],
   );
 
-  const openPendingExam = useCallback(() => {
+  const openPendingExam = useCallback(async () => {
     if (!pendingProject || !pendingExamId || zipBusy) return;
     setZipBusy(true);
     setZipMessage('');
     try {
-      const next = materializeExam(pendingProject, pendingExamId);
+      const zip = pendingZipRef.current;
+      const assetIds = collectExamAssetIds(pendingProject, pendingExamId);
+      const hydrated = zip
+        ? await hydrateProjectAssets(zip, pendingProject, assetIds)
+        : pendingProject;
+      const next = materializeExam(hydrated, pendingExamId);
       setExam(next);
+      pendingZipRef.current = null;
       setPendingProject(null);
       setPendingExamId('');
     } catch (err) {
@@ -723,6 +745,7 @@ export default function ExamPage() {
                   className="ghost-btn home-btn"
                   disabled={zipBusy}
                   onClick={() => {
+                    pendingZipRef.current = null;
                     setPendingProject(null);
                     setPendingExamId('');
                     setZipMessage('');

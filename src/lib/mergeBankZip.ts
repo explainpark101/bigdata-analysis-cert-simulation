@@ -1,6 +1,6 @@
-import { detectZipKind } from '@/lib/zipKind';
-import { parseProjectZip } from '@/lib/projectZip';
-import { parseExamZip } from '@/lib/examZip';
+import { loadZip, zipKindFrom } from '@/lib/zipKind';
+import { parseProjectZipFrom } from '@/lib/projectZip';
+import { parseExamZipFrom } from '@/lib/examZip';
 import {
   createEmptyBankProblem,
   createProjectAsset,
@@ -183,14 +183,16 @@ export async function mergeBankFromZip(
   current: AuthoringProject,
   file: File,
 ): Promise<MergeBankZipResult> {
-  const kind = await detectZipKind(file);
+  // Single JSZip load — avoid detectZipKind + parse each loading the file.
+  const zip = await loadZip(file);
+  const kind = zipKindFrom(zip);
   const label = stem(file.name);
   if (kind === 'project') {
-    const incoming = await parseProjectZip(file);
+    const incoming = await parseProjectZipFrom(zip);
     return mergeProjectZip(current, incoming, label);
   }
   if (kind === 'exam') {
-    const exam = await parseExamZip(file);
+    const exam = await parseExamZipFrom(zip);
     return mergeExamZip(current, exam, label);
   }
   throw new Error(

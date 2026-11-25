@@ -2,6 +2,7 @@ import JSZip from 'jszip';
 import type { ExamAsset, ExamSet, QuizProblem } from '@/types/exam';
 import { validateExam } from './projectIO';
 import { downloadBlob } from './download';
+import { loadZip } from './zipKind';
 
 const EXAM_JSON = 'exam.json';
 const ASSETS_PREFIX = 'assets/';
@@ -52,8 +53,7 @@ export async function buildExamZip(exam: ExamSet): Promise<Blob> {
   return zip.generateAsync({ type: 'blob' });
 }
 
-export async function parseExamZip(blob: Blob | ArrayBuffer): Promise<ExamSet> {
-  const zip = await JSZip.loadAsync(blob);
+export async function parseExamZipFrom(zip: JSZip): Promise<ExamSet> {
   if (zip.file('project.json')) {
     throw new Error(
       'This ZIP is a project (project.json). Use the exam ZIP loader to pick an exam paper, or open it under /project.',
@@ -102,6 +102,10 @@ export async function parseExamZip(blob: Blob | ArrayBuffer): Promise<ExamSet> {
   }
 
   return { ...exam, kind: 'exam', quizzes };
+}
+
+export async function parseExamZip(blob: Blob | ArrayBuffer): Promise<ExamSet> {
+  return parseExamZipFrom(await loadZip(blob));
 }
 
 export async function exportExamZip(exam: ExamSet): Promise<void> {

@@ -72,6 +72,44 @@ export function getActiveExam(
   );
 }
 
+/**
+ * Asset ids required to materialize one exam paper (bank assetIds + markdown images).
+ * Used to inflate only needed zip entries and avoid OOM on large project zips.
+ */
+export function collectExamAssetIds(
+  project: AuthoringProject,
+  examId?: string,
+): string[] {
+  const blueprint = getActiveExam(project, examId);
+  const byId = new Map(project.bank.map((p) => [p.id, p]));
+  const banks: BankProblem[] = [];
+  const ids = new Set<string>();
+
+  for (const pid of blueprint.problemIds) {
+    const bank = byId.get(pid);
+    if (!bank) continue;
+    banks.push(bank);
+    for (const assetId of bank.assetIds ?? []) ids.add(assetId);
+  }
+
+  for (const bank of banks) {
+    for (const imgPath of extractMarkdownImagePaths(bank.markdown)) {
+      const asset = project.assets.find((a) => {
+        const mount = mountPathForAsset(a);
+        return (
+          mount === imgPath ||
+          a.path === imgPath ||
+          a.path === `./${imgPath}` ||
+          a.name === imgPath
+        );
+      });
+      if (asset) ids.add(asset.id);
+    }
+  }
+
+  return [...ids];
+}
+
 type LegacyProject = AuthoringProject & {
   exam?: ExamBlueprint;
   exams?: ExamBlueprint[];
