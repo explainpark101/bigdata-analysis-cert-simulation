@@ -8,6 +8,11 @@ import {
 import type { AiEndpointSettings } from '@/lib/aiSettings';
 import type { AuthorDraft } from '@/lib/ai/authorChatStore';
 import {
+  authorDifficultyPromptEn,
+  authorRuntimeEnvPromptEn,
+  authorType2BandPromptEn,
+} from '@/lib/ai/authorRuntimePrompt';
+import {
   isWebToolName,
   runWebTool,
   WEB_TOOL_DEFS,
@@ -76,6 +81,12 @@ function systemPrompt(requireSave: boolean): string {
     '- Type 3: statistical inference on CSV (tests, CI, correlation, etc.) with exam-like reporting precision.',
     '- Write problem markdown in clear Korean exam tone: given files, what to compute, rounding/format rules, submission notes.',
     '',
+    authorRuntimeEnvPromptEn(),
+    '',
+    authorDifficultyPromptEn(),
+    '',
+    authorType2BandPromptEn(),
+    '',
     '## Data files = CSV only',
     '- Every data file attached to the draft MUST be a .csv (UTF-8). No xlsx, parquet, json, txt tables, or images-as-data.',
     '- use_project_assets may only attach EXISTING .csv as-is (rare). Prefer MUTATE or SYNTHESIZE so the exam file is original.',
@@ -92,7 +103,7 @@ function systemPrompt(requireSave: boolean): string {
     '',
     '## Workflow',
     'Type 1/3: CSV ready (mutate or synthesize) → update_draft → set_answer_code → run_answer_code → set_short_answers.',
-    'Type 2: CSV ready → update_draft (incl. grading) → verify submission rules.',
+    'Type 2: CSV ready → update_draft with markdown 구간표 + grading_python/r (SCORE_BANDS) → verify.',
     'Never invent final numeric answers yourself — compute via tools, then set answers from stdout.',
     'When you need external facts/docs: web_search then fetch_url. Do not invent API signatures.',
   ];
@@ -593,6 +604,8 @@ export async function runAuthorAgentTurn(opts: {
         refBrief || '(none)',
         'Analyze references with list_references / get_reference, then invent a NEW exam-realistic item.',
         'DATA_POLICY=csv_only — choose MUTATE (list_project_csvs / transform) or SYNTHESIZE (dataset_code) at design time.',
+        'RUNTIME=python(pandas,numpy,scipy.stats,statsmodels,sklearn,xgboost,lightgbm) | r(tidyverse,broom,lubridate).',
+        'DIFFICULTY=hard formula items allowed (e.g. pooled variance) — implement formula in answer_code, never invent numbers.',
         requireSave
           ? 'REQUIRE_SAVE=true — end this turn with save_problem(confirm=true).'
           : '',

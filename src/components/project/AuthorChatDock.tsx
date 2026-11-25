@@ -36,6 +36,11 @@ import {
   saveAuthorSession,
   type AuthorDraft,
 } from '@/lib/ai/authorChatStore';
+import {
+  authorDifficultyPromptKo,
+  authorRuntimeEnvPromptKo,
+  authorType2BandPromptKo,
+} from '@/lib/ai/authorRuntimePrompt';
 import type {
   AuthoringProject,
   BankProblem,
@@ -215,12 +220,17 @@ function autoPromptForType(
     '- 같은 유형 참고를 우선 보고, 다른 유형은 스킬·난이도만 참고하세요.',
     '- 같은 스킬군/시험 의도를 유지하되, 스토리·컬럼명·시드·분포·문구는 완전히 새로 만드세요. 베끼지 마세요.',
     '',
-    '## 실전형 난이도',
+    authorRuntimeEnvPromptKo(),
+    '',
+    authorDifficultyPromptKo({
+      // Last type-1/3 item in a paper leans formula / custom-metric hard.
+      preferHard:
+        taskType !== 2 && ordinalInType >= OFFICIAL_COUNTS[taskType],
+    }),
     '- 단순 사칙/한 줄 집계 장난감 문제는 금지합니다.',
     '- 결측·형변환·그룹집계·피처/인코딩·모델지표·가설검정 등 실기에서 쓰는 다단계 파이프라인을 포함하세요.',
     `- update_draft로 task_type=${taskType} 를 먼저 설정하세요.`,
     '',
-    '## 데이터 = CSV만',
     '## 데이터 설계 판단 (필수)',
     '- 참고/프로젝트에 쓸 만한 CSV가 있으면 MUTATE, 없으면 SYNTHESIZE를 고르세요. 한 줄로 선택 이유를 말한 뒤 진행하세요.',
     '- MUTATE: list_project_csvs → preview_csv_asset → set_transform_code(python|r) → run_transform_code → save_generated_assets',
@@ -228,13 +238,17 @@ function autoPromptForType(
     '- SYNTHESIZE: set_dataset_code → run_dataset_code → save_generated_assets (고정 시드로 out/*.csv 신규 생성)',
     '- xlsx/parquet/json/txt 테이블 금지. 문제 본문에 CSV 파일명을 명시하세요.',
     '',
+    taskType === 2 ? authorType2BandPromptKo() : '',
+    '',
     '## 유형별 마무리',
     taskType === 2
-      ? '- 2유형(40점): grading 코드 + result.csv(예측 칼럼 1개, index 제거, 지시 파일명/칼럼명) 규칙을 본문에 적으세요.'
-      : `- ${taskType}유형(${pts}점): set_answer_code → run_answer_code → set_short_answers 로 정답을 확정하세요. 제출은 별도 답안 제출 화면(단답)입니다.`,
+      ? '- 2유형(40점): 본문에 채점 구간표 + 제출 형식. grading에 SCORE_BANDS(또는 EARNED_POINTS). 모델링은 sklearn/xgboost/lightgbm(또는 R 허용 스택) 기준.'
+      : `- ${taskType}유형(${pts}점): set_answer_code → run_answer_code → set_short_answers 로 정답을 확정하세요. 수식 구현형이면 정답 코드에 동일 수식을 구현하세요. 제출은 별도 답안 제출 화면(단답)입니다.`,
     '- 마지막에 반드시 save_problem(confirm=true). 저장 없이 끝내면 실패입니다.',
     '- 이번 턴에서는 해당 유형 하나만 작업·저장하세요.',
-  ].join('\n');
+  ]
+    .filter((line) => line !== '')
+    .join('\n');
 }
 
 function isAbortError(err: unknown): boolean {
@@ -835,7 +849,6 @@ export function AuthorChatDock({
             onClick={() => setClearConfirmOpen(true)}
           >
             <Eraser size={14} aria-hidden />
-            비우기
           </button>
         </header>
 

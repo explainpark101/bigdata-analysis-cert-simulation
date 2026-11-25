@@ -199,10 +199,27 @@ print(as.character(m$group[which.max(m$value)]))
       assetIds: [TRAIN_ID, TEST_ID],
       markdown: `## 제2유형
 
-제공된 \`data/customer_train.csv\` / \`data/customer_test.csv\` 로 총구매액을 예측하고
-\`result.csv\` (\`pred\` 컬럼) 을 제출하시오.
+제공된 \`data/customer_train.csv\` / \`data/customer_test.csv\` 로 총구매액(\`total_purchase\`)을 예측하고
+\`result.csv\` (\`pred\` 컬럼 1개, index 제거) 을 제출하시오.
 
-파일 경로 상 내부 드라이브(C: 등) 접근 불가.`,
+파일 경로 상 내부 드라이브(C: 등) 접근 불가.
+
+### 채점 (제13회 가이드 · 구간별 5점 단위)
+- 평가지표: 기준 모델 예측 대비 **RMSE** (낮을수록 우수), 만점 40점
+- 제출 형식 위반 시 구간 점수에서 각 3점 감점(누적)
+
+| RMSE 구간 | 점수 |
+|-----------|------|
+| ≤ 8 | 40 |
+| ≤ 12 | 35 |
+| ≤ 16 | 30 |
+| ≤ 22 | 25 |
+| ≤ 30 | 20 |
+| ≤ 40 | 15 |
+| ≤ 55 | 10 |
+| ≤ 75 | 5 |
+| > 75 | 0 |
+`,
       starterCode: {
         python: `# 출력을 원할 경우 print() 함수 활용
 # 예시) print(df.head())
@@ -302,6 +319,8 @@ print("METRIC=rmse")
 print(f"STUDENT={student_rmse:.6f}")
 print("REF=0")
 print(f"Y_SCALE={y_scale:.6f}")
+# 제13회: 평가지표 구간별 5점 단위 (markdown 구간표와 동일)
+print("SCORE_BANDS=8:40,12:35,16:30,22:25,30:20,40:15,55:10,75:5")
 print(f"METRIC_MAE={student_mae:.6f}")
 print(f"REF_MODEL=RandomForestRegressor(n_estimators=80, random_state=42)")
 `,

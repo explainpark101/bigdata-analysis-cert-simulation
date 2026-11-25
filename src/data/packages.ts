@@ -29,15 +29,29 @@ export const PYODIDE_LOAD_PACKAGES = [
   'matplotlib',
   'seaborn',
   'statsmodels',
+  'xgboost',
+  'lightgbm',
   'joblib',
   'pillow',
   'micropip',
 ] as const;
 
+/**
+ * Packages authors may assume in R (webR installs on `library()`).
+ * tidyverse meta-package or its core members + broom + lubridate.
+ */
 export const WEBR_SUGGESTED_PACKAGES = [
+  'tidyverse',
   'dplyr',
   'tidyr',
+  'readr',
   'ggplot2',
+  'stringr',
+  'purrr',
+  'tibble',
+  'forcats',
+  'broom',
+  'lubridate',
   'caret',
   'randomForest',
   'data.table',

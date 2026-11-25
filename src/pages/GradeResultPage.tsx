@@ -264,11 +264,20 @@ export default function GradeResultPage() {
                         : ''}
                   </li>
                   <li>
-                    환산 점수{' '}
+                    구간 채점{' '}
+                    <code>{item.type2Score.bandSource ?? 'ratio'}</code>
+                    {item.type2Score.pointsBeforePenalty != null
+                      ? ` · 구간점수 ${item.type2Score.pointsBeforePenalty}/${item.max}`
+                      : ''}
+                  </li>
+                  <li>
+                    최종 점수{' '}
                     <strong>
                       {item.earned}/{item.max}
-                      {item.type2Score.fullCredit ? ' · 만점(허용 오차 내)' : ''}
+                      {item.type2Score.fullCredit ? ' · 만점 구간' : ''}
                     </strong>
+                    {' '}
+                    (형식 감점은 구간점수에서 차감)
                   </li>
                 </ul>
                 {item.submittedCsvPreview ? (

@@ -35,7 +35,10 @@ export const OFFICIAL_MAX_RUN_SECONDS = 60;
  */
 export const TYPE2_FORMAT_PENALTY = 3;
 
-/** Type-2 band size for 구간별 점수. */
+/**
+ * Type-2 metric band step (제13회 가이드 2-2: 평가지표 구간별 5점 단위).
+ * Format penalties (−3 each) are applied after banding and are NOT re-rounded.
+ */
 export const TYPE2_SCORE_BAND = 5;
 
 /** Auto-gen order: three type-1, one type-2, two type-3. */

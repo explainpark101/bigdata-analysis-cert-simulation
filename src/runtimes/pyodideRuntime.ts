@@ -28,11 +28,34 @@ async function loadPyodideModule(): Promise<PyodideInterface> {
   );
   const pyodide = (await loadPyodide({ indexURL })) as PyodideInterface;
 
+  // Prefer batch load; fall back per-package + micropip (xgboost/lightgbm, etc.).
   try {
     await pyodide.loadPackage([...PYODIDE_LOAD_PACKAGES]);
   } catch (err) {
-    console.warn('Some Pyodide packages failed to load', err);
-    await pyodide.loadPackage(['numpy', 'pandas', 'micropip']);
+    console.warn('Batch Pyodide package load failed; trying per package', err);
+    await pyodide.loadPackage(['numpy', 'pandas', 'micropip']).catch(() => undefined);
+    const missing: string[] = [];
+    for (const name of PYODIDE_LOAD_PACKAGES) {
+      try {
+        await pyodide.loadPackage(name);
+      } catch {
+        missing.push(name);
+      }
+    }
+    if (missing.length) {
+      try {
+        await pyodide.runPythonAsync(`
+import micropip
+for _name in ${JSON.stringify(missing)}:
+    try:
+        await micropip.install(_name)
+    except Exception:
+        pass
+`);
+      } catch (micropipErr) {
+        console.warn('micropip fallback install failed', micropipErr);
+      }
+    }
   }
 
   return pyodide;

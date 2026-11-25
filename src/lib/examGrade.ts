@@ -3,17 +3,16 @@ import { preloadPyodide, runPython } from '@/runtimes/pyodideRuntime';
 import { preloadWebR, runR } from '@/runtimes/webrRuntime';
 import { mountAssetsToPyodide, mountAssetsToWebR } from '@/runtimes/fsMount';
 import {
-  computeType2Earned,
-  parseType2Metrics,
-  roundType2Earned,
+  resolveType2Points,
   type MetricDirection,
+  type Type2BandSource,
   type Type2MlKind,
+  type Type2ScoreBand,
 } from '@/lib/type2Scoring';
 import {
   OFFICIAL_MAX_RUN_SECONDS,
   OFFICIAL_POINTS_PER_ITEM,
   TYPE2_FORMAT_PENALTY,
-  roundType2ToBand,
   type2MaxPoints,
 } from '@/lib/examOfficialSpec';
 
@@ -41,6 +40,12 @@ export interface Type2ScoreInfo {
   /** Earned ratio in [0, 1] before max points. */
   earnedRatio: number | null;
   fullCredit: boolean;
+  /** How metric points were resolved (제13회 구간별 채점). */
+  bandSource?: Type2BandSource;
+  /** Parsed SCORE_BANDS (if any). */
+  bands?: Type2ScoreBand[];
+  /** Metric band points before format penalties. */
+  pointsBeforePenalty?: number;
   rawStdout: string;
 }
 
@@ -309,13 +314,14 @@ async function writeRuntimeFile(
   );
 }
 
-/** Parse SCORE / EXPECTED style metrics and compute type-2 earned ratio. */
+/** Parse SCORE / EXPECTED / SCORE_BANDS and resolve type-2 metric points. */
 export function parseType2Score(
   stdout: string,
   gradingSource = '',
+  max = type2MaxPoints(),
 ): Type2ScoreInfo {
-  const parsed = parseType2Metrics(stdout, gradingSource);
-  const scored = computeType2Earned(parsed);
+  const resolved = resolveType2Points(stdout, gradingSource, max);
+  const { parsed, ratioResult } = resolved;
   return {
     label: parsed.label,
     mlKind: parsed.mlKind,
@@ -323,11 +329,14 @@ export function parseType2Score(
     achieved: parsed.student,
     expected: parsed.reference,
     yScale: parsed.yScale,
-    gap: scored.gap,
-    gapBasis: scored.gapBasis,
-    relativeGap: scored.relativeGap,
-    earnedRatio: scored.earned,
-    fullCredit: scored.fullCredit,
+    gap: ratioResult.gap,
+    gapBasis: ratioResult.gapBasis,
+    relativeGap: ratioResult.relativeGap,
+    earnedRatio: resolved.earnedRatio,
+    fullCredit: resolved.fullCredit,
+    bandSource: resolved.source,
+    bands: resolved.bands,
+    pointsBeforePenalty: resolved.points,
     rawStdout: stdout.trim(),
   };
 }
@@ -363,13 +372,15 @@ async function gradeType2Quiz(
   const path = quiz.submitFile || 'result.csv';
   const grading = quiz.gradingCode?.[lang]?.trim();
 
-  const applyFormatAndBand = (raw: number): number => {
-    const afterPenalty = Math.max(0, raw - format.penalty);
-    return roundType2ToBand(afterPenalty, max);
-  };
+  /**
+   * 제13회 가이드: 평가지표 구간 점수(5점 단위)를 먼저 부여한 뒤,
+   * 형식 감점(각 3점, 누적)을 빼며 재반올림하지 않음 (예: 40−3=37).
+   */
+  const applyFormatPenalty = (bandPoints: number): number =>
+    Math.max(0, bandPoints - format.penalty);
 
   if (!grading) {
-    const earned = applyFormatAndBand(max);
+    const earned = applyFormatPenalty(max);
     return {
       ...base,
       status: earned >= max - 1e-9 ? 'pass' : earned <= 0 ? 'fail' : 'partial',
@@ -378,7 +389,7 @@ async function gradeType2Quiz(
         format.reasons.length
           ? `형식 감점: ${format.reasons.join(' · ')}`
           : '형식 감점 없음',
-        `earned=${earned}/${max} (5점 단위)`,
+        `earned=${earned}/${max} (구간 ${max} − 형식감점)`,
       ].join('\n'),
       earned,
       submittedCsvPreview: preview,
@@ -395,8 +406,10 @@ async function gradeType2Quiz(
       lang === 'python'
         ? await runPython(grading, { timeoutMs })
         : await runR(grading, { timeoutMs });
-    const type2Score = parseType2Score(out.stdout, grading);
-    const hasMetric = type2Score.achieved != null;
+    const type2Score = parseType2Score(out.stdout, grading, max);
+    const hasMetric =
+      type2Score.achieved != null ||
+      type2Score.bandSource === 'earned_points';
     let earned = 0;
     let status: GradeStatus = 'fail';
     if (!out.ok && !hasMetric) {
@@ -406,10 +419,8 @@ async function gradeType2Quiz(
       earned = 0;
       status = 'ungradable';
     } else {
-      const ratioPts = roundType2Earned(type2Score.earnedRatio ?? 0, max);
-      earned = applyFormatAndBand(
-        type2Score.fullCredit ? max : ratioPts,
-      );
+      const bandPts = type2Score.pointsBeforePenalty ?? 0;
+      earned = applyFormatPenalty(bandPts);
       if (earned >= max - 1e-9) {
         status = 'pass';
         earned = max;
@@ -424,13 +435,14 @@ async function gradeType2Quiz(
         ? type2Score.gapBasis === 'expected'
           ? `|REF-STUDENT|=${type2Score.gap}`
           : `만점 기준 대비 오차=${type2Score.gap}`
-        : '점수 파싱 없음 (STUDENT=/REF= 또는 SCORE=/EXPECTED= 권장)';
+        : '점수 파싱 없음 (STUDENT=/REF= 또는 SCORE_BANDS / EARNED_POINTS 권장)';
     return {
       ...base,
       status,
       detail: [
         out.ok ? '채점 코드 실행 성공' : '채점 코드 실행 실패',
         `ML=${type2Score.mlKind} · metric=${type2Score.label} (${type2Score.direction})`,
+        `구간채점=${type2Score.bandSource ?? 'none'} · 구간점수=${type2Score.pointsBeforePenalty ?? 0}/${max}`,
         gapLine,
         type2Score.achieved != null
           ? `STUDENT=${type2Score.achieved}`
@@ -438,9 +450,9 @@ async function gradeType2Quiz(
         type2Score.expected != null ? `REF=${type2Score.expected}` : '',
         type2Score.yScale != null ? `Y_SCALE=${type2Score.yScale}` : '',
         format.reasons.length
-          ? `형식 감점: ${format.reasons.join(' · ')}`
+          ? `형식 감점: ${format.reasons.join(' · ')} (구간점수 후 차감, 재반올림 없음)`
           : '형식 감점 없음',
-        `earned=${earned}/${max}${type2Score.fullCredit ? ' (만점 허용범위)' : ''} · 5점 단위`,
+        `earned=${earned}/${max}${type2Score.fullCredit ? ' (만점 구간)' : ''}`,
         out.stdout.trim(),
         out.stderr.trim() ? `[stderr]\n${out.stderr.trim()}` : '',
       ]

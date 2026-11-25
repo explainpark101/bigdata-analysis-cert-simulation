@@ -7,6 +7,11 @@ import {
 import type { AiEndpointSettings } from '@/lib/aiSettings';
 import type { VariantDraft } from '@/lib/ai/variantChatStore';
 import {
+  authorDifficultyPromptEn,
+  authorRuntimeEnvPromptEn,
+  authorType2BandPromptEn,
+} from '@/lib/ai/authorRuntimePrompt';
+import {
   isWebToolName,
   runWebTool,
   WEB_TOOL_DEFS,
@@ -69,9 +74,15 @@ function systemPrompt(source: BankProblem): string {
           '  Read data/<file>.csv; write NEW out/*.csv (rename columns, resample, shift target — not a verbatim copy).',
           '- SYNTHESIZE: set_dataset_code (seeded Python) → run_dataset_code → save_generated_assets.',
           '- Do NOT paste CSV rows in chat.',
-          '- Provide gradingCode / answer modeling guidance via update_draft grading fields; no short-answer tools.',
+          '- Provide gradingCode via update_draft grading fields with SCORE_BANDS (5pt steps); no short-answer tools.',
           '- Examinee still submits result.csv; do not invent scores.',
         ].join('\n'),
+    '',
+    authorRuntimeEnvPromptEn(),
+    '',
+    authorDifficultyPromptEn(),
+    '',
+    type === 2 ? authorType2BandPromptEn() : '',
     '',
     'Always explain briefly in natural language what you changed.',
     'When you need docs, formulas, or examples from the web: use web_search then fetch_url.',

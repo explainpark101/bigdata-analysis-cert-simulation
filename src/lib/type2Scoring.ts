@@ -1,16 +1,19 @@
 /**
  * Type-2 (ML) scoring: Classification | Regression only.
  *
- * Grading scripts should print (OpenAI / DataQ style keys also accepted):
+ * Grading scripts should print (제13회 가이드 / DataQ style):
  *   ML_TYPE=classification|regression
  *   METRIC=rmse|mae|auc|f1|accuracy|...
  *   STUDENT=0.12          # or SCORE= / METRIC_RMSE=
  *   REF=0.10              # answer-model metric (EXPECTED=)
  *   Y_SCALE=42.5          # optional; std/IQR of y_true (regression scale)
+ *   SCORE_BANDS=0.85:40,0.80:35,...   # metric→points (5pt steps) — preferred
+ *   EARNED_POINTS=35                  # optional if bands applied in-script
  *
- * Full marks when the submitted model is better, equal, or only slightly
- * worse than the answer model; otherwise a scale-aware partial score.
+ * Points from bands/ratio are 5pt-stepped; CSV format penalties (−3 each)
+ * are subtracted afterward without re-rounding (e.g. 40−3=37).
  */
+import { roundType2ToBand } from '@/lib/examOfficialSpec';
 
 export type Type2MlKind = 'classification' | 'regression';
 export type MetricDirection = 'higher' | 'lower';
@@ -70,6 +73,31 @@ export interface Type2EarnedResult {
   /** Absolute |student - ref| when both present. */
   gap: number | null;
   gapBasis: 'expected' | 'perfect' | 'none';
+  explanation: string;
+}
+
+/**
+ * Explicit metric→points band (제13회 가이드: 평가지표 구간별 5점 단위).
+ * higher-is-better: student >= threshold → points
+ * lower-is-better: student <= threshold → points
+ */
+export interface Type2ScoreBand {
+  /** Threshold on the metric. */
+  threshold: number;
+  /** Points awarded when the band matches (0..40, typically step 5). */
+  points: number;
+}
+
+export type Type2BandSource = 'earned_points' | 'score_bands' | 'ratio' | 'none';
+
+export interface Type2PointsResult {
+  /** Metric band points before format penalties (0..max, 5pt steps when from bands). */
+  points: number;
+  max: number;
+  source: Type2BandSource;
+  bands: Type2ScoreBand[];
+  fullCredit: boolean;
+  earnedRatio: number;
   explanation: string;
 }
 
@@ -384,4 +412,184 @@ function clamp01(n: number): number {
 export function roundType2Earned(earned: number, max = 1): number {
   const v = clamp01(earned) * max;
   return Math.round(v * 1e6) / 1e6;
+}
+
+const NUM = '[-+]?[0-9]*\\.?[0-9]+(?:[eE][-+]?[0-9]+)?';
+
+/**
+ * Parse SCORE_BANDS=thr:pts,... or lines `BAND thr pts`.
+ * Points should be 5-step (0..40) per 제13회 가이드.
+ */
+export function parseType2ScoreBands(blob: string): Type2ScoreBand[] {
+  const bands: Type2ScoreBand[] = [];
+  const seen = new Set<string>();
+
+  const push = (threshold: number, points: number) => {
+    if (!Number.isFinite(threshold) || !Number.isFinite(points)) return;
+    const key = `${threshold}:${points}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    bands.push({ threshold, points: Math.max(0, points) });
+  };
+
+  const inline = firstMatch(blob, [
+    /\bSCORE_BANDS\s*[:=]\s*([^\n\r]+)/i,
+    /\bBANDS\s*[:=]\s*([^\n\r]+)/i,
+  ]);
+  if (inline?.[1]) {
+    const parts = inline[1].split(/[,;|]+/);
+    for (const part of parts) {
+      const m = part
+        .trim()
+        .match(new RegExp(`^(${NUM})\\s*[:=→>~-]\\s*(${NUM})$`));
+      if (!m) continue;
+      push(Number(m[1]), Number(m[2]));
+    }
+  }
+
+  const lineRe = new RegExp(
+    `^\\s*BAND\\s+(${NUM})\\s+(${NUM})\\s*$`,
+    'gim',
+  );
+  let lm: RegExpExecArray | null;
+  while ((lm = lineRe.exec(blob)) != null) {
+    push(Number(lm[1]), Number(lm[2]));
+  }
+
+  return bands;
+}
+
+/** Prefer EARNED_POINTS= / BAND_POINTS= when grading already applied 구간표. */
+export function parseType2EarnedPoints(blob: string): number | null {
+  const hit = firstMatch(blob, [
+    /\bEARNED_POINTS\s*[:=]\s*([-+]?[0-9]*\.?[0-9]+)/i,
+    /\bBAND_POINTS\s*[:=]\s*([-+]?[0-9]*\.?[0-9]+)/i,
+    /\bPOINTS\s*[:=]\s*([-+]?[0-9]*\.?[0-9]+)/i,
+  ]);
+  return hit ? parseNumber(hit[1]) : null;
+}
+
+/**
+ * Apply official-style metric bands.
+ * Returns 0 when student is outside every band (최저 구간 미만 → 0점).
+ */
+export function applyType2ScoreBands(
+  student: number,
+  bands: Type2ScoreBand[],
+  direction: MetricDirection | 'unknown',
+  max = 40,
+): number {
+  if (!bands.length || !Number.isFinite(student)) return 0;
+  const dir: MetricDirection =
+    direction === 'lower' || direction === 'higher' ? direction : 'higher';
+  const ordered = [...bands].sort((a, b) => b.points - a.points);
+  for (const b of ordered) {
+    const ok =
+      dir === 'higher'
+        ? student + 1e-12 >= b.threshold
+        : student - 1e-12 <= b.threshold;
+    if (ok) return Math.min(max, Math.max(0, b.points));
+  }
+  return 0;
+}
+
+/**
+ * Suggest 5-point bands from a reference metric (authoring aid).
+ * higher: REF → 40, then step down; lower: REF → 40, then step up.
+ */
+export function suggestType2BandsFromRef(
+  reference: number,
+  direction: MetricDirection,
+  max = 40,
+  band = 5,
+): Type2ScoreBand[] {
+  const steps = Math.floor(max / band);
+  const bands: Type2ScoreBand[] = [];
+  if (!Number.isFinite(reference)) return bands;
+  for (let i = 0; i <= steps; i++) {
+    const points = max - i * band;
+    if (points < 0) break;
+    const t =
+      direction === 'higher'
+        ? reference * (1 - 0.04 * i)
+        : reference * (1 + 0.06 * i);
+    bands.push({
+      threshold: Number(t.toPrecision(6)),
+      points,
+    });
+  }
+  return bands;
+}
+
+/**
+ * Resolve type-2 metric points before CSV format penalties.
+ * Priority (제13회): EARNED_POINTS → SCORE_BANDS → continuous ratio→5pt band.
+ */
+export function resolveType2Points(
+  stdout: string,
+  gradingSource = '',
+  max = 40,
+): Type2PointsResult & {
+  parsed: Type2MetricParse;
+  ratioResult: Type2EarnedResult;
+} {
+  const blob = `${gradingSource}\n${stdout}`;
+  const parsed = parseType2Metrics(stdout, gradingSource);
+  const ratioResult = computeType2Earned(parsed);
+  const bands = parseType2ScoreBands(blob);
+  const earnedDirect = parseType2EarnedPoints(blob);
+
+  if (earnedDirect != null) {
+    const points = Math.min(max, Math.max(0, earnedDirect));
+    return {
+      points,
+      max,
+      source: 'earned_points',
+      bands,
+      fullCredit: points >= max - 1e-9,
+      earnedRatio: max > 0 ? points / max : 0,
+      explanation: `EARNED_POINTS=${points}`,
+      parsed,
+      ratioResult,
+    };
+  }
+
+  if (bands.length && parsed.student != null) {
+    const dir =
+      parsed.direction === 'unknown'
+        ? parsed.mlKind === 'regression'
+          ? 'lower'
+          : 'higher'
+        : parsed.direction;
+    const points = applyType2ScoreBands(parsed.student, bands, dir, max);
+    return {
+      points,
+      max,
+      source: 'score_bands',
+      bands,
+      fullCredit: points >= max - 1e-9,
+      earnedRatio: max > 0 ? points / max : 0,
+      explanation:
+        points > 0
+          ? `SCORE_BANDS 적용 · student=${parsed.student} → ${points}점`
+          : `SCORE_BANDS · 최저 구간 미만 → 0점 (student=${parsed.student})`,
+      parsed,
+      ratioResult,
+    };
+  }
+
+  const ratioPts = roundType2Earned(ratioResult.earned, max);
+  // Snap continuous score to 5pt bands (가이드: 구간별 5점 단위).
+  const points = roundType2ToBand(ratioPts, max);
+  return {
+    points,
+    max,
+    source: ratioResult.earned > 0 || parsed.student != null ? 'ratio' : 'none',
+    bands,
+    fullCredit: ratioResult.fullCredit,
+    earnedRatio: ratioResult.earned,
+    explanation: ratioResult.explanation,
+    parsed,
+    ratioResult,
+  };
 }
