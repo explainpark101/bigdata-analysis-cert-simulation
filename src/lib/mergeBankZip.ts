@@ -173,9 +173,13 @@ function quizToBank(
     quiz.taskType === 1 || quiz.taskType === 2 || quiz.taskType === 3
       ? quiz.taskType
       : 1;
+  // Keep one entry per shortSlots field (including blanks) so 소문항 slots survive import.
   const shortAnswers =
-    quiz.shortSlots?.map((s) => s.expected ?? '').filter((s) => s.trim()) ??
-    (quiz.shortAnswer?.trim() ? [quiz.shortAnswer.trim()] : undefined);
+    quiz.shortSlots && quiz.shortSlots.length > 0
+      ? quiz.shortSlots.map((s) => s.expected ?? '')
+      : quiz.shortAnswer?.trim()
+        ? [quiz.shortAnswer.trim()]
+        : undefined;
 
   return createEmptyBankProblem({
     id: `bank-${crypto.randomUUID().slice(0, 8)}`,

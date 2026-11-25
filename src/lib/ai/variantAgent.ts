@@ -21,6 +21,7 @@ import {
 } from '@/lib/ai/webTools';
 import { mountPathForAsset } from '@/lib/assetPaths';
 import { resolveAssets, createProjectAsset } from '@/lib/projectIO';
+import { ensureShortAnswersForSubQuestions } from '@/lib/subQuestions';
 import { mountAssetsToPyodide } from '@/runtimes/fsMount';
 import {
   preloadPyodide,
@@ -69,6 +70,7 @@ function systemPrompt(source: BankProblem): string {
           '- Change the question wording / aggregation / filter / target column / round-or-trunc rule as requested.',
           '- Put computation code in set_answer_code; run_answer_code; then set_short_answers from printed values only.',
           '- Short answers MUST be numbers only after 반올림/절사 (e.g. "11.0", "0.12"). Never letters/labels.',
+          '- One item may have multiple 소문항 (type1 max 5, type3 max 3). Mark ①②/(1)(2); set_short_answers length = count; print one line each.',
         ].join('\n')
       : [
           'Type 2 rules:',
@@ -87,7 +89,9 @@ function systemPrompt(source: BankProblem): string {
     '',
     authorDifficultyPromptEn(),
     '',
-    type === 1 || type === 3 ? authorType13AnswerFormatPromptEn() : '',
+    type === 1 || type === 3
+      ? authorType13AnswerFormatPromptEn({ taskType: type })
+      : '',
     type === 2 ? authorType2BandPromptEn() : '',
     '',
     'Always explain briefly in natural language what you changed.',
@@ -168,7 +172,7 @@ function toolsFor(source: BankProblem): ChatToolDef[] {
       function: {
         name: 'set_short_answers',
         description:
-          'Set type 1/3 short-answer keys from executed output. Each must be a single number after round/trunc (e.g. "0.12"). No letters.',
+          'Set type 1/3 short-answer keys from executed output. Each array entry is one answer field (one 소문항). Each value must be a single number after round/trunc (e.g. "0.12"). N 소문항 → N entries (type1 max 5, type3 max 3).',
         parameters: {
           type: 'object',
           properties: {
@@ -564,11 +568,17 @@ export async function runVariantAgentTurn(opts: {
             const answers = Array.isArray(args.answers)
               ? args.answers.map((a) => String(a ?? ''))
               : [];
-            const check = validateNumericShortAnswers(answers);
+            const check = validateNumericShortAnswers(answers, {
+              taskType:
+                ctx.source.taskType === 1 || ctx.source.taskType === 3
+                  ? ctx.source.taskType
+                  : undefined,
+            });
             if (!check.ok) {
               toolResult = JSON.stringify({
                 ok: false,
                 error:
+                  check.error ??
                   'Type 1/3 answers must be numeric only (after round/trunc).',
                 rejected: check.rejected,
                 answers: check.answers,
@@ -871,14 +881,21 @@ export async function runVariantAgentTurn(opts: {
               submitFormat: ctx.source.taskType === 2 ? 'csv' : 'short',
               submitFile:
                 ctx.source.taskType === 2 ? 'result.csv' : undefined,
-              shortAnswers:
-                ctx.source.taskType === 2
-                  ? undefined
-                  : draft.shortAnswers,
-              shortAnswer:
-                ctx.source.taskType === 2
-                  ? ''
-                  : (draft.shortAnswers[0] ?? ''),
+              ...(() => {
+                if (ctx.source.taskType === 2) {
+                  return { shortAnswers: undefined, shortAnswer: '' };
+                }
+                const shorts = ensureShortAnswersForSubQuestions(
+                  draft.markdown,
+                  draft.shortAnswers,
+                  draft.shortAnswers[0],
+                  ctx.source.taskType,
+                );
+                return {
+                  shortAnswers: shorts,
+                  shortAnswer: shorts[0] ?? '',
+                };
+              })(),
             };
             savedProblem = onSave(partial);
             toolResult = JSON.stringify({

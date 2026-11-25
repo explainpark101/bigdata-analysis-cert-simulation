@@ -22,6 +22,7 @@ import {
 } from '@/lib/ai/webTools';
 import { mountPathForAsset } from '@/lib/assetPaths';
 import { resolveAssets, createProjectAsset } from '@/lib/projectIO';
+import { ensureShortAnswersForSubQuestions } from '@/lib/subQuestions';
 import { mountAssetsToPyodide } from '@/runtimes/fsMount';
 import {
   preloadPyodide,
@@ -110,6 +111,7 @@ function systemPrompt(requireSave: boolean): string {
     '',
     '## Workflow',
     'Type 1/3: CSV ready (mutate or synthesize) → update_draft → set_answer_code → run_answer_code → set_short_answers.',
+    'Type 1/3 소문항: one item may have multiple sub-questions (type1 max 5, type3 max 3). Mark with line-leading ①②/(1)(2); set_short_answers length = 소문항 count; print one number per line.',
     'Type 2: CSV ready → update_draft with markdown 구간표 + grading_python/r (SCORE_BANDS) → verify.',
     'Never invent final numeric answers yourself — compute via tools, then set answers from stdout.',
     'For stats formulas/metrics: prefer lookup_statistic / web_search → fetch_url. If those return ok=false or skip=true, continue with your own knowledge — do not stall.',
@@ -132,6 +134,15 @@ function draftToBankPartial(
   draft: AuthorDraft,
   referenceIds: string[],
 ): Partial<BankProblem> {
+  const shorts =
+    draft.taskType === 2
+      ? undefined
+      : ensureShortAnswersForSubQuestions(
+          draft.markdown,
+          draft.shortAnswers,
+          draft.shortAnswers[0],
+          draft.taskType,
+        );
   return {
     title: draft.title,
     note: draft.note,
@@ -147,8 +158,8 @@ function draftToBankPartial(
     sourceProblemId: referenceIds[0],
     submitFormat: draft.taskType === 2 ? 'csv' : 'short',
     submitFile: draft.taskType === 2 ? 'result.csv' : undefined,
-    shortAnswers: draft.taskType === 2 ? undefined : draft.shortAnswers,
-    shortAnswer: draft.taskType === 2 ? '' : (draft.shortAnswers[0] ?? ''),
+    shortAnswers: shorts,
+    shortAnswer: shorts?.[0] ?? '',
   };
 }
 
@@ -249,7 +260,7 @@ const TOOLS: ChatToolDef[] = [
     function: {
       name: 'set_short_answers',
       description:
-        'Set type 1/3 short-answer keys from executed output. Each answer must be a single number string after round/trunc (e.g. "0.12"). No letters or multi-values.',
+        'Set type 1/3 short-answer keys from executed output. Each array entry is one answer field (one 소문항). Each value must be a single number string after round/trunc (e.g. "0.12"). N 소문항 → N entries (type1 max 5, type3 max 3). Never pack multiple answers into one string.',
       parameters: {
         type: 'object',
         properties: {
@@ -778,11 +789,14 @@ export async function runAuthorAgentTurn(opts: {
             const answers = Array.isArray(args.answers)
               ? args.answers.map((a) => String(a ?? ''))
               : [];
-            const check = validateNumericShortAnswers(answers);
+            const check = validateNumericShortAnswers(answers, {
+              taskType: draft.taskType,
+            });
             if (!check.ok) {
               toolResult = JSON.stringify({
                 ok: false,
                 error:
+                  check.error ??
                   'Type 1/3 answers must be numeric only (after round/trunc). Reject letters, units, commas, or empty.',
                 rejected: check.rejected,
                 answers: check.answers,

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { CheckCircle2, Pencil, Play, XCircle } from 'lucide-react';
 import { renderMarkdown } from '@/lib/markdown';
 import { resolveAssets } from '@/lib/projectIO';
+import { ensureShortAnswersForSubQuestions } from '@/lib/subQuestions';
 import { mountAssetsToPyodide } from '@/runtimes/fsMount';
 import { preloadPyodide, runPython } from '@/runtimes/pyodideRuntime';
 import { preloadWebR, runR } from '@/runtimes/webrRuntime';
@@ -28,11 +29,12 @@ type VerifyState =
 
 function expectedShorts(problem: BankProblem): string[] {
   if (problem.taskType === 2 || problem.submitFormat === 'csv') return [];
-  if (problem.shortAnswers?.length) {
-    return problem.shortAnswers.map((s) => String(s ?? '').trim());
-  }
-  const one = problem.shortAnswer?.trim();
-  return one ? [one] : [];
+  return ensureShortAnswersForSubQuestions(
+    problem.markdown,
+    problem.shortAnswers,
+    problem.shortAnswer,
+    problem.taskType,
+  ).map((s) => s.trim());
 }
 
 function normalizeLine(s: string): string {

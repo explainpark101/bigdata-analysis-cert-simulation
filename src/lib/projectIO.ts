@@ -19,6 +19,7 @@ import {
   OFFICIAL_TIME_LIMIT_MINUTES,
   shortSlotPoints,
 } from '@/lib/examOfficialSpec';
+import { ensureShortAnswersForSubQuestions } from '@/lib/subQuestions';
 
 const CIRCLED = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩'];
 
@@ -447,35 +448,39 @@ function collectQuizFiles(
 /**
  * Expected short answers for one bank item.
  * Keep empty strings — they still need an input slot on the 문제 풀이 page.
- * (Filtering blanks previously dropped all slots when keys were unknown.)
+ * Pad to the number of 소문항 markers in markdown so each sub-question
+ * gets its own field even when keys are incomplete.
  */
 function bankExpectedAnswers(bank: BankProblem): string[] {
-  if (Array.isArray(bank.shortAnswers) && bank.shortAnswers.length > 0) {
-    return bank.shortAnswers.map((s) => String(s ?? '').trim());
-  }
-  if (bank.shortAnswer != null && String(bank.shortAnswer).length > 0) {
-    return [String(bank.shortAnswer).trim()];
-  }
-  return [''];
+  return ensureShortAnswersForSubQuestions(
+    bank.markdown,
+    bank.shortAnswers,
+    bank.shortAnswer,
+    bank.taskType,
+  ).map((s) => s.trim());
 }
 
 function buildShortSlots(banks: BankProblem[]): ShortAnswerSlot[] {
   const slots: ShortAnswerSlot[] = [];
-  let idx = 0;
-  for (const bank of banks) {
+  let globalIdx = 0;
+  banks.forEach((bank, bankIdx) => {
     const answers = bankExpectedAnswers(bank);
     const points = shortSlotPoints(bank.taskType, answers.length);
-    for (const expected of answers) {
+    answers.forEach((expected, subIdx) => {
+      const label =
+        answers.length > 1
+          ? `문제 ${bankIdx + 1}-${circledLabel(subIdx)}`
+          : `답안 ${circledLabel(globalIdx)}`;
       slots.push({
-        id: `${bank.id}-slot-${idx}`,
-        label: `답안 ${circledLabel(idx)}`,
+        id: `${bank.id}-slot-${subIdx}`,
+        label,
         expected: expected || undefined,
         draft: '',
         points,
       });
-      idx += 1;
-    }
-  }
+      globalIdx += 1;
+    });
+  });
   return slots;
 }
 

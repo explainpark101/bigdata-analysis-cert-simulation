@@ -58,9 +58,11 @@ import {
   OFFICIAL_TOTAL_ITEMS,
   countBankByType,
   isOfficialStructure,
+  OFFICIAL_MAX_SUB_QUESTIONS,
   shuffleCopy,
   takeAllOrRandom,
 } from '@/lib/examOfficialSpec';
+import { ensureShortAnswersForSubQuestions } from '@/lib/subQuestions';
 import { ConfirmModal } from '@/components/exam/ConfirmModal';
 import { EdgeResizeHandle } from '@/components/layout/EdgeResizeHandle';
 import {
@@ -290,14 +292,23 @@ function autoPromptForType(
     '- xlsx/parquet/json/txt 테이블 금지. 문제 본문에 CSV 파일명을 명시하세요.',
     '',
     taskType === 1 || taskType === 3
-      ? authorType13AnswerFormatPromptKo()
+      ? authorType13AnswerFormatPromptKo({ taskType })
+      : '',
+    taskType === 1 || taskType === 3
+      ? [
+          '',
+          '## 소문항 구성',
+          `- 이 문항은 소문항 1~${OFFICIAL_MAX_SUB_QUESTIONS[taskType]}개를 가질 수 있습니다 (제${taskType}유형 상한 ${OFFICIAL_MAX_SUB_QUESTIONS[taskType]}).`,
+          '- 가능하면 2개 이상 소문항으로 나누어 서로 다른 수치를 묻세요. 본문에 줄 앞 ①②… 또는 (1)(2)… 로 표시하고, set_short_answers 길이를 맞추세요.',
+          `- 문항 배점 ${pts}점은 소문항 수로 균등 분할됩니다.`,
+        ].join('\n')
       : '',
     taskType === 2 ? authorType2BandPromptKo() : '',
     '',
     '## 유형별 마무리',
     taskType === 2
       ? '- 2유형(40점): 본문에 채점 구간표 + 제출 형식. grading에 SCORE_BANDS(또는 EARNED_POINTS). 모델링은 sklearn/xgboost/lightgbm(또는 R 허용 스택) 기준.'
-      : `- ${taskType}유형(${pts}점): 본문에 반올림/절사·자리수 명시 → set_answer_code → run_answer_code → set_short_answers(숫자만). 제출은 별도 답안 제출 화면(단답)입니다.`,
+      : `- ${taskType}유형(${pts}점): 소문항별 반올림/절사 명시 → set_answer_code(줄마다 숫자) → run_answer_code → set_short_answers(소문항 수만큼). 제출은 답안 제출 화면의 칸마다 입력합니다.`,
     '- 마지막에 반드시 save_problem(confirm=true). 저장 없이 끝내면 실패입니다.',
     '- 이번 턴에서는 해당 유형 하나만 작업·저장하세요.',
   ]
@@ -719,6 +730,15 @@ export function AuthorChatDock({
               setLiveStatus(
                 `시험지 ${paperLabel} · 제${taskType}유형 초안 직접 저장…`,
               );
+              const shorts =
+                result.draft.taskType === 2
+                  ? undefined
+                  : ensureShortAnswersForSubQuestions(
+                      result.draft.markdown,
+                      result.draft.shortAnswers,
+                      result.draft.shortAnswers[0],
+                      result.draft.taskType,
+                    );
               const created = onSaveProblem({
                 title: result.draft.title,
                 note: result.draft.note,
@@ -735,14 +755,8 @@ export function AuthorChatDock({
                 submitFormat: result.draft.taskType === 2 ? 'csv' : 'short',
                 submitFile:
                   result.draft.taskType === 2 ? 'result.csv' : undefined,
-                shortAnswers:
-                  result.draft.taskType === 2
-                    ? undefined
-                    : result.draft.shortAnswers,
-                shortAnswer:
-                  result.draft.taskType === 2
-                    ? ''
-                    : (result.draft.shortAnswers[0] ?? ''),
+                shortAnswers: shorts,
+                shortAnswer: shorts?.[0] ?? '',
               });
               result = {
                 ...result,

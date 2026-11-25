@@ -202,7 +202,8 @@ function gradeShortQuiz(quiz: QuizProblem): GradeItem {
   const answers: GradeAnswerRow[] = slots.map((s) => {
     const draft = (s.draft ?? '').trim();
     const expected = (s.expected ?? '').trim();
-    const ok = expected ? draft === expected : Boolean(draft);
+    // Empty expected key: never auto-pass (avoids free points from padded 소문항 slots).
+    const ok = Boolean(expected) && draft === expected;
     return {
       label: s.label,
       expected,

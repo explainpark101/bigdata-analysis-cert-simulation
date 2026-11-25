@@ -19,6 +19,29 @@ export const OFFICIAL_POINTS_PER_ITEM: Record<TaskType, number> = {
   3: 15,
 };
 
+/**
+ * Max 소문항 (sub-questions) per bank item.
+ * Type 2 has no short-answer slots (CSV submit).
+ */
+export const OFFICIAL_MAX_SUB_QUESTIONS: Record<TaskType, number> = {
+  1: 5,
+  2: 1,
+  3: 3,
+};
+
+/** Clamp a 소문항 count to the official max for the task type (min 1). */
+export function clampSubQuestionCount(
+  taskType: TaskType | undefined,
+  count: number,
+): number {
+  const raw = Number.isFinite(count) ? Math.floor(count) : 1;
+  const max =
+    taskType === 1 || taskType === 3
+      ? OFFICIAL_MAX_SUB_QUESTIONS[taskType]
+      : 1;
+  return Math.min(max, Math.max(1, raw));
+}
+
 export const OFFICIAL_TOTAL_POINTS = 100;
 export const OFFICIAL_TOTAL_ITEMS =
   OFFICIAL_COUNTS[1] + OFFICIAL_COUNTS[2] + OFFICIAL_COUNTS[3];

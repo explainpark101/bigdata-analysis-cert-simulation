@@ -57,7 +57,10 @@ export interface BankProblem {
   answerCode?: CodeByLanguage;
   /** Author short-answer key (유형 1·3 단답, single) */
   shortAnswer?: string;
-  /** Multiple short-answer keys when one bank item holds several 소문항 */
+  /**
+   * Short-answer keys when one bank item holds several 소문항.
+   * Caps: type1 ≤ 5, type3 ≤ 3 (see OFFICIAL_MAX_SUB_QUESTIONS).
+   */
   shortAnswers?: string[];
   /**
    * 작업형 2 채점용 코드: 기준 모델·학습 방법·평가지표로 result.csv 평가.

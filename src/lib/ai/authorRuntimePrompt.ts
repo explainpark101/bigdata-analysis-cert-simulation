@@ -189,22 +189,34 @@ export function authorType2BandPromptKo(): string {
 /**
  * 제1·3유형: 답은 숫자만. 반올림 또는 절사로 자리수를 맞춘 뒤 제출 (제13회 가이드 형식 예시).
  */
-export function authorType13AnswerFormatPromptEn(): string {
+export function authorType13AnswerFormatPromptEn(opts?: {
+  taskType?: 1 | 3;
+}): string {
+  const maxSub = opts?.taskType === 3 ? 3 : 5;
+  const typeLabel = opts?.taskType === 3 ? 'Type 3' : 'Type 1';
   return [
     '## Type 1 / 3 answer format (mandatory)',
-    '- Every short answer MUST be a **number only** (optional leading minus, optional decimal point). No letters, labels, units, commas, or multiple values.',
+    '- Every short answer MUST be a **number only** (optional leading minus, optional decimal point). No letters, labels, units, commas, or multiple values in one slot.',
     '- Problem markdown MUST require **rounding (반올림)** or **truncation (절사)** to a stated number of decimal places (or integer). Example: "반올림하여 소수점 둘째 자리까지".',
-    '- answer_code must apply that same round/trunc before printing; set_short_answers from that printed numeric string only (e.g. "0.12", "11", "-3.5").',
+    `- One bank item may include multiple 소문항. ${typeLabel} max **${maxSub}** sub-questions (item points split evenly). Prefer 2+ when it fits the skill; single-answer items are still OK.`,
+    '- Mark 소문항 clearly in markdown with line-leading ①②… or (1)(2)… Each 소문항 MUST have its **own** short-answer slot. `set_short_answers` length = 소문항 count (one number per entry). Never pack several answers into one string.',
+    '- answer_code must print one numeric line per 소문항 (same order); then set_short_answers from those lines (e.g. ["0.12", "11"]).',
     '- Do not author items whose key is a category/string (e.g. "C", "Yes", column name). Redesign so the reported value is numeric after round/trunc.',
   ].join('\n');
 }
 
-export function authorType13AnswerFormatPromptKo(): string {
+export function authorType13AnswerFormatPromptKo(opts?: {
+  taskType?: 1 | 3;
+}): string {
+  const maxSub = opts?.taskType === 3 ? 3 : 5;
+  const typeLabel = opts?.taskType === 3 ? '제3유형' : '제1유형';
   return [
     '## 제1·3유형 답안 형식 (필수)',
-    '- 모든 단답 정답은 **숫자만** 가능합니다 (부호·소수점만 허용). 문자·라벨·단위·쉼표·복수 값 금지.',
+    '- 모든 단답 정답은 **숫자만** 가능합니다 (부호·소수점만 허용). 한 칸에 문자·라벨·단위·쉼표·여러 값 금지.',
     '- 문제 본문에 **반올림** 또는 **절사**와 자리수(또는 정수)를 반드시 명시하세요. 예: "반올림하여 소수점 둘째 자리까지 구하시오".',
-    '- 정답 코드도 동일 규칙으로 round/절사 후 출력하고, 그 숫자 문자열만 set_short_answers 하세요 (예: "0.12", "11").',
+    `- 한 문항 안에 소문항을 둘 수 있습니다. ${typeLabel} 소문항 **최대 ${maxSub}개** (문항 배점은 소문항으로 균등 분할). 스킬에 맞으면 2개 이상을 권장하고, 단일도 가능합니다.`,
+    '- 본문에 줄 앞 ①②… 또는 (1)(2)… 로 소문항을 표시하세요. **소문항마다 별도 정답란**. `set_short_answers` 길이 = 소문항 수. 한 문자열에 여러 답 금지.',
+    '- 정답 코드는 소문항 순서대로 한 줄에 숫자 하나씩 출력한 뒤 set_short_answers 하세요 (예: ["0.12", "11"]).',
     '- 카테고리/문자열 정답 문항은 만들지 마세요. 반드시 수치를 round·절사해 답하게 설계하세요.',
   ].join('\n');
 }
@@ -218,14 +230,51 @@ export function isNumericShortAnswer(raw: string): boolean {
   return /^-?(?:\d+(?:\.\d+)?|\.\d+)$/.test(s);
 }
 
-export function validateNumericShortAnswers(answers: string[]): {
+export function validateNumericShortAnswers(
+  answers: string[],
+  opts?: { taskType?: 1 | 2 | 3 },
+): {
   ok: boolean;
   answers: string[];
   rejected: string[];
+  error?: string;
 } {
-  const trimmed = answers.map((a) => String(a ?? '').trim());
+  // Split packed "1\n2\n3" / "1,2,3" into separate 소문항 slots first.
+  const expanded: string[] = [];
+  for (const raw of answers) {
+    const s = String(raw ?? '').trim();
+    if (!s) {
+      expanded.push('');
+      continue;
+    }
+    if (/[\n\r,]/.test(s)) {
+      const parts = s
+        .split(/[\n\r,]+/)
+        .map((p) => p.trim())
+        .filter(Boolean);
+      if (parts.length > 1 && parts.every((p) => isNumericShortAnswer(p))) {
+        expanded.push(...parts);
+        continue;
+      }
+    }
+    expanded.push(s);
+  }
+  const trimmed = expanded.length ? expanded : [''];
   const rejected = trimmed.filter((a) => a && !isNumericShortAnswer(a));
   const empty = trimmed.every((a) => !a);
+  const max =
+    opts?.taskType === 1 ? 5 : opts?.taskType === 3 ? 3 : undefined;
+  if (max != null && trimmed.length > max) {
+    return {
+      ok: false,
+      answers: trimmed.slice(0, max),
+      rejected,
+      error: `Too many 소문항 (max ${max} for type ${opts?.taskType}).`,
+    };
+  }
+  if (trimmed.length < 1) {
+    return { ok: false, answers: [''], rejected, error: 'Need at least one answer.' };
+  }
   return {
     ok: !empty && rejected.length === 0 && trimmed.some((a) => a.length > 0),
     answers: trimmed,

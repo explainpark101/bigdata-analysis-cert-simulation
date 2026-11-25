@@ -2,7 +2,13 @@ import { useMemo, useState } from 'react';
 import { Copy, Play, Plus, Trash2 } from 'lucide-react';
 import { CodeEditor } from '@/components/editor/CodeEditor';
 import { ConfirmModal } from '@/components/exam/ConfirmModal';
+import { OFFICIAL_MAX_SUB_QUESTIONS } from '@/lib/examOfficialSpec';
 import { resolveAssets } from '@/lib/projectIO';
+import {
+  countSubQuestionsForType,
+  ensureShortAnswersForSubQuestions,
+  expandPackedShortAnswers,
+} from '@/lib/subQuestions';
 import { mountAssetsToPyodide } from '@/runtimes/fsMount';
 import { preloadPyodide, runPython } from '@/runtimes/pyodideRuntime';
 import { preloadWebR, runR } from '@/runtimes/webrRuntime';
@@ -19,7 +25,9 @@ function syncShortFields(answers: string[]): Pick<
   BankProblem,
   'shortAnswers' | 'shortAnswer'
 > {
-  const cleaned = answers.length ? answers : [''];
+  const cleaned = expandPackedShortAnswers(
+    answers.length ? answers : [''],
+  );
   return {
     shortAnswers: cleaned,
     shortAnswer: cleaned[0] ?? '',
@@ -41,10 +49,21 @@ export function AnswerAuthorPanel({
 
   const answerPython = problem.answerCode?.python ?? '';
   const answerR = problem.answerCode?.r ?? '';
-  const shortAnswers =
-    problem.shortAnswers?.length
-      ? problem.shortAnswers
-      : [problem.shortAnswer ?? ''];
+  const maxSubs =
+    problem.taskType === 1 || problem.taskType === 3
+      ? OFFICIAL_MAX_SUB_QUESTIONS[problem.taskType]
+      : 1;
+  // Display pads to 소문항 count; persist only when the user edits a field.
+  const shortAnswers = ensureShortAnswersForSubQuestions(
+    problem.markdown,
+    problem.shortAnswers,
+    problem.shortAnswer,
+    problem.taskType,
+  );
+  const subQuestionHint = countSubQuestionsForType(
+    problem.markdown,
+    problem.taskType,
+  );
 
   const activeCode = useMemo(
     () => (codeLang === 'python' ? answerPython : answerR),
@@ -54,10 +73,11 @@ export function AnswerAuthorPanel({
   const setShortAt = (index: number, value: string) => {
     const next = [...shortAnswers];
     next[index] = value;
-    onPatch(syncShortFields(next));
+    onPatch(syncShortFields(next.slice(0, maxSubs)));
   };
 
   const addShort = () => {
+    if (shortAnswers.length >= maxSubs) return;
     onPatch(syncShortFields([...shortAnswers, '']));
   };
 
@@ -83,7 +103,7 @@ export function AnswerAuthorPanel({
       setShortAt(emptyIdx, trimmed);
     } else if (shortAnswers.length === 1 && !shortAnswers[0]?.trim()) {
       setShortAt(0, trimmed);
-    } else {
+    } else if (shortAnswers.length < maxSubs) {
       onPatch(syncShortFields([...shortAnswers, trimmed]));
     }
   };
@@ -202,21 +222,38 @@ export function AnswerAuthorPanel({
           <div className="row" style={{ justifyContent: 'space-between' }}>
             <h3 className="edit-card__subhead" style={{ margin: 0 }}>
               단답형 정답
+              {shortAnswers.length > 1 ? (
+                <span className="muted"> · 소문항 {shortAnswers.length}칸</span>
+              ) : null}
             </h3>
             <button
               type="button"
               className="ghost-btn btn-with-icon"
               onClick={addShort}
+              disabled={shortAnswers.length >= maxSubs}
+              title={
+                shortAnswers.length >= maxSubs
+                  ? `제${problem.taskType}유형 소문항 최대 ${maxSubs}개`
+                  : '소문항 칸 추가'
+              }
             >
               <Plus size={14} />
               칸 추가
             </button>
           </div>
+          <p className="muted" style={{ margin: '0.25rem 0 0.5rem' }}>
+            한 문항에 소문항을 둘 수 있습니다 (제{problem.taskType}유형 최대{' '}
+            {maxSubs}개
+            {subQuestionHint > 1 ? ` · 본문 감지 ${subQuestionHint}칸` : ''}
+            ). 소문항마다 별도 정답을 넣으세요. 시험 조립은 이 칸 수를 따릅니다.
+          </p>
           <div className="short-answer-author__fields">
             {shortAnswers.map((value, index) => (
               <div key={`sa-${index}`} className="short-answer-author__row">
                 <label>
-                  답안 {index + 1}
+                  {shortAnswers.length > 1
+                    ? `소문항 ${index + 1}`
+                    : `답안 ${index + 1}`}
                   <input
                     value={value}
                     onChange={(e) => setShortAt(index, e.target.value)}
