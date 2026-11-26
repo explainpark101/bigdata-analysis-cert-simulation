@@ -1714,25 +1714,36 @@ body.is-resizing-y * {
 .grade-result-item__badge {
   font-size: 11px;
   font-weight: 700;
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
   background: var(--dq-ghost);
+  color: var(--dq-text);
 }
 
+.grade-report-card--pass .grade-result-item__badge,
 .grade-result-item--pass .grade-result-item__badge {
-  background: color-mix(in srgb, var(--dq-success) 22%, transparent);
-  color: var(--dq-success);
+  --grade-badge-bg: var(--dq-success);
+  background: var(--grade-badge-bg);
+  color: #fff;
+  color: contrast-color(var(--grade-badge-bg));
 }
 
+.grade-report-card--fail .grade-result-item__badge,
+.grade-report-card--unsubmitted .grade-result-item__badge,
 .grade-result-item--fail .grade-result-item__badge,
 .grade-result-item--unsubmitted .grade-result-item__badge {
-  background: var(--dq-danger-bg);
-  color: var(--dq-danger-text);
+  --grade-badge-bg: var(--dq-danger);
+  background: var(--grade-badge-bg);
+  color: #fff;
+  color: contrast-color(var(--grade-badge-bg));
 }
 
+.grade-report-card--partial .grade-result-item__badge,
 .grade-result-item--partial .grade-result-item__badge {
-  background: color-mix(in srgb, #ca8a04 22%, transparent);
-  color: #a16207;
+  --grade-badge-bg: #ca8a04;
+  background: var(--grade-badge-bg);
+  color: #111;
+  color: contrast-color(var(--grade-badge-bg));
 }
 
 .grade-result-item__score {
@@ -1749,6 +1760,146 @@ body.is-resizing-y * {
   font-family: var(--dq-mono);
   font-size: 11px;
   line-height: 1.45;
+  color: var(--dq-muted);
+}
+
+/* Full-screen grading progress (native <progress>, custom-styled). */
+.grade-loading {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(
+      1200px 600px at 50% -10%,
+      color-mix(in srgb, var(--dq-accent) 18%, transparent),
+      transparent 60%
+    ),
+    var(--dq-bg);
+  color: var(--dq-text);
+}
+
+.grade-loading__card {
+  width: min(440px, 100%);
+  padding: 28px 28px 24px;
+  border-radius: 16px;
+  border: 1px solid var(--dq-border);
+  background: var(--dq-surface);
+  box-shadow: 0 12px 40px rgb(15 23 42 / 0.12);
+}
+
+[data-theme='dark'] .grade-loading__card {
+  box-shadow: 0 16px 48px rgb(0 0 0 / 0.45);
+}
+
+.grade-loading__eyebrow {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dq-accent);
+}
+
+.grade-loading__title {
+  margin: 0;
+  font-size: 1.65rem;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  color: var(--dq-text);
+}
+
+.grade-loading__sub {
+  margin: 8px 0 22px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--dq-muted);
+}
+
+.grade-loading__label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--dq-text);
+}
+
+.grade-loading__step {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--dq-muted);
+  font-size: 12px;
+}
+
+.grade-loading__progress {
+  --progress-bar-radius: 999px;
+  --progress-bar-track: var(--dq-surface-2);
+  --progress-bar-fill: var(--dq-accent);
+  appearance: none;
+  border: 0 solid;
+  overflow: clip;
+  width: 100%;
+  height: 12px;
+  border-radius: var(--progress-bar-radius);
+  background: var(--progress-bar-track);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.12);
+  accent-color: var(--dq-accent);
+}
+
+.grade-loading__progress::-webkit-progress-bar {
+  background: transparent;
+}
+
+.grade-loading__progress::-webkit-progress-value {
+  background: var(--progress-bar-fill);
+  border-radius: var(--progress-bar-radius);
+  transition: inline-size 0.3s ease;
+}
+
+.grade-loading__progress::-moz-progress-bar {
+  background: var(--progress-bar-fill);
+  border-radius: var(--progress-bar-radius);
+}
+
+.grade-loading__progress:indeterminate::-moz-progress-bar {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--progress-bar-fill) 40%,
+    var(--progress-bar-fill) 60%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: grade-progress-indeterminate 1.2s linear infinite;
+}
+
+@keyframes grade-progress-indeterminate {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .grade-loading__progress::-webkit-progress-value {
+    transition: none;
+  }
+  .grade-loading__progress:indeterminate::-moz-progress-bar {
+    animation: none;
+  }
+}
+
+.grade-loading__pct {
+  margin: 10px 0 0;
+  text-align: right;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
   color: var(--dq-muted);
 }
 
@@ -1841,6 +1992,13 @@ body.is-resizing-y * {
   cursor: pointer;
 }
 
+.grade-report-code-card.grade-report-card--pass,
+.grade-report-code-card.grade-report-card--fail,
+.grade-report-code-card.grade-report-card--unsubmitted,
+.grade-report-code-card.grade-report-card--partial {
+  background: var(--dq-surface);
+}
+
 .grade-report-code-card:hover {
   border-color: color-mix(in srgb, var(--dq-accent) 40%, var(--dq-border));
 }
@@ -1924,23 +2082,27 @@ body.is-resizing-y * {
 
 .grade-report-card {
   border: 1px solid var(--dq-border);
-  border-radius: 10px;
-  padding: 14px 16px;
+  border-radius: 12px;
+  padding: 16px 18px;
   margin-bottom: 12px;
   background: var(--dq-surface);
+  color: var(--dq-text);
 }
 
 .grade-report-card--pass {
-  border-color: color-mix(in srgb, var(--dq-success) 45%, var(--dq-border));
+  border-color: color-mix(in srgb, var(--dq-success) 50%, var(--dq-border));
+  background: color-mix(in srgb, var(--dq-success) 6%, var(--dq-surface));
 }
 
 .grade-report-card--fail,
 .grade-report-card--unsubmitted {
-  border-color: color-mix(in srgb, var(--dq-danger) 40%, var(--dq-border));
+  border-color: color-mix(in srgb, var(--dq-danger) 45%, var(--dq-border));
+  background: color-mix(in srgb, var(--dq-danger) 6%, var(--dq-surface));
 }
 
 .grade-report-card--partial {
-  border-color: color-mix(in srgb, #ca8a04 45%, var(--dq-border));
+  border-color: color-mix(in srgb, #ca8a04 50%, var(--dq-border));
+  background: color-mix(in srgb, #ca8a04 7%, var(--dq-surface));
 }
 
 .grade-report-card__head {
@@ -2022,8 +2184,36 @@ body.is-resizing-y * {
 }
 
 .grade-report-pre--muted {
-  color: var(--dq-muted);
+  color: var(--dq-text);
+  opacity: 0.82;
   margin-top: 8px;
+}
+
+.grade-report-summary.edit-card {
+  border: 1px solid var(--dq-border);
+  background: var(--dq-surface);
+  color: var(--dq-text);
+}
+
+.grade-report-summary__score strong {
+  color: var(--dq-text);
+  font-size: 1.35rem;
+}
+
+.grade-report-answers th {
+  background: var(--dq-surface-2);
+  color: var(--dq-text);
+}
+
+.grade-report-coach__reply {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--dq-border);
+  background: var(--dq-surface-2);
+  color: var(--dq-text);
+  font-size: 13px;
+  line-height: 1.55;
 }
 
 .grade-report-log {

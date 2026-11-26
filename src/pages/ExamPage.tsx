@@ -54,6 +54,7 @@ const EXAM_PAGED_MQ =
 import {
   forceSubmitPending,
   gradeExam,
+  listSubmitQuizzes,
   listUnsubmitted,
 } from '@/lib/examGrade';
 import {
@@ -63,6 +64,12 @@ import {
   summarizeActivity,
 } from '@/lib/examActivityLog';
 import { saveGradeResult } from '@/lib/gradeResultStore';
+import {
+  failGradeProgress,
+  finishGradeProgress,
+  startGradeProgress,
+  updateGradeProgress,
+} from '@/lib/gradeProgressStore';
 import { collectExamAssetIds, materializeExam } from '@/lib/projectIO';
 import {
   hydrateProjectAssets,
@@ -539,6 +546,7 @@ export default function ExamPage() {
       if (!exam || gradeBusy) return;
       setGradeBusy(true);
       setGradeConfirmOpen(false);
+
       try {
         let gradingExam = exam;
         if (opts?.submitPending) {
@@ -570,6 +578,16 @@ export default function ExamPage() {
             }
           }
         }
+
+        const submitCount = listSubmitQuizzes(gradingExam).length;
+        startGradeProgress({
+          examId: exam.id,
+          examTitle: exam.title,
+          total: Math.max(1, submitCount),
+        });
+        // Show loading UI immediately; grading continues after navigation.
+        navigate('/exam/result');
+
         appendActivityEvent(exam.id, {
           type: 'grade',
           at: Date.now(),
@@ -577,6 +595,16 @@ export default function ExamPage() {
         });
         const report = await gradeExam(gradingExam, {
           timeoutMs: maxRunTimeoutMs(gradingExam.maxRunSeconds),
+          onProgress: (p) => {
+            updateGradeProgress({
+              current: p.current,
+              total: Math.max(1, p.total),
+              label:
+                p.current >= p.total
+                  ? '채점 완료'
+                  : `채점 중 · ${p.title || `문항 ${p.current + 1}`}`,
+            });
+          },
         });
         const gradedAtMs = Date.now();
         const startMs = ensureExamStartMs(exam.id);
@@ -591,8 +619,9 @@ export default function ExamPage() {
           activity,
           rawEvents: events,
         });
-        navigate('/exam/result');
+        finishGradeProgress();
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
         const gradedAtMs = Date.now();
         const startMs = ensureExamStartMs(exam.id);
         const events = loadActivityEvents(exam.id);
@@ -607,7 +636,7 @@ export default function ExamPage() {
                 quizId: 'error',
                 title: '채점 오류',
                 status: 'fail',
-                detail: err instanceof Error ? err.message : String(err),
+                detail: message,
                 earned: 0,
                 max: 0,
               },
@@ -619,6 +648,7 @@ export default function ExamPage() {
           activity: summarizeActivity(events, gradedAtMs),
           rawEvents: events,
         });
+        failGradeProgress(message);
         navigate('/exam/result');
       } finally {
         setGradeBusy(false);

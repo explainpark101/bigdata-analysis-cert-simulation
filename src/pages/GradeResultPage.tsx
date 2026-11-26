@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Home, Sparkles } from 'lucide-react';
 import {
@@ -10,6 +10,12 @@ import type { GradeItem, GradeStatus } from '@/lib/examGrade';
 import { askGradeCoach } from '@/lib/ai/gradeCoach';
 import { renderMarkdown } from '@/lib/markdown';
 import { EdgeResizeHandle } from '@/components/layout/EdgeResizeHandle';
+import {
+  getGradeProgress,
+  gradeProgressRatio,
+  subscribeGradeProgress,
+  type GradeProgressState,
+} from '@/lib/gradeProgressStore';
 
 const CODE_W_DEFAULT = 420;
 const CODE_W_MIN = 260;
@@ -41,9 +47,52 @@ function itemHeading(item: GradeItem): string {
   return `${item.taskType ? `제${item.taskType}유형 · ` : ''}${item.title}`;
 }
 
+function GradeLoadingScreen({ progress }: { progress: GradeProgressState }) {
+  const progressId = useId();
+  const ratio = gradeProgressRatio(progress);
+  const pct = Math.round(ratio * 100);
+  const determinate = progress.total > 0 && progress.phase === 'running';
+  const stepText =
+    progress.total > 0
+      ? `${Math.min(progress.current + (progress.phase === 'done' ? 0 : 1), progress.total)} / ${progress.total}`
+      : '';
+
+  return (
+    <div className="grade-loading" role="status" aria-live="polite">
+      <div className="grade-loading__card">
+        <p className="grade-loading__eyebrow">채점</p>
+        <h1 className="grade-loading__title">채점하는 중</h1>
+        <p className="grade-loading__sub">
+          {progress.examTitle
+            ? `${progress.examTitle} · 잠시만 기다려 주세요.`
+            : '답안을 채점하고 있습니다. 잠시만 기다려 주세요.'}
+        </p>
+        <label className="grade-loading__label" htmlFor={progressId}>
+          {progress.label || '채점 중…'}
+          {stepText ? <span className="grade-loading__step">{stepText}</span> : null}
+        </label>
+        <progress
+          id={progressId}
+          className="grade-loading__progress"
+          max={100}
+          {...(determinate || progress.phase === 'done'
+            ? { value: pct }
+            : {})}
+        />
+        <p className="grade-loading__pct" aria-hidden="true">
+          {determinate || progress.phase === 'done' ? `${pct}%` : '준비 중'}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export default function GradeResultPage() {
   const [snap, setSnap] = useState<GradeResultSnapshot | null>(null);
   const [ready, setReady] = useState(false);
+  const [progress, setProgress] = useState<GradeProgressState>(() =>
+    getGradeProgress(),
+  );
   const [coachBusyId, setCoachBusyId] = useState<string | null>(null);
   const [coachReply, setCoachReply] = useState<Record<string, string>>({});
   const [coachError, setCoachError] = useState<Record<string, string>>({});
@@ -51,7 +100,27 @@ export default function GradeResultPage() {
   const [codeWidth, setCodeWidth] = useState(CODE_W_DEFAULT);
   const [narrow, setNarrow] = useState(false);
 
+  useEffect(() => subscribeGradeProgress(setProgress), []);
+
   useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      void loadGradeResult().then((data) => {
+        if (cancelled) return;
+        setSnap(data);
+        setSelectedId((prev) => prev ?? data?.report.items[0]?.quizId ?? null);
+        setReady(true);
+      });
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // When grading finishes, reload the saved snapshot.
+  useEffect(() => {
+    if (progress.phase !== 'done' && progress.phase !== 'error') return;
     let cancelled = false;
     void loadGradeResult().then((data) => {
       if (cancelled) return;
@@ -62,7 +131,7 @@ export default function GradeResultPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [progress.phase, progress.updatedAt]);
 
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 900px)');
@@ -96,6 +165,10 @@ export default function GradeResultPage() {
       setCoachBusyId(null);
     }
   };
+
+  if (progress.phase === 'running') {
+    return <GradeLoadingScreen progress={progress} />;
+  }
 
   if (!ready) {
     return <div className="storage-boot">채점 리포트 불러오는 중…</div>;
@@ -188,7 +261,7 @@ export default function GradeResultPage() {
                 <button
                   key={`code-${item.quizId}`}
                   type="button"
-                  className={`grade-report-code-card${active ? ' is-active' : ''}`}
+                  className={`grade-report-code-card grade-report-card--${item.status}${active ? ' is-active' : ''}`}
                   onClick={() => setSelectedId(item.quizId)}
                 >
                   <header className="grade-report-code-card__head">

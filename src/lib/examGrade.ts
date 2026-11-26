@@ -602,23 +602,51 @@ export async function hydrateType2SubmissionsFromIdb(
   return changed ? { ...exam, quizzes } : exam;
 }
 
+export type GradeExamProgress = {
+  /** 0-based index of the quiz about to be / being graded. */
+  current: number;
+  total: number;
+  quizId: string;
+  title: string;
+};
+
 /** Grade all submit-kind quizzes against answer keys / grading scripts. */
 export async function gradeExam(
   exam: ExamSet,
-  opts?: { timeoutMs?: number },
+  opts?: {
+    timeoutMs?: number;
+    onProgress?: (p: GradeExamProgress) => void;
+  },
 ): Promise<GradeReport> {
   const timeoutMs = opts?.timeoutMs ?? OFFICIAL_MAX_RUN_SECONDS * 1000;
   const hydrated = await hydrateType2SubmissionsFromIdb(exam);
   const submit = listSubmitQuizzes(hydrated);
   const unsubmittedCount = submit.filter((q) => !q.submitted).length;
   const items: GradeItem[] = [];
+  const total = submit.length;
 
-  for (const quiz of submit) {
+  for (let i = 0; i < submit.length; i += 1) {
+    const quiz = submit[i];
+    opts?.onProgress?.({
+      current: i,
+      total,
+      quizId: quiz.id,
+      title: quiz.title,
+    });
     if (quiz.taskType === 2 || quiz.submitFormat === 'csv') {
       items.push(await gradeType2Quiz(quiz, timeoutMs));
     } else {
       items.push(gradeShortQuiz(quiz));
     }
+  }
+
+  if (total > 0) {
+    opts?.onProgress?.({
+      current: total,
+      total,
+      quizId: submit[total - 1]?.id ?? '',
+      title: '채점 완료',
+    });
   }
 
   const earned = items.reduce((s, i) => s + i.earned, 0);
