@@ -202,30 +202,32 @@ export function ProblemAuthorTab({
             <button
               type="button"
               className="ghost-btn btn-with-icon"
-              title="프로젝트/시험 ZIP을 여러 개 선택해 문제은행으로 병합"
+              title="문제/프로젝트/시험 ZIP을 여러 개 선택해 한 번에 문제은행으로 불러오기"
               onClick={() => {
                 // HTML file picker only — Tauri JS dialog plugin OOMs before paint.
                 zipRef.current?.click();
               }}
             >
               <Upload size={14} />
-              ZIP
+              문제 불러오기
             </button>
             <input
               ref={zipRef}
               className="hidden-file"
               type="file"
-              accept=".zip,application/zip,.exam.zip,.project.zip"
+              accept=".zip,application/zip,.exam.zip,.project.zip,.problem.zip"
               multiple
               onChange={async (e) => {
                 const files = Array.from(e.target.files ?? []);
                 e.target.value = '';
                 if (!files.length) return;
                 try {
-                  onMessage(`문제은행 병합 중… (${files.length}개 ZIP)`);
+                  onMessage(
+                    `문제 파일 불러오는 중… (${files.length}개)`,
+                  );
                   const result = await mergeBankZips(files);
                   onMessage(
-                    `문제은행 병합: 문제 +${result.addedProblems} · 파일 +${result.addedAssets}` +
+                    `문제 불러오기: 문제 +${result.addedProblems} · 파일 +${result.addedAssets}` +
                       (result.labels.length
                         ? ` (${result.labels.join(', ')})`
                         : ''),

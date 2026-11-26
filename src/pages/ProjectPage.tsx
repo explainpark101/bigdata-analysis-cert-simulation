@@ -53,11 +53,13 @@ import {
   OFFICIAL_TIME_LIMIT_MINUTES,
   OFFICIAL_TOTAL_ITEMS,
   OFFICIAL_TOTAL_POINTS,
+  countBankByType,
   countIdsByType,
   isOfficialStructure,
   officialStructureSummary,
   pickOfficialProblemIds,
 } from '@/lib/examOfficialSpec';
+import { autoUploadExamFromProject } from '@/lib/autoUpload';
 
 interface PendingImportSession {
   ready: PendingAssetImport[];
@@ -118,6 +120,7 @@ export default function ProjectPage() {
   const { setExam } = useExamSession();
 
   const [tab, setTab] = useState<Tab>('assets');
+  const bankZipRef = useRef<HTMLInputElement>(null);
   const [selectedId, setSelectedId] = useState(project.bank[0]?.id ?? '');
   const [selectedAssetId, setSelectedAssetId] = useState(
     project.assets[0]?.id ?? '',
@@ -552,6 +555,45 @@ export default function ProjectPage() {
             style={{ width: bankSidebarWidth, flexBasis: bankSidebarWidth }}
           >
             <aside className="edit-sidebar">
+              <div className="bank-import-bar">
+                <button
+                  type="button"
+                  className="ghost-btn btn-with-icon"
+                  title="문제 ZIP을 여러 개 선택해 한 번에 불러오기"
+                  onClick={() => bankZipRef.current?.click()}
+                >
+                  <Upload size={14} />
+                  문제 불러오기
+                </button>
+                <input
+                  ref={bankZipRef}
+                  className="hidden-file"
+                  type="file"
+                  accept=".zip,application/zip,.exam.zip,.project.zip,.problem.zip"
+                  multiple
+                  onChange={async (e) => {
+                    const files = Array.from(e.target.files ?? []);
+                    e.target.value = '';
+                    if (!files.length) return;
+                    try {
+                      setMessage(
+                        `문제 파일 불러오는 중… (${files.length}개)`,
+                      );
+                      const result = await mergeBankZips(files);
+                      setMessage(
+                        `문제 불러오기: 문제 +${result.addedProblems} · 파일 +${result.addedAssets}` +
+                          (result.labels.length
+                            ? ` (${result.labels.join(', ')})`
+                            : ''),
+                      );
+                    } catch (err) {
+                      setMessage(
+                        err instanceof Error ? err.message : String(err),
+                      );
+                    }
+                  }}
+                />
+              </div>
               {([1, 2, 3] as TaskType[]).map((tt) => (
                 <div key={tt} className="bank-type-group">
                   <div className="bank-type-group__head">
@@ -921,8 +963,12 @@ export default function ProjectPage() {
           }}
           onAssembleExam={(problems, opts) => {
             // This batch only — never pull older bank / sample problems.
+            const counts = countBankByType(problems);
             const byId = new Map(problems.map((p) => [p.id, p]));
-            const ordered = pickOfficialProblemIds(problems)
+            const orderedIds = isOfficialStructure(counts)
+              ? pickOfficialProblemIds(problems)
+              : problems.map((p) => p.id);
+            const ordered = orderedIds
               .map((id) => byId.get(id))
               .filter((p): p is (typeof problems)[number] => Boolean(p));
             if (!ordered.length) {
@@ -936,9 +982,12 @@ export default function ProjectPage() {
               minute: '2-digit',
               second: '2-digit',
             });
+            const structureNote = isOfficialStructure(counts)
+              ? '공식 구성(3+1+2)'
+              : `맞춤 구성(1유형 ${counts[1]} · 2유형 ${counts[2]} · 3유형 ${counts[3]})`;
             const exam = addExam({
               title: `AI 자동 시험 ${stamp}`,
-              description: `제13회 가이드 공식 구성(3+1+2) · 이번 생성 문항만 · ${ordered
+              description: `${structureNote} · 이번 생성 문항만 · ${ordered
                 .map((p) => `제${p.taskType}유형`)
                 .join(' · ')}`,
               problemIds: ordered.map((p) => p.id),
@@ -946,7 +995,24 @@ export default function ProjectPage() {
               maxRunSeconds: OFFICIAL_MAX_RUN_SECONDS,
             });
             setMessage(
-              `시험 조립 완료: ${exam.title} · ${ordered.length}문항 (이번 생성분만, 만점 ${OFFICIAL_TOTAL_POINTS}점)`,
+              `시험 조립 완료: ${exam.title} · ${ordered.length}문항 (이번 생성분만)`,
+            );
+            // React state may lag; merge this batch + new exam for webhook upload.
+            const bankById = new Map(project.bank.map((b) => [b.id, b]));
+            for (const p of ordered) bankById.set(p.id, p);
+            const uploadSnapshot = {
+              ...project,
+              bank: [...bankById.values()],
+              exams: [
+                ...project.exams.filter((e) => e.id !== exam.id),
+                exam,
+              ],
+              activeExamId: exam.id,
+            };
+            void autoUploadExamFromProject(uploadSnapshot, exam.id).then(
+              (msg) => {
+                if (msg) setMessage((prev) => `${prev} · ${msg}`);
+              },
             );
             // Stay on author tab while multi-paper batch is still running.
             if (opts?.navigate !== false) setTab('exam');

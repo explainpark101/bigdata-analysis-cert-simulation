@@ -54,10 +54,8 @@ import type {
   TaskType,
 } from '@/types/project';
 import {
-  OFFICIAL_AUTOGEN_SEQUENCE,
   OFFICIAL_COUNTS,
   OFFICIAL_POINTS_PER_ITEM,
-  OFFICIAL_TOTAL_ITEMS,
   countBankByType,
   isOfficialStructure,
   OFFICIAL_MAX_SUB_QUESTIONS,
@@ -65,6 +63,7 @@ import {
   takeAllOrRandom,
 } from '@/lib/examOfficialSpec';
 import { ensureShortAnswersForSubQuestions } from '@/lib/subQuestions';
+import { autoUploadGeneratedProblem } from '@/lib/autoUpload';
 import { ConfirmModal } from '@/components/exam/ConfirmModal';
 import { EdgeResizeHandle } from '@/components/layout/EdgeResizeHandle';
 import {
@@ -95,8 +94,26 @@ interface AuthorChatDockProps {
   ) => void;
 }
 
-const AUTO_EXAM_COUNT_MIN = 1;
-const AUTO_EXAM_COUNT_MAX = 10;
+const AUTO_ROUND_MIN = 1;
+const AUTO_ROUND_MAX = 10;
+const AUTO_TYPE_COUNT_MAX = 20;
+
+type TypeGenCounts = Record<TaskType, number>;
+
+const OFFICIAL_TYPE_COUNTS: TypeGenCounts = {
+  1: OFFICIAL_COUNTS[1],
+  2: OFFICIAL_COUNTS[2],
+  3: OFFICIAL_COUNTS[3],
+};
+
+function buildSequenceFromCounts(counts: TypeGenCounts): TaskType[] {
+  const seq: TaskType[] = [];
+  for (const tt of [1, 2, 3] as TaskType[]) {
+    const n = Math.max(0, Math.min(AUTO_TYPE_COUNT_MAX, Math.round(counts[tt]) || 0));
+    for (let i = 0; i < n; i++) seq.push(tt);
+  }
+  return seq;
+}
 
 type UserImage = { dataUrl: string; name: string };
 
@@ -238,10 +255,12 @@ function autoPromptForType(
   taskType: TaskType,
   refCount: number,
   ordinalInType: number,
+  totalInType: number,
   refMode: 'selected' | 'auto',
   sameTypeSiblings: BankProblem[] = [],
 ): string {
   const pts = OFFICIAL_POINTS_PER_ITEM[taskType];
+  const total = Math.max(1, totalInType);
   const refLine =
     refCount === 0
       ? `참고 문항이 없습니다. SYNTHESIZE로 빅데이터분석기사 실기(제13회 가이드) 작업형 ${taskType}유형 새 문항을 작성·저장하세요.`
@@ -252,7 +271,7 @@ function autoPromptForType(
     sameTypeSiblings.length > 0
       ? [
           '## 같은 유형 중복 방지 (기획 단계 · 필수)',
-          `이번 시험지에 이미 만든 제${taskType}유형 문항 ${sameTypeSiblings.length}개:`,
+          `이번 배치에 이미 만든 제${taskType}유형 문항 ${sameTypeSiblings.length}개:`,
           ...sameTypeSiblings.map(siblingProblemBrief),
           '- 데이터 설계·스토리·요구 스킬·지표가 위 문항과 비슷한지 **먼저 한 줄로 판단**하세요 (예: "유사함 → 재기획" / "다름 → 진행").',
           '- 비슷하면 도메인·컬럼·스킬·지표·스토리를 바꿔 재기획한 뒤에만 데이터/본문 작업으로 넘어가세요.',
@@ -262,7 +281,7 @@ function autoPromptForType(
       : [];
   return [
     refLine,
-    `이번 생성은 제${taskType}유형 ${ordinalInType}/${OFFICIAL_COUNTS[taskType]}번째 · 문항 배점 ${pts}점입니다.`,
+    `이번 생성은 제${taskType}유형 ${ordinalInType}/${total}번째 · 문항 배점 ${pts}점입니다.`,
     '',
     ...siblingBlock,
     '## 참고 분석',
@@ -277,9 +296,8 @@ function autoPromptForType(
     authorStatsResearchPromptKo(),
     '',
     authorDifficultyPromptKo({
-      // Last type-1/3 item in a paper leans formula / custom-metric hard.
-      preferHard:
-        taskType !== 2 && ordinalInType >= OFFICIAL_COUNTS[taskType],
+      // Last type-1/3 item in a batch leans formula / custom-metric hard.
+      preferHard: taskType !== 2 && ordinalInType >= total,
       metricHint: pickHardMetricHint(taskType, ordinalInType),
     }),
     '- 단순 사칙/한 줄 집계 장난감 문제는 금지합니다.',
@@ -359,9 +377,13 @@ export function AuthorChatDock({
   const [liveStream, setLiveStream] = useState('');
   const [liveTools, setLiveTools] = useState<string[]>([]);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
-  const [examCountOpen, setExamCountOpen] = useState(false);
-  const [examCountInput, setExamCountInput] = useState('1');
-  const examCountInputRef = useRef<HTMLInputElement>(null);
+  const [typeGenOpen, setTypeGenOpen] = useState(false);
+  const [typeCounts, setTypeCounts] = useState<TypeGenCounts>({
+    ...OFFICIAL_TYPE_COUNTS,
+  });
+  const [roundInput, setRoundInput] = useState('1');
+  const [assembleExam, setAssembleExam] = useState(true);
+  const type1InputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const draftRef = useRef(draft);
   const messagesRef = useRef(messages);
@@ -584,6 +606,17 @@ export function AuthorChatDock({
           if (result.savedProblem) {
             const navigate = opts?.navigateOnSave !== false;
             onSaved(result.savedProblem, { navigate });
+            const hookMsg = await autoUploadGeneratedProblem(
+              projectRef.current,
+              result.savedProblem,
+              ctrl.signal,
+            );
+            if (hookMsg) {
+              setMessages((prev) => [
+                ...prev,
+                { role: 'assistant', content: hookMsg },
+              ]);
+            }
             if (navigate) {
               await clearAuthorSession(project.id);
               setMessages([]);
@@ -618,28 +651,56 @@ export function AuthorChatDock({
     }
   };
 
-  const clampExamCount = (raw: string): number => {
+  const clampRound = (raw: string): number => {
     const n = Math.round(Number(raw));
-    if (!Number.isFinite(n)) return AUTO_EXAM_COUNT_MIN;
-    return Math.min(AUTO_EXAM_COUNT_MAX, Math.max(AUTO_EXAM_COUNT_MIN, n));
+    if (!Number.isFinite(n)) return AUTO_ROUND_MIN;
+    return Math.min(AUTO_ROUND_MAX, Math.max(AUTO_ROUND_MIN, n));
   };
 
-  const openExamCountPrompt = () => {
-    if (busyRef.current) return;
-    setExamCountInput('1');
-    setExamCountOpen(true);
-    window.setTimeout(() => examCountInputRef.current?.select(), 0);
+  const clampTypeCount = (raw: number | string): number => {
+    const n = Math.round(Number(raw));
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return Math.min(AUTO_TYPE_COUNT_MAX, n);
   };
 
-  const generateAllTypes = async (examCountIn: number) => {
+  const openTypeGenPrompt = () => {
     if (busyRef.current) return;
-    const examCount = clampExamCount(String(examCountIn));
+    setTypeCounts({ ...OFFICIAL_TYPE_COUNTS });
+    setRoundInput('1');
+    setAssembleExam(true);
+    setTypeGenOpen(true);
+    window.setTimeout(() => type1InputRef.current?.select(), 0);
+  };
+
+  const generateByTypeCounts = async (
+    countsIn: TypeGenCounts,
+    roundsIn: number,
+    doAssemble: boolean,
+  ) => {
+    if (busyRef.current) return;
+    const counts: TypeGenCounts = {
+      1: clampTypeCount(countsIn[1]),
+      2: clampTypeCount(countsIn[2]),
+      3: clampTypeCount(countsIn[3]),
+    };
+    const sequence = buildSequenceFromCounts(counts);
+    if (!sequence.length) {
+      setError('유형별 생성 개수를 1개 이상 입력하세요.');
+      return;
+    }
+    const examCount = clampRound(String(roundsIn));
+    const totalPerRound = sequence.length;
+    const canAssembleOfficial =
+      doAssemble &&
+      counts[1] === OFFICIAL_COUNTS[1] &&
+      counts[2] === OFFICIAL_COUNTS[2] &&
+      counts[3] === OFFICIAL_COUNTS[3];
 
     const ctrl = beginAbortable();
     busyRef.current = true;
     setBusy(true);
     setError('');
-    setExamCountOpen(false);
+    setTypeGenOpen(false);
     let history = messagesRef.current;
     const excludeCreated = new Set<string>();
     let assembledPapers = 0;
@@ -652,19 +713,21 @@ export function AuthorChatDock({
         const paperLabel = `${paper + 1}/${examCount}`;
         // Fresh random refs every paper — never reuse sticky/auto-picked UI selection.
         const preferredIds: string[] = [];
+        const countSummary = `1유형 ${counts[1]} · 2유형 ${counts[2]} · 3유형 ${counts[3]}`;
 
         history = [
           ...history,
           {
             role: 'assistant',
-            content: `—— 시험지 ${paperLabel} 자동 생성 시작 (공식 3+1+2) ——`,
+            content: `—— 배치 ${paperLabel} 자동 생성 시작 (${countSummary}) ——`,
           },
         ];
         setMessages(history);
 
-        for (let i = 0; i < OFFICIAL_AUTOGEN_SEQUENCE.length; ) {
-          const taskType = OFFICIAL_AUTOGEN_SEQUENCE[i];
+        for (let i = 0; i < sequence.length; ) {
+          const taskType = sequence[i];
           const ordinalInType = typeOrdinal[taskType] + 1;
+          const totalInType = counts[taskType];
           throwIfAborted(ctrl.signal);
 
           const bankNow = projectRef.current.bank;
@@ -685,15 +748,16 @@ export function AuthorChatDock({
             taskType,
             turnRefs.length,
             ordinalInType,
+            totalInType,
             refMode,
             sameTypeSiblings,
           );
-          const uiLabel = `자동 생성 · 시험지 ${paperLabel} · 제${taskType}유형 ${ordinalInType}/${OFFICIAL_COUNTS[taskType]}`;
+          const uiLabel = `자동 생성 · 배치 ${paperLabel} · 제${taskType}유형 ${ordinalInType}/${totalInType}`;
           onDraftChange(emptyAuthorDraft(taskType));
           draftRef.current = emptyAuthorDraft(taskType);
 
           setLiveStatus(
-            `시험지 ${paperLabel} · 제${taskType}유형 ${ordinalInType}/${OFFICIAL_COUNTS[taskType]} · 참고 ${turnRefs.length}개 · 생성 중… (${savedProblems.length + 1}/${OFFICIAL_TOTAL_ITEMS})`,
+            `배치 ${paperLabel} · 제${taskType}유형 ${ordinalInType}/${totalInType} · 참고 ${turnRefs.length}개 · 생성 중… (${savedProblems.length + 1}/${totalPerRound})`,
           );
           setStream('');
           setLiveTools([]);
@@ -804,18 +868,25 @@ export function AuthorChatDock({
               savedProblems.push(result.savedProblem);
               excludeCreated.add(result.savedProblem.id);
               onSaved(result.savedProblem, { navigate: false });
+              const hookMsg = await autoUploadGeneratedProblem(
+                projectRef.current,
+                result.savedProblem,
+                ctrl.signal,
+              );
               // Compact UI summary — discard this item's full tool transcript.
               history = [
                 ...history,
                 { role: 'user', content: uiLabel },
                 {
                   role: 'assistant',
-                  content: `저장 완료: [제${result.savedProblem.taskType}유형] ${result.savedProblem.title}`,
+                  content:
+                    `저장 완료: [제${result.savedProblem.taskType}유형] ${result.savedProblem.title}` +
+                    (hookMsg ? `\n${hookMsg}` : ''),
                 },
               ];
               setMessages(history);
               const nextType =
-                OFFICIAL_AUTOGEN_SEQUENCE[i + 1] ??
+                sequence[i + 1] ??
                 (taskType < 3 ? ((taskType + 1) as TaskType) : 1);
               const nextDraft = emptyAuthorDraft(nextType);
               onDraftChange(nextDraft);
@@ -823,7 +894,7 @@ export function AuthorChatDock({
               i += 1;
             } else {
               setLiveStatus(
-                `시험지 ${paperLabel} · 제${taskType}유형 미저장 — 같은 문항 재시도…`,
+                `배치 ${paperLabel} · 제${taskType}유형 미저장 — 같은 문항 재시도…`,
               );
               await sleepAbortable(800, ctrl.signal);
             }
@@ -832,36 +903,38 @@ export function AuthorChatDock({
             const msg =
               itemErr instanceof Error ? itemErr.message : String(itemErr);
             setLiveStatus(
-              `시험지 ${paperLabel} · 제${taskType}유형 실패 재시도… · ${msg.slice(0, 80)}`,
+              `배치 ${paperLabel} · 제${taskType}유형 실패 재시도… · ${msg.slice(0, 80)}`,
             );
             setError('');
             await sleepAbortable(800, ctrl.signal);
           }
         }
 
-        let summary = `시험지 ${paperLabel} 생성 완료 (${savedProblems.length}/${OFFICIAL_TOTAL_ITEMS}):\n${savedProblems
+        let summary = `배치 ${paperLabel} 생성 완료 (${savedProblems.length}/${totalPerRound}):\n${savedProblems
           .map((p, idx) => `${idx + 1}. [제${p.taskType}유형] ${p.title}`)
           .join('\n')}`;
 
-        const counts = countBankByType(savedProblems);
-        if (savedProblems.length > 0 && onAssembleExam) {
+        const savedCounts = countBankByType(savedProblems);
+        const shouldAssemble =
+          Boolean(doAssemble && savedProblems.length > 0 && onAssembleExam);
+        if (shouldAssemble) {
           let assembleAttempt = 0;
           while (true) {
             throwIfAborted(ctrl.signal);
             setLiveStatus(
               assembleAttempt === 0
-                ? `시험지 ${paperLabel} 조립 중…`
-                : `시험지 ${paperLabel} 조립 재시도… (${assembleAttempt})`,
+                ? `배치 ${paperLabel} 시험 조립 중…`
+                : `배치 ${paperLabel} 시험 조립 재시도… (${assembleAttempt})`,
             );
             try {
               const isLast = paper === examCount - 1;
               onAssembleExam([...savedProblems], { navigate: isLast });
               assembledPapers += 1;
-              if (isOfficialStructure(counts)) {
+              if (canAssembleOfficial && isOfficialStructure(savedCounts)) {
                 summary +=
                   '\n\n시험 조립 완료: 공식 구성(1유형 3 · 2유형 1 · 3유형 2).';
               } else {
-                summary += `\n\n시험 조립 완료 (부분): 1유형 ${counts[1]} · 2유형 ${counts[2]} · 3유형 ${counts[3]} / 목표 3+1+2.`;
+                summary += `\n\n시험 조립 완료: 1유형 ${savedCounts[1]} · 2유형 ${savedCounts[2]} · 3유형 ${savedCounts[3]}.`;
               }
               break;
             } catch (assembleErr) {
@@ -872,7 +945,7 @@ export function AuthorChatDock({
                   ? assembleErr.message
                   : String(assembleErr);
               setLiveStatus(
-                `시험지 ${paperLabel} 조립 실패 재시도… (${assembleAttempt}) · ${msg.slice(0, 80)}`,
+                `배치 ${paperLabel} 시험 조립 실패 재시도… (${assembleAttempt}) · ${msg.slice(0, 80)}`,
               );
               await sleepAbortable(
                 Math.min(20_000, 800 * Math.min(assembleAttempt, 12)),
@@ -1136,13 +1209,13 @@ export function AuthorChatDock({
               disabled={busy || project.bank.length === 0}
               title={
                 project.bank.length
-                  ? '시험지 장수를 고른 뒤, 문제은행을 참고해 공식 6문항(3+1+2)씩 생성·조립'
+                  ? '유형별 개수를 정해 여러 문항을 자동 생성 (공식 3+1+2 프리셋 포함)'
                   : '문제은행에 문항이 필요합니다'
               }
-              onClick={openExamCountPrompt}
+              onClick={openTypeGenPrompt}
             >
               <Layers size={14} />
-              1·2·3 자동 생성·조립 (3+1+2)
+              유형별 자동 생성
             </button>
             <button
               type="button"
@@ -1184,34 +1257,52 @@ export function AuthorChatDock({
         onConfirm={() => void clearChat()}
         onCancel={() => setClearConfirmOpen(false)}
       />
-      <ExamCountDialog
-        open={examCountOpen}
-        value={examCountInput}
-        inputRef={examCountInputRef}
-        onChange={setExamCountInput}
-        onCancel={() => setExamCountOpen(false)}
+      <TypeGenDialog
+        open={typeGenOpen}
+        counts={typeCounts}
+        roundValue={roundInput}
+        assemble={assembleExam}
+        type1InputRef={type1InputRef}
+        onCountsChange={setTypeCounts}
+        onRoundChange={setRoundInput}
+        onAssembleChange={setAssembleExam}
+        onPresetOfficial={() => {
+          setTypeCounts({ ...OFFICIAL_TYPE_COUNTS });
+          setAssembleExam(true);
+        }}
+        onCancel={() => setTypeGenOpen(false)}
         onConfirm={() => {
-          const n = clampExamCount(examCountInput);
-          setExamCountInput(String(n));
-          void generateAllTypes(n);
+          const rounds = clampRound(roundInput);
+          setRoundInput(String(rounds));
+          void generateByTypeCounts(typeCounts, rounds, assembleExam);
         }}
       />
     </aside>
   );
 }
 
-function ExamCountDialog({
+function TypeGenDialog({
   open,
-  value,
-  inputRef,
-  onChange,
+  counts,
+  roundValue,
+  assemble,
+  type1InputRef,
+  onCountsChange,
+  onRoundChange,
+  onAssembleChange,
+  onPresetOfficial,
   onCancel,
   onConfirm,
 }: {
   open: boolean;
-  value: string;
-  inputRef: RefObject<HTMLInputElement | null>;
-  onChange: (v: string) => void;
+  counts: TypeGenCounts;
+  roundValue: string;
+  assemble: boolean;
+  type1InputRef: RefObject<HTMLInputElement | null>;
+  onCountsChange: (c: TypeGenCounts) => void;
+  onRoundChange: (v: string) => void;
+  onAssembleChange: (v: boolean) => void;
+  onPresetOfficial: () => void;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -1233,6 +1324,14 @@ function ExamCountDialog({
     onConfirm();
   };
 
+  const patchCount = (tt: TaskType, raw: string) => {
+    const n = Math.round(Number(raw));
+    onCountsChange({
+      ...counts,
+      [tt]: Number.isFinite(n) ? Math.max(0, Math.min(AUTO_TYPE_COUNT_MAX, n)) : 0,
+    });
+  };
+
   return (
     <dialog
       ref={dialogRef}
@@ -1251,27 +1350,69 @@ function ExamCountDialog({
     >
       <form className="confirm-dialog__panel" onSubmit={submit}>
         <header className="modal__header">
-          <h2 id={titleId}>시험지 몇 장을 만들까요?</h2>
+          <h2 id={titleId}>유형별 문제 생성</h2>
         </header>
         <div className="modal__body">
           <p style={{ margin: '0 0 10px', lineHeight: 1.55 }}>
-            각 시험지마다 공식 구성(1유형 3 · 2유형 1 · 3유형 2)으로 문항을
-            생성·조립합니다. ({AUTO_EXAM_COUNT_MIN}–{AUTO_EXAM_COUNT_MAX}장)
+            유형마다 만들 문항 수를 정합니다. 배치를 여러 번 반복할 수 있습니다.
+            (유형당 0–{AUTO_TYPE_COUNT_MAX} · 배치 {AUTO_ROUND_MIN}–
+            {AUTO_ROUND_MAX})
           </p>
-          <label className="screen-settings-field">
-            <span>시험지 수</span>
+          <div className="type-gen-counts">
+            {([1, 2, 3] as TaskType[]).map((tt) => (
+              <label key={tt} className="screen-settings-field">
+                <span>제{tt}유형</span>
+                <input
+                  ref={tt === 1 ? type1InputRef : undefined}
+                  className="ce-field__input"
+                  type="number"
+                  min={0}
+                  max={AUTO_TYPE_COUNT_MAX}
+                  step={1}
+                  value={counts[tt]}
+                  onChange={(e) => patchCount(tt, e.target.value)}
+                  autoFocus={tt === 1}
+                />
+              </label>
+            ))}
+          </div>
+          <label className="screen-settings-field" style={{ marginTop: 10 }}>
+            <span>배치 반복 횟수</span>
             <input
-              ref={inputRef}
               className="ce-field__input"
               type="number"
-              min={AUTO_EXAM_COUNT_MIN}
-              max={AUTO_EXAM_COUNT_MAX}
+              min={AUTO_ROUND_MIN}
+              max={AUTO_ROUND_MAX}
               step={1}
-              value={value}
-              onChange={(e) => onChange(e.target.value)}
-              autoFocus
+              value={roundValue}
+              onChange={(e) => onRoundChange(e.target.value)}
             />
           </label>
+          <label
+            className="type-gen-assemble"
+            style={{
+              display: 'flex',
+              gap: 8,
+              alignItems: 'flex-start',
+              marginTop: 12,
+              lineHeight: 1.45,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={assemble}
+              onChange={(e) => onAssembleChange(e.target.checked)}
+            />
+            <span>생성 후 시험지로 조립 (가능하면 Webhook으로 .exam.zip 업로드)</span>
+          </label>
+          <button
+            type="button"
+            className="ghost-btn"
+            style={{ marginTop: 10 }}
+            onClick={onPresetOfficial}
+          >
+            공식 3+1+2 프리셋
+          </button>
         </div>
         <footer className="modal__footer">
           <button type="button" className="ghost-btn" onClick={onCancel}>

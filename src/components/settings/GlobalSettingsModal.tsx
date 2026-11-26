@@ -17,6 +17,14 @@ import {
   type AiProviderProfile,
   type AiSettingsState,
 } from '@/lib/aiSettings';
+import {
+  EMPTY_WEBHOOK_SETTINGS,
+  isDiscordWebhookUrl,
+  loadWebhookSettings,
+  saveWebhookSettings,
+  type WebhookSettings,
+} from '@/lib/webhookSettings';
+import { uploadFileToDiscordWebhook } from '@/lib/discordWebhook';
 import { listAiModels, testAiConnection } from '@/lib/ai/openaiCompatible';
 import { ComboboxField } from '@/components/ui/ComboboxField';
 import { FilterableSelectField } from '@/components/ui/FilterableSelectField';
@@ -29,6 +37,8 @@ interface GlobalSettingsModalProps {
   open: boolean;
   onClose: () => void;
 }
+
+type SettingsTab = 'ai' | 'webhook';
 
 function hasExpandedOverlay(root: HTMLElement | null): boolean {
   return Boolean(root?.querySelector('[data-ce-expanded="true"]'));
@@ -98,9 +108,13 @@ function optionalNumberInput(value: number | null | undefined): string {
 
 export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const [tab, setTab] = useState<SettingsTab>('ai');
   const [state, setState] = useState<AiSettingsState>(() =>
     normalizeAiSettingsState(null),
   );
+  const [webhook, setWebhook] = useState<WebhookSettings>({
+    ...EMPTY_WEBHOOK_SETTINGS,
+  });
   const [extraRows, setExtraRows] = useState<ExtraParamRow[]>([]);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
@@ -133,7 +147,9 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
           next.profiles[0];
         setExtraRows(extraParamsToRows(active?.extraParams));
       });
+      void loadWebhookSettings().then(setWebhook);
       setStatus('');
+      setTab('ai');
       if (!dialog.open) {
         dialog.showModal();
       }
@@ -301,14 +317,31 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
     setBusy(true);
     setStatus('');
     try {
-      const next = normalizeAiSettingsState(stateWithExtraRows());
-      await saveAiSettingsState(next);
-      setState(next);
-      const saved =
-        next.profiles.find((p) => p.id === next.activeProfileId) ??
-        next.profiles[0];
-      setExtraRows(extraParamsToRows(saved?.extraParams));
-      setStatus('저장됨');
+      if (tab === 'ai') {
+        const next = normalizeAiSettingsState(stateWithExtraRows());
+        await saveAiSettingsState(next);
+        setState(next);
+        const saved =
+          next.profiles.find((p) => p.id === next.activeProfileId) ??
+          next.profiles[0];
+        setExtraRows(extraParamsToRows(saved?.extraParams));
+        setStatus('저장됨');
+      } else {
+        const next = {
+          discordWebhookUrl: webhook.discordWebhookUrl.trim(),
+        };
+        if (next.discordWebhookUrl && !isDiscordWebhookUrl(next.discordWebhookUrl)) {
+          setStatus('Discord webhook URL 형식이 올바르지 않습니다.');
+          return;
+        }
+        await saveWebhookSettings(next);
+        setWebhook(next);
+        setStatus(
+          next.discordWebhookUrl
+            ? 'Webhook 저장됨 · 생성 문제/시험지 ZIP을 자동 업로드합니다'
+            : 'Webhook 비움 · 자동 업로드 끔',
+        );
+      }
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
     } finally {
@@ -317,19 +350,43 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
   };
 
   const test = async () => {
-    if (!active) return;
     setBusy(true);
-    setStatus('연결 테스트 중…');
+    setStatus(tab === 'ai' ? '연결 테스트 중…' : 'Webhook 테스트 중…');
     try {
-      const next = normalizeAiSettingsState(stateWithExtraRows());
-      await saveAiSettingsState(next);
-      setState(next);
-      const endpoint = profileToEndpoint(
-        next.profiles.find((p) => p.id === next.activeProfileId) ??
-          next.profiles[0],
+      if (tab === 'ai') {
+        if (!active) return;
+        const next = normalizeAiSettingsState(stateWithExtraRows());
+        await saveAiSettingsState(next);
+        setState(next);
+        const endpoint = profileToEndpoint(
+          next.profiles.find((p) => p.id === next.activeProfileId) ??
+            next.profiles[0],
+        );
+        const reply = await testAiConnection(endpoint);
+        setStatus(`연결 성공 · 응답: ${reply.slice(0, 80)}`);
+        return;
+      }
+
+      const url = webhook.discordWebhookUrl.trim();
+      if (!url) {
+        setStatus('Webhook URL을 입력하세요.');
+        return;
+      }
+      if (!isDiscordWebhookUrl(url)) {
+        setStatus('Discord webhook URL 형식이 올바르지 않습니다.');
+        return;
+      }
+      const blob = new Blob(
+        [`bigdata-knight-simulation webhook test · ${new Date().toISOString()}\n`],
+        { type: 'text/plain' },
       );
-      const reply = await testAiConnection(endpoint);
-      setStatus(`연결 성공 · 응답: ${reply.slice(0, 80)}`);
+      const result = await uploadFileToDiscordWebhook({
+        webhookUrl: url,
+        filename: 'webhook-test.txt',
+        blob,
+        content: 'Webhook 연결 테스트',
+      });
+      setStatus(result.ok ? 'Webhook 업로드 성공' : result.message);
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
     } finally {
@@ -390,6 +447,41 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
             </button>
           </header>
 
+          <div
+            className="global-settings-tabs"
+            role="tablist"
+            aria-label="설정 구분"
+          >
+            <button
+              type="button"
+              role="tab"
+              id="global-settings-tab-ai"
+              aria-selected={tab === 'ai'}
+              aria-controls="global-settings-panel-ai"
+              className={`global-settings-tabs__btn ${tab === 'ai' ? 'is-active' : ''}`}
+              onClick={() => {
+                setTab('ai');
+                setStatus('');
+              }}
+            >
+              AI
+            </button>
+            <button
+              type="button"
+              role="tab"
+              id="global-settings-tab-webhook"
+              aria-selected={tab === 'webhook'}
+              aria-controls="global-settings-panel-webhook"
+              className={`global-settings-tabs__btn ${tab === 'webhook' ? 'is-active' : ''}`}
+              onClick={() => {
+                setTab('webhook');
+                setStatus('');
+              }}
+            >
+              Webhook
+            </button>
+          </div>
+
           <form
             className="screen-settings-modal__body global-settings-modal__body"
             aria-labelledby="global-settings-title"
@@ -398,7 +490,14 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
               void save();
             }}
           >
-            <section className="screen-settings-col" style={{ gridColumn: '1 / -1' }}>
+            {tab === 'ai' ? (
+            <section
+              className="screen-settings-col"
+              style={{ gridColumn: '1 / -1' }}
+              role="tabpanel"
+              id="global-settings-panel-ai"
+              aria-labelledby="global-settings-tab-ai"
+            >
               <h3>AI Provider</h3>
               <p className="edit-page__sub">
                 Provider별로 엔드포인트·키·모델을 저장합니다. OpenAI 호환{' '}
@@ -665,6 +764,41 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
                 </p>
               ) : null}
             </section>
+            ) : (
+            <section
+              className="screen-settings-col"
+              style={{ gridColumn: '1 / -1' }}
+              role="tabpanel"
+              id="global-settings-panel-webhook"
+              aria-labelledby="global-settings-tab-webhook"
+            >
+              <h3>Discord Webhook</h3>
+              <p className="edit-page__sub">
+                Incoming Webhook URL을 넣으면 AI가 만든{' '}
+                <strong>문제 ZIP</strong>(<code>.problem.zip</code>)과{' '}
+                <strong>시험지 ZIP</strong>(<code>.exam.zip</code>)을 하나씩
+                자동 업로드합니다. 프로젝트 ZIP은 업로드하지 않습니다. 데스크톱
+                앱(Tauri)에서는 CORS 없이 전송됩니다.
+              </p>
+              <SecretField
+                label="Discord Webhook URL"
+                name="discord_webhook_url"
+                value={webhook.discordWebhookUrl}
+                disabled={busy}
+                optional
+                placeholder="https://discord.com/api/webhooks/…"
+                hint="비우면 자동 업로드가 꺼집니다"
+                onChange={(discordWebhookUrl) =>
+                  setWebhook({ discordWebhookUrl })
+                }
+              />
+              {status ? (
+                <p className="global-settings-status" role="status">
+                  {status}
+                </p>
+              ) : null}
+            </section>
+            )}
           </form>
 
           <footer className="screen-settings-modal__foot">
@@ -674,7 +808,7 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
               disabled={busy}
               onClick={() => void test()}
             >
-              연결 테스트
+              {tab === 'ai' ? '연결 테스트' : 'Webhook 테스트'}
             </button>
             <button
               type="button"

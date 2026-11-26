@@ -3245,10 +3245,61 @@ body.is-resizing-y * {
   grid-template-columns: 1fr;
 }
 
+.global-settings-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 16px 8px;
+  border-bottom: 1px solid var(--dq-border, rgba(127, 127, 127, 0.28));
+}
+
+.global-settings-tabs__btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--dq-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.global-settings-tabs__btn:hover {
+  color: var(--dq-fg);
+  background: color-mix(in srgb, var(--dq-fg) 6%, transparent);
+}
+
+.global-settings-tabs__btn.is-active {
+  color: var(--dq-fg);
+  background: color-mix(in srgb, var(--dq-fg) 10%, transparent);
+}
+
 .global-settings-status {
   margin: 8px 0 0;
   font-size: 12px;
   color: var(--dq-muted);
+}
+
+.type-gen-counts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 520px) {
+  .type-gen-counts {
+    grid-template-columns: 1fr;
+  }
+}
+
+.bank-import-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 0 10px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--dq-border, rgba(127, 127, 127, 0.28));
 }
 
 .ai-provider-bar {

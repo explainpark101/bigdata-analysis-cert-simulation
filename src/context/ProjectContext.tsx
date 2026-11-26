@@ -258,11 +258,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   const addBankProblem = useCallback((partial?: Partial<BankProblem>) => {
     const problem = createEmptyBankProblem(partial);
-    setProjectState((prev) => ({
-      ...prev,
-      bank: [...prev.bank, problem],
+    const next = {
+      ...projectRef.current,
+      bank: [...projectRef.current.bank, problem],
       updatedAt: new Date().toISOString(),
-    }));
+    };
+    projectRef.current = next;
+    setProjectState(next);
     return problem;
   }, []);
 
@@ -302,12 +304,14 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   const addExam = useCallback((partial?: Partial<ExamBlueprint>) => {
     const exam = createEmptyExamBlueprint(partial);
-    setProjectState((prev) => ({
-      ...prev,
-      exams: [...prev.exams, exam],
+    const next = {
+      ...projectRef.current,
+      exams: [...projectRef.current.exams, exam],
       activeExamId: exam.id,
       updatedAt: new Date().toISOString(),
-    }));
+    };
+    projectRef.current = next;
+    setProjectState(next);
     return exam;
   }, []);
 
@@ -430,9 +434,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       for (const source of list) {
         const label =
           typeof source === 'string'
-            ? source.replace(/^.*[\\/]/, '').replace(/\.(project|exam)?\.zip$/i, '') ||
-              'import'
-            : source.name.replace(/\.(project|exam)?\.zip$/i, '') || 'import';
+            ? source
+                .replace(/^.*[\\/]/, '')
+                .replace(/\.(project|exam|problem)?\.zip$/i, '') || 'import'
+            : source.name.replace(/\.(project|exam|problem)?\.zip$/i, '') ||
+              'import';
         await withRustZipPath(source, async (path) => {
           const kind = await rustPeekZipKind(path);
           if (kind === 'exam') {

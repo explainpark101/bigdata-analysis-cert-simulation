@@ -10,6 +10,7 @@ export type IdbKey =
   | 'examSession'
   | 'theme'
   | 'aiSettings'
+  | 'webhookSettings'
   | 'variantChats'
   | 'modifyChats'
   | 'authorChats'

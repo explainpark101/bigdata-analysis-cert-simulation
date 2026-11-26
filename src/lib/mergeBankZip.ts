@@ -36,7 +36,11 @@ const FILES_PREFIX = 'files/';
 const PROJECT_JSON = 'project.json';
 
 function stem(name: string): string {
-  return name.replace(/\.(project|exam)?\.zip$/i, '').replace(/\.zip$/i, '') || 'import';
+  return (
+    name
+      .replace(/\.(project|exam|problem)?\.zip$/i, '')
+      .replace(/\.zip$/i, '') || 'import'
+  );
 }
 
 function remapIds(
