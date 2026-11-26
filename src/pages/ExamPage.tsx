@@ -30,6 +30,7 @@ import {
 import type { ExamLanguage, RunResult } from '@/types/exam';
 import { isImageAsset } from '@/lib/assetMedia';
 import { assetBasename } from '@/lib/assetPaths';
+import { shortAnswersEqual } from '@/lib/shortAnswerMatch';
 import { QuizSidebar } from '@/components/layout/QuizSidebar';
 import { HeaderMenu } from '@/components/layout/HeaderMenu';
 import { EdgeResizeHandle } from '@/components/layout/EdgeResizeHandle';
@@ -451,7 +452,7 @@ export default function ExamPage() {
           : `${s.label}: 미입력`;
       }
       if (!expected) return `${s.label}: 제출됨 (${draft})`;
-      const ok = draft === expected;
+      const ok = shortAnswersEqual(draft, expected);
       return `${ok ? 'PASS' : 'FAIL'} · ${s.label}: ${draft}${ok ? '' : ` (정답 ${expected})`}`;
     });
     patchQuiz({ submitted: true, shortSlots: slots });

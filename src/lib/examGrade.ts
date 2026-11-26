@@ -15,6 +15,7 @@ import {
   TYPE2_FORMAT_PENALTY,
   type2MaxPoints,
 } from '@/lib/examOfficialSpec';
+import { shortAnswersEqual } from '@/lib/shortAnswerMatch';
 
 export type GradeStatus = 'pass' | 'fail' | 'partial' | 'unsubmitted' | 'ungradable';
 
@@ -163,7 +164,7 @@ function gradeShortQuiz(quiz: QuizProblem): GradeItem {
         label: '단답',
         expected,
         submitted: draft,
-        ok: Boolean(expected) ? draft === expected : Boolean(draft),
+        ok: Boolean(expected) ? shortAnswersEqual(draft, expected) : Boolean(draft),
       },
     ];
     if (!quiz.submitted) {
@@ -186,7 +187,7 @@ function gradeShortQuiz(quiz: QuizProblem): GradeItem {
         answers,
       };
     }
-    const ok = draft === expected;
+    const ok = shortAnswersEqual(draft, expected);
     return {
       ...base,
       status: ok ? 'pass' : 'fail',
@@ -203,7 +204,7 @@ function gradeShortQuiz(quiz: QuizProblem): GradeItem {
     const draft = (s.draft ?? '').trim();
     const expected = (s.expected ?? '').trim();
     // Empty expected key: never auto-pass (avoids free points from padded 소문항 slots).
-    const ok = Boolean(expected) && draft === expected;
+    const ok = Boolean(expected) && shortAnswersEqual(draft, expected);
     return {
       label: s.label,
       expected,

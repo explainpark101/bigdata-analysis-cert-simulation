@@ -5,6 +5,7 @@ import {
 } from '@/lib/ai/authorRuntimePrompt';
 import { linkedCsvAssetIds } from '@/lib/ai/ensureProblemCsv';
 import { resolveAssets } from '@/lib/projectIO';
+import { shortAnswersEqual } from '@/lib/shortAnswerMatch';
 import { mountAssetsToPyodide } from '@/runtimes/fsMount';
 import { preloadPyodide, runPython } from '@/runtimes/pyodideRuntime';
 import { preloadWebR, runR } from '@/runtimes/webrRuntime';
@@ -36,16 +37,6 @@ export type VerifySolveResult =
       stderr?: string;
     };
 
-function numbersClose(a: string, b: string): boolean {
-  const na = Number(String(a).trim());
-  const nb = Number(String(b).trim());
-  if (!Number.isFinite(na) || !Number.isFinite(nb)) {
-    return String(a).trim() === String(b).trim();
-  }
-  const scale = Math.max(1, Math.abs(na), Math.abs(nb));
-  return Math.abs(na - nb) <= 1e-9 * scale;
-}
-
 /** Numeric stdout lines (trimmed), in order. */
 export function extractNumericStdoutLines(stdout: string): string[] {
   return String(stdout ?? '')
@@ -68,9 +59,9 @@ export function stdoutConfirmsShortAnswers(
   const lines = extractNumericStdoutLines(stdout);
   if (lines.length >= expected.length) {
     const tail = lines.slice(-expected.length);
-    if (expected.every((a, i) => numbersClose(a, tail[i]))) return true;
+    if (expected.every((a, i) => shortAnswersEqual(a, tail[i]))) return true;
   }
-  return expected.every((a) => lines.some((l) => numbersClose(a, l)));
+  return expected.every((a) => lines.some((l) => shortAnswersEqual(a, l)));
 }
 
 function pickAnswerLanguage(
