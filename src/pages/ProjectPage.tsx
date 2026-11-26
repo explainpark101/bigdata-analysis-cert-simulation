@@ -1436,6 +1436,13 @@ export default function ProjectPage() {
           setTab('exam');
           setMessage('시험 조립 탭으로 이동했습니다.');
         }}
+        onSelectProblem={(problemId, examId) => {
+          selectExam(examId);
+          setSelectedId(problemId);
+          setVariantOpen(false);
+          setTab('bank');
+          setMessage('문제 수정 탭에서 자동 검수 채팅을 표시합니다.');
+        }}
       />
 
       <ConfirmModal

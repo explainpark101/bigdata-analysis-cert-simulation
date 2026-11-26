@@ -2,12 +2,18 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Loader2, RefreshCw, Save, Square, Wand2 } from 'lucide-react';
 import { loadAiSettings } from '@/lib/aiSettings';
 import { runAuthorAgentTurn } from '@/lib/ai/authorAgent';
+import {
+  getAutoReviewChat,
+  subscribeAutoReviewChat,
+  type AutoReviewChatSession,
+} from '@/lib/ai/autoReviewChatStore';
 import { applyCsvRenamesToDraftFields } from '@/lib/ai/csvAssetPersist';
 import {
   appendCsvMountNote,
   ensureProblemHasCsv,
   linkedCsvAssetIds,
 } from '@/lib/ai/ensureProblemCsv';
+import { cancelExamAutoReview } from '@/lib/examAutoReviewQueue';
 import {
   chatContentToText,
   isAbortError,
@@ -90,6 +96,9 @@ export function ModifyChatDock({
   const [ready, setReady] = useState(false);
   const [csvNote, setCsvNote] = useState('');
   const [liveStatus, setLiveStatus] = useState('');
+  const [autoReview, setAutoReview] = useState<AutoReviewChatSession | null>(
+    () => getAutoReviewChat(problem.id),
+  );
   const bottomRef = useRef<HTMLDivElement>(null);
   const draftRef = useRef(draft);
   const messagesRef = useRef(messages);
@@ -97,6 +106,8 @@ export function ModifyChatDock({
   const bodyIdPrefix = useId();
   draftRef.current = draft;
   messagesRef.current = messages;
+  const autoReviewBusy = Boolean(autoReview?.busy);
+  const dockBusy = busy || autoReviewBusy;
 
   useEffect(() => {
     return () => {
@@ -106,6 +117,20 @@ export function ModifyChatDock({
       abortRef.current = null;
     };
   }, []);
+
+  // Mirror batch auto-review chat for this problem (live + finished session).
+  useEffect(() => {
+    return subscribeAutoReviewChat(problem.id, (session) => {
+      setAutoReview(session);
+      if (!session) return;
+      setMessages(stripThinkingFromHistory(session.messages));
+      setDraft(normalizeModifyDraft(session.draft));
+      setLiveStatus(session.busy ? session.liveStatus : '');
+      setError(session.error || '');
+      setBusy(false);
+      setReady(true);
+    });
+  }, [problem.id]);
 
   const linkedCsvKey = linkedCsvAssetIds(project, problem.assetIds).join(',');
 
@@ -180,8 +205,20 @@ export function ModifyChatDock({
     let cancelled = false;
     setReady(false);
     void (async () => {
+      const live = getAutoReviewChat(problem.id);
+      if (live) {
+        if (cancelled) return;
+        setAutoReview(live);
+        setMessages(stripThinkingFromHistory(live.messages));
+        setDraft(normalizeModifyDraft(live.draft));
+        setLiveStatus(live.busy ? live.liveStatus : '');
+        setError(live.error || '');
+        setReady(true);
+        return;
+      }
       const stored = await loadModifySession(problem.id);
       if (cancelled) return;
+      setAutoReview(null);
       if (stored) {
         setMessages(stripThinkingFromHistory(stored.messages));
         setDraft(normalizeModifyDraft(stored.draft));
@@ -190,6 +227,7 @@ export function ModifyChatDock({
         setDraft(emptyModifyDraft(problem));
       }
       setError('');
+      setLiveStatus('');
       setReady(true);
     })();
     return () => {
@@ -199,19 +237,26 @@ export function ModifyChatDock({
 
   useEffect(() => {
     if (!ready) return;
+    // Auto-review runner persists its own session; avoid racing mid-turn.
+    if (autoReviewBusy) return;
     void saveModifySession({
       problemId: problem.id,
       messages,
       draft,
       updatedAt: new Date().toISOString(),
     });
-  }, [ready, problem.id, messages, draft]);
+  }, [ready, problem.id, messages, draft, autoReviewBusy]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, busy, liveStatus]);
+  }, [messages, dockBusy, liveStatus]);
 
   const abortGeneration = () => {
+    if (autoReviewBusy && autoReview) {
+      setLiveStatus('일괄 검수 중지 중…');
+      cancelExamAutoReview(autoReview.examId);
+      return;
+    }
     const ctrl = abortRef.current;
     if (!ctrl || ctrl.signal.aborted) return;
     setLiveStatus('중지 중…');
@@ -237,7 +282,7 @@ export function ModifyChatDock({
   }, [problem.taskType, project, draft.assetIds]);
 
   const reloadFromProblem = () => {
-    if (busy) return;
+    if (dockBusy) return;
     setDraft(emptyModifyDraft(problem));
     setError('');
   };
@@ -245,7 +290,7 @@ export function ModifyChatDock({
   const send = async (opts?: { text?: string; clearComposer?: boolean }) => {
     const clearComposer = opts?.clearComposer ?? opts?.text == null;
     const trimmed = (opts?.text ?? input).trim();
-    if (!trimmed || busy) return;
+    if (!trimmed || dockBusy) return;
 
     abortRef.current?.abort();
     const ctrl = new AbortController();
@@ -375,6 +420,18 @@ export function ModifyChatDock({
               문제 수정 AI
             </strong>
             <p className="variant-dock__sub">{hint}</p>
+            {autoReview ? (
+              <p
+                className={`variant-dock__sub modify-dock__auto-review ${
+                  autoReview.busy ? 'modify-dock__auto-review--live' : ''
+                }`}
+                role="status"
+              >
+                {autoReview.busy
+                  ? `일괄 자동 검수 진행 중 · ${autoReview.examTitle}`
+                  : `일괄 자동 검수 기록 · ${autoReview.examTitle}`}
+              </p>
+            ) : null}
             {csvNote ? (
               <p className="variant-dock__sub" role="status">
                 {csvNote}
@@ -384,7 +441,7 @@ export function ModifyChatDock({
           <button
             type="button"
             className="ghost-btn btn-with-icon"
-            disabled={busy}
+            disabled={dockBusy}
             onClick={reloadFromProblem}
             title="좌측 편집 내용을 초안으로 다시 불러오기"
           >
@@ -409,9 +466,9 @@ export function ModifyChatDock({
           {!messages.filter((m) => m.role === 'user' || m.role === 'assistant')
             .length ? (
             <p className="variant-dock__empty">
-              예: &quot;본문을 다듬고 정답 코드를 다시 돌려줘&quot; / &quot;CSV를
-              변형한 뒤 단답을 맞춰줘&quot;. 출제 도구는 이 채팅에 이미
-              연결되어 있습니다.
+              {autoReviewBusy
+                ? '일괄 자동 검수 채팅을 불러오는 중…'
+                : '예: "본문을 다듬고 정답 코드를 다시 돌려줘" / "CSV를 변형한 뒤 단답을 맞춰줘". 출제 도구는 이 채팅에 이미 연결되어 있습니다.'}
             </p>
           ) : (
             messages
@@ -446,7 +503,7 @@ export function ModifyChatDock({
                             type="button"
                             className="variant-msg__action"
                             aria-label="메시지 재전송"
-                            disabled={busy}
+                            disabled={dockBusy}
                             onClick={() =>
                               void send({
                                 text: chatContentToText(m.content),
@@ -471,7 +528,7 @@ export function ModifyChatDock({
                 );
               })
           )}
-          {busy ? (
+          {dockBusy ? (
             <div
               className="variant-dock__live"
               role="progressbar"
@@ -481,13 +538,20 @@ export function ModifyChatDock({
               <div className="variant-dock__busy-row">
                 <div className="variant-dock__busy">
                   <Loader2 size={14} className="spin" />
-                  <span>{liveStatus || '에이전트 작업 중…'}</span>
+                  <span>
+                    {liveStatus ||
+                      (autoReviewBusy
+                        ? '일괄 자동 검수 중…'
+                        : '에이전트 작업 중…')}
+                  </span>
                 </div>
                 <button
                   type="button"
                   className="ghost-btn btn-with-icon variant-dock__abort"
                   onClick={abortGeneration}
-                  aria-label="수정 중지"
+                  aria-label={
+                    autoReviewBusy ? '일괄 검수 중지' : '수정 중지'
+                  }
                 >
                   <Square size={12} fill="currentColor" aria-hidden />
                   중지
@@ -511,17 +575,23 @@ export function ModifyChatDock({
             attachments={[]}
             onAttachmentsChange={() => {}}
             onSubmit={() => void send()}
-            disabled={busy}
+            disabled={dockBusy}
             allowImages={false}
-            placeholder="수정 요청 · Enter 전송 · Shift+Enter 줄바꿈"
+            placeholder={
+              autoReviewBusy
+                ? '일괄 자동 검수 진행 중 — 완료 후 입력 가능'
+                : '수정 요청 · Enter 전송 · Shift+Enter 줄바꿈'
+            }
           />
           <div className="variant-dock__actions">
-            {busy ? (
+            {dockBusy ? (
               <button
                 type="button"
                 className="ghost-btn btn-with-icon variant-dock__abort"
                 onClick={abortGeneration}
-                aria-label="수정 중지"
+                aria-label={
+                  autoReviewBusy ? '일괄 검수 중지' : '수정 중지'
+                }
               >
                 <Square size={12} fill="currentColor" aria-hidden />
                 중지
@@ -530,7 +600,7 @@ export function ModifyChatDock({
             <button
               type="button"
               className="ghost-btn btn-with-icon"
-              disabled={busy}
+              disabled={dockBusy}
               onClick={() =>
                 void clearModifySession(problem.id).then(() => {
                   setMessages([]);
@@ -544,7 +614,7 @@ export function ModifyChatDock({
             <button
               type="button"
               className="primary-btn btn-with-icon"
-              disabled={busy}
+              disabled={dockBusy}
               onClick={() =>
                 void send({
                   text: '도구는 이미 연결되어 있습니다. 계획만 쓰지 말고 즉시 list_project_csvs/set_dataset_code 또는 set_transform_code → run_* → save_generated_assets → set_answer_code → run_answer_code → set_short_answers → apply_changes(confirm=true)를 호출해 이 문제에 반영하세요. CSV와 정답이 어긋나면 CSV를 재생성·검증한 뒤 적용하세요.',

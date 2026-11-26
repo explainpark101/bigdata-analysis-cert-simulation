@@ -1,13 +1,23 @@
 import { loadAiSettings } from '@/lib/aiSettings';
 import { runAuthorAgentTurn } from '@/lib/ai/authorAgent';
 import type { AuthorDraft } from '@/lib/ai/authorChatStore';
-import { emptyModifyDraft } from '@/lib/ai/modifyChatStore';
+import {
+  finishAutoReviewChat,
+  patchAutoReviewChat,
+  startAutoReviewChat,
+} from '@/lib/ai/autoReviewChatStore';
+import {
+  emptyModifyDraft,
+  saveModifySession,
+} from '@/lib/ai/modifyChatStore';
 import {
   isAbortError,
   throwIfAborted,
+  type ChatMessage,
 } from '@/lib/ai/openaiCompatible';
 import {
   cancelExamAutoReview,
+  getExamAutoReviewJob,
   isExamAutoReviewRunning,
   patchExamAutoReviewJob,
   patchExamAutoReviewProblem,
@@ -120,10 +130,29 @@ async function reviewOneProblem(
     return;
   }
 
+  const examTitle =
+    getExamAutoReviewJob(examId)?.examTitle ??
+    deps.getProject().exams.find((e) => e.id === examId)?.title ??
+    examId;
+
   patchExamAutoReviewProblem(examId, problemId, {
     phase: 'verifying',
     message: '정답 검증 중…',
     title: fresh.title,
+  });
+
+  startAutoReviewChat({
+    problemId,
+    examId,
+    examTitle,
+    draft: emptyModifyDraft(fresh),
+    messages: [
+      {
+        role: 'assistant',
+        content: `일괄 자동 검수 · 정답 검증을 시작합니다. (${fresh.title})`,
+      },
+    ],
+    liveStatus: '정답 검증 중…',
   });
 
   const project = deps.getProject();
@@ -131,9 +160,20 @@ async function reviewOneProblem(
   throwIfAborted(signal);
 
   if (!verify.needsAiReview) {
+    const okMsg =
+      verify.reason === 'type2_ok' ? '코드 실행 성공' : '정답 일치';
+    finishAutoReviewChat(problemId, {
+      messages: [
+        {
+          role: 'assistant',
+          content: `정답 검증 통과 — ${okMsg}. AI 수정은 필요하지 않습니다.`,
+        },
+      ],
+      liveStatus: okMsg,
+    });
     patchExamAutoReviewProblem(examId, problemId, {
       phase: 'ok',
-      message: verify.reason === 'type2_ok' ? '코드 실행 성공' : '정답 일치',
+      message: okMsg,
     });
     return;
   }
@@ -159,6 +199,21 @@ async function reviewOneProblem(
     .slice(0, 12)
     .map((b) => b.id);
 
+  const fixPrompt = buildFixPrompt(latest, verify);
+  const seedMessages: ChatMessage[] = [
+    {
+      role: 'assistant',
+      content: `정답 검증 실패 (${verify.reason}). AI 수정을 시작합니다.`,
+    },
+    { role: 'user', content: fixPrompt },
+  ];
+  patchAutoReviewChat(problemId, {
+    draft,
+    messages: seedMessages,
+    liveStatus: 'AI 검수 요청 중…',
+    error: '',
+  });
+
   try {
     const result = await runAuthorAgentTurn({
       ctx: {
@@ -171,7 +226,13 @@ async function reviewOneProblem(
         targetProblem: latest,
       },
       history: [],
-      userText: buildFixPrompt(latest, verify),
+      userText: fixPrompt,
+      onDraft: (nextDraft) => {
+        patchAutoReviewChat(problemId, { draft: nextDraft });
+      },
+      onMessages: (messages) => {
+        patchAutoReviewChat(problemId, { messages });
+      },
       onSave: (partial) => applyBankPatch(deps, problemId, partial),
       onProgress: (ev) => {
         if (ev.kind === 'status') {
@@ -179,12 +240,15 @@ async function reviewOneProblem(
             phase: 'ai_review',
             message: ev.text,
           });
+          patchAutoReviewChat(problemId, { liveStatus: ev.text });
         } else if (ev.kind === 'tool') {
+          const text =
+            ev.phase === 'start' ? `도구: ${ev.name}…` : `도구 완료: ${ev.name}`;
           patchExamAutoReviewProblem(examId, problemId, {
             phase: 'ai_review',
-            message:
-              ev.phase === 'start' ? `도구: ${ev.name}…` : `도구 완료: ${ev.name}`,
+            message: text,
           });
+          patchAutoReviewChat(problemId, { liveStatus: text });
         }
       },
       signal,
@@ -193,7 +257,20 @@ async function reviewOneProblem(
 
     throwIfAborted(signal);
 
+    await saveModifySession({
+      problemId,
+      messages: result.messages,
+      draft: result.draft,
+      updatedAt: new Date().toISOString(),
+    });
+
     if (!result.savedProblem) {
+      finishAutoReviewChat(problemId, {
+        messages: result.messages,
+        draft: result.draft,
+        liveStatus: '',
+        error: 'AI가 변경을 적용하지 못했습니다',
+      });
       patchExamAutoReviewProblem(examId, problemId, {
         phase: 'failed',
         message: 'AI가 변경을 적용하지 못했습니다',
@@ -204,21 +281,37 @@ async function reviewOneProblem(
     // Re-verify after AI apply.
     const after = deps.getProject().bank.find((b) => b.id === problemId);
     if (!after) {
+      finishAutoReviewChat(problemId, {
+        messages: result.messages,
+        draft: result.draft,
+        liveStatus: '반영됨',
+      });
       patchExamAutoReviewProblem(examId, problemId, {
         phase: 'fixed',
         message: '반영됨 (재검증 생략: 문제 없음)',
       });
       return;
     }
+    patchAutoReviewChat(problemId, { liveStatus: '수정 후 재검증 중…' });
     const recheck = await verifyBankProblemAnswer(deps.getProject(), after);
     throwIfAborted(signal);
 
     if (!recheck.needsAiReview) {
+      finishAutoReviewChat(problemId, {
+        messages: result.messages,
+        draft: result.draft,
+        liveStatus: 'AI 수정 후 검증 통과',
+      });
       patchExamAutoReviewProblem(examId, problemId, {
         phase: 'fixed',
         message: 'AI 수정 후 검증 통과',
       });
     } else {
+      finishAutoReviewChat(problemId, {
+        messages: result.messages,
+        draft: result.draft,
+        liveStatus: `반영됨 · 재검증 미통과 (${recheck.reason})`,
+      });
       patchExamAutoReviewProblem(examId, problemId, {
         phase: 'fixed',
         message: `반영됨 · 재검증 미통과 (${recheck.reason})`,
@@ -226,15 +319,24 @@ async function reviewOneProblem(
     }
   } catch (err) {
     if (isAbortError(err)) {
+      finishAutoReviewChat(problemId, {
+        liveStatus: '',
+        error: '취소됨',
+      });
       patchExamAutoReviewProblem(examId, problemId, {
         phase: 'cancelled',
         message: '취소됨',
       });
       throw err;
     }
+    const msg = err instanceof Error ? err.message : String(err);
+    finishAutoReviewChat(problemId, {
+      liveStatus: '',
+      error: msg,
+    });
     patchExamAutoReviewProblem(examId, problemId, {
       phase: 'failed',
-      message: err instanceof Error ? err.message : String(err),
+      message: msg,
     });
   }
 }

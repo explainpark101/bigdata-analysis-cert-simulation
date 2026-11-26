@@ -782,13 +782,31 @@ export async function runAuthorAgentTurn(opts: {
   onDraft?: (draft: AuthorDraft) => void;
   onSave?: (problem: Partial<BankProblem>) => BankProblem;
   onProgress?: (event: AuthorAgentProgress) => void;
+  /** Fired after each chat round so UIs (e.g. auto-review dock) can mirror live turns. */
+  onMessages?: (messages: ChatMessage[]) => void;
   signal?: AbortSignal;
   /** Auto-generate / batch: must finish by calling save_problem/apply_changes (with fallbacks). */
   requireSave?: boolean;
 }): Promise<AuthorAgentResult> {
-  const { onDraft, onSave, onProgress, signal, requireSave = false } = opts;
+  const { onDraft, onSave, onProgress, onMessages, signal, requireSave = false } =
+    opts;
   const mode: AuthorAgentMode = opts.ctx.mode ?? 'author';
   const report = (event: AuthorAgentProgress) => onProgress?.(event);
+  const emitMessages = (msgs: ChatMessage[]) => {
+    if (!onMessages) return;
+    const uiMessages = msgs.filter(
+      (m, i) =>
+        m.role !== 'system' &&
+        !(
+          i > 0 &&
+          m.role === 'user' &&
+          typeof m.content === 'string' &&
+          (m.content.startsWith('AUTHORING CONTEXT') ||
+            m.content.startsWith('MODIFY CONTEXT'))
+        ),
+    );
+    onMessages(stripThinkingFromHistory(uiMessages));
+  };
   const ctx: AuthorAgentContext = {
     ...opts.ctx,
     mode,
@@ -904,6 +922,9 @@ export async function runAuthorAgentTurn(opts: {
     ? MAX_TOOL_ROUNDS_REQUIRE_SAVE
     : MAX_TOOL_ROUNDS;
 
+  // Seed UI with the outgoing user turn before the first model round.
+  emitMessages(messages);
+
   for (let round = 0; round < maxRounds; round++) {
     throwIfAborted();
     report({
@@ -947,6 +968,7 @@ export async function runAuthorAgentTurn(opts: {
       content: msg.content,
       tool_calls: msg.tool_calls,
     });
+    emitMessages(messages);
     const text = chatContentToText(msg.content).trim();
     if (text) assistantText = text;
 
@@ -966,6 +988,7 @@ export async function runAuthorAgentTurn(opts: {
           role: 'user',
           content: toolCallNudgeMessage(toolNames, { saveTool: saveToolName }),
         });
+        emitMessages(messages);
         continue;
       }
       break;
@@ -1451,6 +1474,7 @@ export async function runAuthorAgentTurn(opts: {
         tool_call_id: call.id,
         content: toolResult,
       });
+      emitMessages(messages);
       report({ kind: 'tool', name, phase: 'done' });
     }
   }
@@ -1463,6 +1487,7 @@ export async function runAuthorAgentTurn(opts: {
       role: 'user',
       content: `초안 작업은 끝났습니다. 지금 즉시 ${saveToolName}(confirm=true)만 호출하세요. 다른 도구는 쓰지 마세요.`,
     });
+    emitMessages(messages);
     try {
       const forced = await createChatCompletion({
         settings: ctx.settings,
@@ -1618,10 +1643,12 @@ export async function runAuthorAgentTurn(opts: {
   );
 
   // Persist final answers only — drop think/thought from stored turns.
+  const finalMessages = stripThinkingFromHistory(
+    uiMessages.filter((m) => m.role !== 'system'),
+  );
+  onMessages?.(finalMessages);
   return {
-    messages: stripThinkingFromHistory(
-      uiMessages.filter((m) => m.role !== 'system'),
-    ),
+    messages: finalMessages,
     draft,
     assistantText: stripThinkingContent(assistantText),
     savedProblem,

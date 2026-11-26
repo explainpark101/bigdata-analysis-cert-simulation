@@ -4492,6 +4492,36 @@ body.is-resizing-y * {
   justify-self: start;
 }
 
+.exam-auto-review-queue__problem-btn {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 6px 8px;
+  align-items: baseline;
+  width: 100%;
+  margin: 0;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.exam-auto-review-queue__problem-btn:hover {
+  border-color: var(--dq-border);
+  background: color-mix(in srgb, var(--dq-accent) 8%, transparent);
+}
+
+.modify-dock__auto-review {
+  color: var(--dq-muted);
+}
+
+.modify-dock__auto-review--live {
+  color: var(--dq-accent);
+  font-weight: 600;
+}
+
 .exam-assemble-main {
   flex: 1 1 auto;
   min-width: 0;

@@ -14,6 +14,8 @@ interface ExamAutoReviewQueueModalProps {
   onClose: () => void;
   /** Jump to exam assemble tab for this paper. */
   onSelectExam: (examId: string) => void;
+  /** Jump to bank modify dock for a problem under auto-review. */
+  onSelectProblem?: (problemId: string, examId: string) => void;
 }
 
 function phaseLabel(phase: ExamAutoReviewJob['phase']): string {
@@ -56,6 +58,7 @@ export function ExamAutoReviewQueueModal({
   open,
   onClose,
   onSelectExam,
+  onSelectProblem,
 }: ExamAutoReviewQueueModalProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -148,27 +151,56 @@ export function ExamAutoReviewQueueModal({
                       >
                         <span style={{ width: `${prog.ratio * 100}%` }} />
                       </div>
-                      <ul className="exam-auto-review-queue__problems">
-                        {job.problems.map((p) => (
-                          <li key={p.problemId}>
-                            <span className="badge">제{p.taskType}유형</span>
-                            <span className="exam-auto-review-queue__pname">
-                              {p.title}
-                            </span>
-                            <span
-                              className={`exam-auto-review-queue__pphase exam-auto-review-queue__pphase--${p.phase}`}
-                            >
-                              {problemPhaseLabel(p.phase)}
-                            </span>
-                            {p.message ? (
-                              <span className="exam-auto-review-queue__pmsg">
-                                {p.message}
-                              </span>
-                            ) : null}
-                          </li>
-                        ))}
-                      </ul>
                     </button>
+                    <ul className="exam-auto-review-queue__problems">
+                      {job.problems.map((p) => (
+                        <li key={p.problemId}>
+                          {onSelectProblem ? (
+                            <button
+                              type="button"
+                              className="exam-auto-review-queue__problem-btn"
+                              onClick={() => {
+                                onSelectProblem(p.problemId, job.examId);
+                                onClose();
+                              }}
+                              title="문제 수정 탭에서 검수 채팅 보기"
+                            >
+                              <span className="badge">제{p.taskType}유형</span>
+                              <span className="exam-auto-review-queue__pname">
+                                {p.title}
+                              </span>
+                              <span
+                                className={`exam-auto-review-queue__pphase exam-auto-review-queue__pphase--${p.phase}`}
+                              >
+                                {problemPhaseLabel(p.phase)}
+                              </span>
+                              {p.message ? (
+                                <span className="exam-auto-review-queue__pmsg">
+                                  {p.message}
+                                </span>
+                              ) : null}
+                            </button>
+                          ) : (
+                            <>
+                              <span className="badge">제{p.taskType}유형</span>
+                              <span className="exam-auto-review-queue__pname">
+                                {p.title}
+                              </span>
+                              <span
+                                className={`exam-auto-review-queue__pphase exam-auto-review-queue__pphase--${p.phase}`}
+                              >
+                                {problemPhaseLabel(p.phase)}
+                              </span>
+                              {p.message ? (
+                                <span className="exam-auto-review-queue__pmsg">
+                                  {p.message}
+                                </span>
+                              ) : null}
+                            </>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
                     {running ? (
                       <button
                         type="button"
