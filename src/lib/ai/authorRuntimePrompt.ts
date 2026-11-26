@@ -429,6 +429,29 @@ export function authorToolContractPromptKo(): string {
 }
 
 /**
+ * Detect assistant text claiming the review / apply / verification is already done.
+ * Used to stop further model rounds once save/apply succeeded (or to avoid nudges).
+ */
+export function assistantClaimsWorkAlreadyDone(text: string): boolean {
+  const raw = String(text ?? '');
+  if (!raw.trim()) return false;
+  const patterns = [
+    /이미\s*(완료|통과|적용|저장|검증)/i,
+    /검수\s*(가\s*)?(완료|끝|성공)/i,
+    /검증\s*(도\s*)?이미\s*통과/i,
+    /apply_changes.{0,40}(이미\s*)?(통과|완료|성공|적용)/i,
+    /save_problem.{0,40}(이미\s*)?(통과|완료|성공|저장)/i,
+    /result\.csv.{0,60}(정상|생성|통과)/i,
+    /더\s*이상\s*(수정|변경|작업|검수).{0,20}(없|불필요)/i,
+    /추가\s*(작업|수정|검수).{0,20}(없|불필요)/i,
+    /work\s+is\s+already\s+(done|complete)/i,
+    /already\s+(passed|applied|saved|verified|complete)/i,
+    /no\s+further\s+(changes|fixes|work)\s+(needed|required)/i,
+  ];
+  return patterns.some((re) => re.test(raw));
+}
+
+/**
  * Detect assistant text that wrongly claims tools are missing or only plans work.
  */
 export function assistantSkippedRequiredTools(text: string): boolean {

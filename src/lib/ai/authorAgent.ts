@@ -14,6 +14,7 @@ import {
 } from '@/lib/aiSettings';
 import type { AuthorDraft } from '@/lib/ai/authorChatStore';
 import {
+  assistantClaimsWorkAlreadyDone,
   assistantSkippedRequiredTools,
   authorDifficultyPromptEn,
   authorKatexPromptEn,
@@ -991,10 +992,28 @@ export async function runAuthorAgentTurn(opts: {
 
     const calls = msg.tool_calls ?? [];
     if (!calls.length) {
+      // Persist already succeeded earlier this turn — do not keep reviewing.
+      if (savedProblem) {
+        report({
+          kind: 'status',
+          text: '적용·저장 완료 — 추가 모델 요청 중단',
+        });
+        break;
+      }
+      // Model says review/apply is already done — stop further model rounds.
+      // requireSave fallback below may still force one client-side apply/save.
+      if (assistantClaimsWorkAlreadyDone(text)) {
+        report({
+          kind: 'status',
+          text: '검수 완료 응답 — 추가 모델 요청 중단',
+        });
+        break;
+      }
       const needsWork =
-        requireSave ||
+        (requireSave && !savedProblem) ||
         assistantSkippedRequiredTools(text) ||
-        (emptyToolNudges === 0 && /SYNTHESIZE|MUTATE|set_dataset|run_answer|CSV|재생성|검증/i.test(text));
+        (emptyToolNudges === 0 &&
+          /SYNTHESIZE|MUTATE|set_dataset|run_answer|CSV|재생성|검증/i.test(text));
       if (needsWork && emptyToolNudges < MAX_EMPTY_TOOL_NUDGES) {
         emptyToolNudges += 1;
         report({
@@ -1504,6 +1523,15 @@ export async function runAuthorAgentTurn(opts: {
         phase: 'done',
         detail: truncateToolDetail(toolResult),
       });
+    }
+
+    // Successful save_problem / apply_changes — stop requesting more rounds.
+    if (savedProblem) {
+      report({
+        kind: 'status',
+        text: '적용·저장 완료 — 추가 모델 요청 중단',
+      });
+      break;
     }
   }
 
