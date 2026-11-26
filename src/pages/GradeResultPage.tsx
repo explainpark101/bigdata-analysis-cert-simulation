@@ -1,15 +1,20 @@
 import { useEffect, useId, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Home, Sparkles } from 'lucide-react';
+import { ArrowLeft, Home, Settings, Sparkles } from 'lucide-react';
 import {
   loadGradeResult,
   type GradeResultSnapshot,
 } from '@/lib/gradeResultStore';
 import { formatDurationMs } from '@/lib/examActivityLog';
+import {
+  formatLocalDateTime,
+  toDateTimeAttr,
+} from '@/lib/formatLocalTime';
 import type { GradeItem, GradeStatus } from '@/lib/examGrade';
 import { askGradeCoach } from '@/lib/ai/gradeCoach';
 import { renderMarkdown } from '@/lib/markdown';
 import { EdgeResizeHandle } from '@/components/layout/EdgeResizeHandle';
+import { GlobalSettingsModal } from '@/components/settings/GlobalSettingsModal';
 import {
   getGradeProgress,
   gradeProgressRatio,
@@ -99,6 +104,7 @@ export default function GradeResultPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [codeWidth, setCodeWidth] = useState(CODE_W_DEFAULT);
   const [narrow, setNarrow] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => subscribeGradeProgress(setProgress), []);
 
@@ -208,10 +214,21 @@ export default function GradeResultPage() {
           <h1>채점 리포트</h1>
           <p className="edit-page__sub">
             {snap.examTitle} ·{' '}
-            {new Date(snap.gradedAt).toLocaleString('ko-KR')}
+            <time dateTime={toDateTimeAttr(snap.gradedAt)}>
+              {formatLocalDateTime(snap.gradedAt)}
+            </time>
           </p>
         </div>
         <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="ghost-btn btn-with-icon"
+            onClick={() => setSettingsOpen(true)}
+            aria-label="AI · 전역 설정"
+          >
+            <Settings size={16} />
+            AI 설정
+          </button>
           <Link className="ghost-btn btn-with-icon" to="/exam">
             <ArrowLeft size={16} />
             시험으로
@@ -350,8 +367,8 @@ export default function GradeResultPage() {
               <ol className="grade-report-timeline">
                 {activity.events.map((e, i) => (
                   <li key={`${e.type}-${e.at}-${i}`}>
-                    <time dateTime={new Date(e.at).toISOString()}>
-                      {new Date(e.at).toLocaleTimeString('ko-KR')}
+                    <time dateTime={toDateTimeAttr(e.at)}>
+                      {formatLocalDateTime(e.at)}
                     </time>
                     <span>
                       {e.type}
@@ -369,6 +386,11 @@ export default function GradeResultPage() {
           </div>
         </section>
       </div>
+
+      <GlobalSettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
     </div>
   );
 }

@@ -16,7 +16,9 @@ export type IdbKey =
   | 'authorChats'
   | 'gradeResult'
   /** examId → quizId → type-2 result.csv snapshot */
-  | 'type2Results';
+  | 'type2Results'
+  /** problemId → synthesized test_label.csv for re-grade */
+  | 'type2Labels';
 
 export interface AssetBodyRecord {
   encoding: 'utf-8' | 'base64';

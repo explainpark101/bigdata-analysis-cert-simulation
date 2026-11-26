@@ -89,26 +89,16 @@ import type { ShortAnswerSlot } from '@/types/exam';
 import { examineeDataFiles } from '@/lib/type2Assets';
 import { saveType2Submission } from '@/lib/type2ResultStore';
 import { readExamResultCsv } from '@/lib/examResultFile';
+import {
+  clearExamTimer,
+  ensureExamStartMs,
+  examClockNowMs,
+  getExamEndedMs,
+  markExamEndedMs,
+} from '@/lib/examTimer';
 
 const SIDEBAR_W_DEFAULT = 240;
 const SIDEBAR_W_MIN = 180;
-
-function timerStorageKey(examId: string): string {
-  return `bks.examTimerStart.${examId}`;
-}
-
-function ensureExamStartMs(examId: string): number {
-  try {
-    const raw = sessionStorage.getItem(timerStorageKey(examId));
-    const parsed = raw ? Number(raw) : NaN;
-    if (Number.isFinite(parsed) && parsed > 0) return parsed;
-    const now = Date.now();
-    sessionStorage.setItem(timerStorageKey(examId), String(now));
-    return now;
-  } catch {
-    return Date.now();
-  }
-}
 
 function formatRemaining(totalSec: number): string {
   const s = Math.max(0, Math.floor(totalSec));
@@ -209,13 +199,18 @@ export default function ExamPage() {
     const startMs = ensureExamStartMs(exam.id);
     const limitMs = limit * 60 * 1000;
     const tick = () => {
-      const left = Math.ceil((startMs + limitMs - Date.now()) / 1000);
+      // Freeze once grading has started (markExamEndedMs).
+      const now = examClockNowMs(exam.id);
+      const left = Math.ceil((startMs + limitMs - now) / 1000);
       setRemainingSec(left);
     };
     tick();
+    if (getExamEndedMs(exam.id) != null || gradeBusy) {
+      return;
+    }
     const id = window.setInterval(tick, 1000);
     return () => window.clearInterval(id);
-  }, [exam?.id, exam?.timeLimitMinutes, exam]);
+  }, [exam?.id, exam?.timeLimitMinutes, exam, gradeBusy]);
 
   const quizIndex = Math.max(
     0,
@@ -570,6 +565,8 @@ export default function ExamPage() {
       if (!exam || gradeBusy) return;
       setGradeBusy(true);
       setGradeConfirmOpen(false);
+      // Freeze exam wall clock immediately so grading time is not counted.
+      const examEndedAtMs = markExamEndedMs(exam.id);
 
       try {
         let gradingExam = exam;
@@ -635,16 +632,18 @@ export default function ExamPage() {
                   : `채점 중 · ${p.title || `문항 ${p.current + 1}`}`,
             });
           },
+          onQuizUpdate: (quizId, patch) => {
+            updateQuiz(quizId, patch);
+          },
         });
-        const gradedAtMs = Date.now();
         const startMs = ensureExamStartMs(exam.id);
         const events = loadActivityEvents(exam.id);
-        const activity = summarizeActivity(events, gradedAtMs);
+        const activity = summarizeActivity(events, examEndedAtMs);
         await saveGradeResult({
           examId: exam.id,
           examTitle: exam.title,
-          gradedAt: new Date(gradedAtMs).toISOString(),
-          elapsedMs: Math.max(0, gradedAtMs - startMs),
+          gradedAt: new Date(examEndedAtMs).toISOString(),
+          elapsedMs: Math.max(0, examEndedAtMs - startMs),
           report,
           activity,
           rawEvents: events,
@@ -652,14 +651,13 @@ export default function ExamPage() {
         finishGradeProgress();
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        const gradedAtMs = Date.now();
         const startMs = ensureExamStartMs(exam.id);
         const events = loadActivityEvents(exam.id);
         await saveGradeResult({
           examId: exam.id,
           examTitle: exam.title,
-          gradedAt: new Date(gradedAtMs).toISOString(),
-          elapsedMs: Math.max(0, gradedAtMs - startMs),
+          gradedAt: new Date(examEndedAtMs).toISOString(),
+          elapsedMs: Math.max(0, examEndedAtMs - startMs),
           report: {
             items: [
               {
@@ -675,7 +673,7 @@ export default function ExamPage() {
             max: 0,
             unsubmittedCount: 0,
           },
-          activity: summarizeActivity(events, gradedAtMs),
+          activity: summarizeActivity(events, examEndedAtMs),
           rawEvents: events,
         });
         failGradeProgress(message);
@@ -1312,11 +1310,13 @@ export default function ExamPage() {
         onCancel={() => setClearConfirmOpen(false)}
         onSecondary={() => {
           setClearConfirmOpen(false);
+          if (exam) clearExamTimer(exam.id);
           clear();
           navigate('/');
         }}
         onConfirm={() => {
           setClearConfirmOpen(false);
+          if (exam) clearExamTimer(exam.id);
           clear();
         }}
       />

@@ -9,6 +9,10 @@ import {
   TYPE2_LABEL_BASENAME,
   type2LabelAliasPaths,
 } from '@/lib/type2Assets';
+import {
+  loadType2Label,
+  type2LabelRecordToAsset,
+} from '@/lib/type2LabelStore';
 import type { ExamAsset, QuizProblem, RunResult } from '@/types/exam';
 import { mountAssetsToPyodide, mountAssetsToWebR } from '@/runtimes/fsMount';
 import {
@@ -397,7 +401,7 @@ export async function mountSynthesizedType2Labels(
 
 /**
  * Ensure type-2 grading has test_label(s).csv available.
- * Prefer existing asset → answerCode result reshaped → AI fix/generate.
+ * Prefer quiz files → persisted IDB label → answerCode → AI.
  */
 export async function ensureType2LabelsForGrading(
   quiz: QuizProblem,
@@ -413,6 +417,23 @@ export async function ensureType2LabelsForGrading(
         note: `기존 ${existing.name} 사용`,
         asset: existing,
       };
+    }
+  }
+
+  if (!opts.force) {
+    try {
+      const stored = await loadType2Label(quiz.id);
+      if (stored?.csv?.trim()) {
+        const asset = type2LabelRecordToAsset(stored);
+        return {
+          csv: stored.csv,
+          source: 'existing',
+          note: `저장된 test_label 사용 (${stored.source})`,
+          asset,
+        };
+      }
+    } catch {
+      /* ignore store errors */
     }
   }
 

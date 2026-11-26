@@ -22,6 +22,11 @@ import {
 } from '@/lib/type2Assets';
 import { loadType2ExamSubmissions } from '@/lib/type2ResultStore';
 import {
+  loadType2Label,
+  saveType2Label,
+  type2LabelRecordToAsset,
+} from '@/lib/type2LabelStore';
+import {
   ensureType2LabelsForGrading,
   isMissingType2LabelError,
   mountSynthesizedType2Labels,
@@ -428,9 +433,44 @@ function csvPreview(csv: string, maxLines = 8): string {
   return `${lines.slice(0, maxLines).join('\n')}\n… (${lines.length} lines)`;
 }
 
+type GradeQuizUpdate = (
+  quizId: string,
+  patch: Partial<QuizProblem>,
+) => void;
+
+async function persistType2LabelOntoQuiz(opts: {
+  quiz: QuizProblem;
+  files: ExamAsset[];
+  csv: string;
+  source: string;
+  assetName?: string;
+  onQuizUpdate?: GradeQuizUpdate;
+}): Promise<void> {
+  const { quiz, files, csv, source, assetName, onQuizUpdate } = opts;
+  if (!csv.trim()) return;
+  const hadOnQuiz = Boolean(findType2LabelAsset(quiz.files));
+  if (source !== 'existing') {
+    try {
+      await saveType2Label({
+        problemId: quiz.id,
+        csv,
+        source,
+        name: assetName,
+      });
+    } catch {
+      /* ignore store errors */
+    }
+  }
+  // Put label onto the problem itself so re-grade / export reuse it.
+  if (!hadOnQuiz || source !== 'existing') {
+    onQuizUpdate?.(quiz.id, { files });
+  }
+}
+
 async function gradeType2Quiz(
   quiz: QuizProblem,
   timeoutMs: number,
+  onQuizUpdate?: GradeQuizUpdate,
 ): Promise<GradeItem> {
   const max = type2MaxPoints();
   const base = {
@@ -495,6 +535,14 @@ async function gradeType2Quiz(
         );
         files = [...withoutOld, ensured.asset];
         labelNote = ensured.note;
+        await persistType2LabelOntoQuiz({
+          quiz,
+          files,
+          csv: ensured.csv,
+          source: ensured.source,
+          assetName: ensured.asset.name,
+          onQuizUpdate,
+        });
       } else if (ensured.note) {
         labelNote = ensured.note;
       }
@@ -623,6 +671,43 @@ export async function hydrateType2SubmissionsFromIdb(
   return changed ? { ...exam, quizzes } : exam;
 }
 
+/**
+ * Merge persisted (AI / synthesized) test_label CSVs onto quiz.files so
+ * re-grading reuses the same labels without regenerating.
+ */
+export async function hydrateType2LabelsFromIdb(
+  exam: ExamSet,
+  onQuizUpdate?: GradeQuizUpdate,
+): Promise<ExamSet> {
+  let changed = false;
+  const quizzes: QuizProblem[] = [];
+  for (const q of exam.quizzes) {
+    const isType2 = q.taskType === 2 || q.submitFormat === 'csv';
+    if (!isType2 || findType2LabelAsset(q.files)) {
+      quizzes.push(q);
+      continue;
+    }
+    let stored;
+    try {
+      stored = await loadType2Label(q.id);
+    } catch {
+      stored = undefined;
+    }
+    if (!stored?.csv?.trim()) {
+      quizzes.push(q);
+      continue;
+    }
+    changed = true;
+    const next: QuizProblem = {
+      ...q,
+      files: [...(q.files ?? []), type2LabelRecordToAsset(stored)],
+    };
+    onQuizUpdate?.(q.id, { files: next.files });
+    quizzes.push(next);
+  }
+  return changed ? { ...exam, quizzes } : exam;
+}
+
 export type GradeExamProgress = {
   /** 0-based index of the quiz about to be / being graded. */
   current: number;
@@ -637,10 +722,13 @@ export async function gradeExam(
   opts?: {
     timeoutMs?: number;
     onProgress?: (p: GradeExamProgress) => void;
+    /** Persist synthesized labels (and other patches) onto the live exam. */
+    onQuizUpdate?: GradeQuizUpdate;
   },
 ): Promise<GradeReport> {
   const timeoutMs = opts?.timeoutMs ?? OFFICIAL_MAX_RUN_SECONDS * 1000;
-  const hydrated = await hydrateType2SubmissionsFromIdb(exam);
+  let hydrated = await hydrateType2SubmissionsFromIdb(exam);
+  hydrated = await hydrateType2LabelsFromIdb(hydrated, opts?.onQuizUpdate);
   const submit = listSubmitQuizzes(hydrated);
   const unsubmittedCount = submit.filter((q) => !q.submitted).length;
   const items: GradeItem[] = [];
@@ -655,7 +743,7 @@ export async function gradeExam(
       title: quiz.title,
     });
     if (quiz.taskType === 2 || quiz.submitFormat === 'csv') {
-      items.push(await gradeType2Quiz(quiz, timeoutMs));
+      items.push(await gradeType2Quiz(quiz, timeoutMs, opts?.onQuizUpdate));
     } else {
       items.push(gradeShortQuiz(quiz));
     }
