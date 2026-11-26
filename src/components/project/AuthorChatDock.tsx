@@ -41,6 +41,7 @@ import {
 } from '@/lib/ai/authorChatStore';
 import {
   authorDifficultyPromptKo,
+  authorKatexPromptKo,
   authorRuntimeEnvPromptKo,
   authorStatsResearchPromptKo,
   authorToolContractPromptKo,
@@ -293,6 +294,8 @@ function autoPromptForType(
     '- 같은 스킬군/시험 의도를 유지하되, 스토리·컬럼명·시드·분포·문구는 완전히 새로 만드세요. 베끼지 마세요.',
     '',
     authorRuntimeEnvPromptKo(),
+    '',
+    authorKatexPromptKo(),
     '',
     authorToolContractPromptKo(),
     '',

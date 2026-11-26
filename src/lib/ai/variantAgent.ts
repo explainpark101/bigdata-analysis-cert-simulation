@@ -12,6 +12,7 @@ import type { VariantDraft } from '@/lib/ai/variantChatStore';
 import {
   assistantSkippedRequiredTools,
   authorDifficultyPromptEn,
+  authorKatexPromptEn,
   authorRuntimeEnvPromptEn,
   authorStatsResearchPromptEn,
   authorToolContractPromptEn,
@@ -123,6 +124,8 @@ function systemPrompt(
     '',
     authorRuntimeEnvPromptEn(),
     '',
+    authorKatexPromptEn(),
+    '',
     authorStatsResearchPromptEn(),
     '',
     authorDifficultyPromptEn(),
@@ -133,7 +136,7 @@ function systemPrompt(
     type === 2 ? authorType2BandPromptEn() : '',
     '',
     'Always explain briefly in natural language what you changed.',
-    'For stats formulas/metrics: prefer lookup_statistic → fetch_url (or web_search). If ok=false/skip=true, continue with your own knowledge — do not stall.',
+    'For stats formulas/metrics: prefer lookup_statistic → fetch_url (or web_search). If ok=false/skip=true, continue with your own knowledge — do not stall. Put formulas in markdown with KaTeX `$...$` / `$$...$$` only.',
     isModify
       ? 'Call apply_changes only when the user asks to apply/save or the draft is ready to write back to the bank item.'
       : 'Call save_variant only when the user asks to save or the draft is complete.',
@@ -563,6 +566,7 @@ export async function runVariantAgentTurn(opts: {
     `assetIds=${JSON.stringify(ctx.draft.assetIds)}`,
     `markdown:\n${ctx.source.markdown.slice(0, 6000)}`,
     `TOOLS_LIVE=true — tools on this request: ${toolNames.join(', ')}. Never claim tools are disconnected.`,
+    'KATEX=use `$...$` / `$$...$$` only in markdown — never `\\[` `\\(` or bare TeX.',
     mode === 'modify'
       ? `CURRENT DRAFT SNAPSHOT:\ntitle=${draft.title}\nnote=${(draft.note ?? '').slice(0, 500)}\nmarkdown:\n${draft.markdown.slice(0, 6000)}`
       : '',

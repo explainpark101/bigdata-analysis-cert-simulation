@@ -13,6 +13,7 @@ import type { AuthorDraft } from '@/lib/ai/authorChatStore';
 import {
   assistantSkippedRequiredTools,
   authorDifficultyPromptEn,
+  authorKatexPromptEn,
   authorRuntimeEnvPromptEn,
   authorStatsResearchPromptEn,
   authorToolContractPromptEn,
@@ -125,6 +126,8 @@ function systemPrompt(
     '- Write problem markdown in clear Korean exam tone: given files, what to compute, round/trunc rules, submission notes.',
     '',
     authorRuntimeEnvPromptEn(),
+    '',
+    authorKatexPromptEn(),
     '',
     authorStatsResearchPromptEn(),
     '',
@@ -842,7 +845,8 @@ export async function runAuthorAgentTurn(opts: {
           `TOOLS_LIVE=true — tools on this request: ${toolNames.join(', ')}. Never claim tools are disconnected.`,
           'DATA_POLICY=csv_only — every problem MUST have ≥1 .csv; MUTATE/SYNTHESIZE/use_project_assets before apply if needed.',
           'RUNTIME=python(pandas,numpy,scipy.stats,statsmodels,sklearn,xgboost,lightgbm) | r(tidyverse,broom,lubridate).',
-          'DIFFICULTY=hard custom metrics via lookup_statistic/web_search/fetch_url + KaTeX when available; if search fails/skips, use trained knowledge; do NOT default to 합동분산; no formulas for package one-liners.',
+          'DIFFICULTY=hard custom metrics via lookup_statistic/web_search/fetch_url + KaTeX `$`/`$$` when a formula is needed; if search fails/skips, use trained knowledge; do NOT default to 합동분산; no formulas for package one-liners.',
+          'KATEX=use `$...$` / `$$...$$` only in markdown — never `\\[` `\\(` or bare TeX.',
           'TYPE1_3_ANSWERS=numeric only after 반올림 or 절사; never letters/labels.',
           requireSave
             ? `REQUIRE_SAVE=true — end this turn with ${saveToolName}(confirm=true).`
@@ -857,7 +861,8 @@ export async function runAuthorAgentTurn(opts: {
           `TOOLS_LIVE=true — tools on this request: ${toolNames.join(', ')}. Never claim tools are disconnected.`,
           'DATA_POLICY=csv_only — every problem MUST have ≥1 .csv; choose MUTATE (list_project_csvs / transform) or SYNTHESIZE (dataset_code) at design time.',
           'RUNTIME=python(pandas,numpy,scipy.stats,statsmodels,sklearn,xgboost,lightgbm) | r(tidyverse,broom,lubridate).',
-          'DIFFICULTY=hard custom metrics via lookup_statistic/web_search/fetch_url + KaTeX when available; if search fails/skips, use trained knowledge; do NOT default to 합동분산; no formulas for package one-liners.',
+          'DIFFICULTY=hard custom metrics via lookup_statistic/web_search/fetch_url + KaTeX `$`/`$$` when a formula is needed; if search fails/skips, use trained knowledge; do NOT default to 합동분산; no formulas for package one-liners.',
+          'KATEX=use `$...$` / `$$...$$` only in markdown — never `\\[` `\\(` or bare TeX.',
           'TYPE1_3_ANSWERS=numeric only after 반올림 or 절사; never letters/labels.',
           requireSave
             ? `REQUIRE_SAVE=true — end this turn with ${saveToolName}(confirm=true).`

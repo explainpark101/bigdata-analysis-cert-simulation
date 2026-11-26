@@ -59,6 +59,44 @@ export const HARD_CUSTOM_METRIC_IDEAS = [
   'geometric mean of positive ratios with explicit product formula',
 ] as const;
 
+/**
+ * KaTeX delimiter contract — the exam markdown renderer only supports `$` / `$$`.
+ * Keep En/Ko in sync with `katexMarkdownItPlugin`.
+ */
+export function authorKatexPromptEn(): string {
+  return [
+    '## Math / formulas = KaTeX with `$` only (mandatory)',
+    'Problem markdown is rendered with KaTeX. ANY mathematical expression you put in `markdown` MUST use dollar delimiters:',
+    '- Inline: `$...$`  e.g. `$\\\\chi^2$`, `$p$-value`, `$n(k-1)$`',
+    '- Display block: `$$...$$` on its own lines (or same-line `$$...$$`) for multi-line formulas.',
+    'Examples:',
+    '  Inline: Cramer\'s V is $V = \\\\sqrt{\\\\chi^2 / (n\\\\,\\\\min(k-1,r-1))}$.',
+    '  Block:',
+    '  $$',
+    '  V = \\\\sqrt{\\\\frac{\\\\chi^2}{n\\\\min(k-1, r-1)}}',
+    '  $$',
+    'FORBIDDEN (will not render):',
+    '- `\\\\(...\\\\)` or `\\\\[...\\\\]`',
+    '- `\\\\begin{equation}` / amsmath environments as the only wrapper',
+    '- Bare TeX without dollars (e.g. writing `\\\\chi^2` outside `$...$`)',
+    '- HTML/`<math>` / Unicode-only stand-ins when a real formula is required',
+    '- Code fences (``` ) around formulas instead of `$` / `$$`',
+    'Inside `$...$` / `$$...$$`, write standard KaTeX/LaTeX (`\\\\frac`, `\\\\sqrt`, `\\\\sum`, `\\\\chi`, `\\\\min`, subscripts `x_i`, superscripts `x^2`).',
+    'In JSON tool arguments, escape backslashes as usual (`\\\\\\\\frac` in the JSON string → `\\\\frac` in markdown).',
+  ].join('\n');
+}
+
+export function authorKatexPromptKo(): string {
+  return [
+    '## 수식 = KaTeX + `$` 구분자만 (필수)',
+    '문제 본문(markdown) 수식은 KaTeX로만 렌더링됩니다. 수학 식은 반드시 `$` / `$$`로 감싸세요.',
+    '- 인라인: `$...$`  (예: `$\\\\chi^2$`, `$p$-value`)',
+    '- 블록: 단독 줄의 `$$...$$` (여러 줄 수식)',
+    '금지: `\\\\(...\\\\)`, `\\\\[...\\\\]`, `$` 없는 맨 TeX, 코드펜스로 수식 대체, HTML math.',
+    'KaTeX 명령만 사용 (`\\\\frac`, `\\\\sqrt`, `\\\\sum`, `\\\\chi` 등). JSON 인자에서는 백슬래시를 이스케이프하세요.',
+  ].join('\n');
+}
+
 /** Research statistical knowledge via web tools before inventing formulas. */
 export function authorStatsResearchPromptEn(): string {
   return [
@@ -66,7 +104,7 @@ export function authorStatsResearchPromptEn(): string {
     '- Tools: `lookup_statistic` (preferred), `web_search`, then `fetch_url` on the best page.',
     '- If search/fetch fails or returns empty: **skip research** and continue using your trained statistical knowledge. Do not stall the turn.',
     '- Sources when available: Wikipedia (ko/en), textbooks/docs, CrossValidated. Prefer verified formulas when the web works.',
-    '- After a successful fetch, rewrite in KaTeX (`$...$` / `$$...$$`); optionally note the metric in `note`.',
+    '- After a successful fetch, rewrite the formula in KaTeX with `$...$` / `$$...$$` only (see KaTeX section); optionally note the metric in `note`.',
     '- Still reject package one-liners (mean/std/ttest/AUC/F1…): those need no pasted formula.',
   ].join('\n');
 }
@@ -76,7 +114,7 @@ export function authorStatsResearchPromptKo(): string {
     '## 통계 지식 조사 (웹검색·API · 선택)',
     '- 도구: `lookup_statistic` → `web_search` → 필요 시 `fetch_url`.',
     '- 검색/조회가 실패하거나 비면 **스킵**하고, 모델이 알고 있는 통계 지식으로 바로 출제하세요. 조사 때문에 작업을 멈추지 마세요.',
-    '- 조사가 성공하면 KaTeX(`$...$` / `$$...$$`)로 본문에 넣고, `note`에 지표명을 한 줄 남겨도 됩니다.',
+    '- 조사가 성공하면 본문에 KaTeX 수식(`$...$` / `$$...$$`만)으로 넣고, `note`에 지표명을 한 줄 남겨도 됩니다.',
     '- 패키지 한 줄로 되는 값(평균·표준편차·t검정·AUC 등)은 본문에 수식을 넣지 마세요.',
   ].join('\n');
 }
@@ -95,7 +133,7 @@ export function authorDifficultyPromptEn(opts?: {
     '## Difficulty (medium baseline; hard allowed)',
     '- Baseline: multi-step cleaning → transform/feature → aggregate or model/test → formatted answer.',
     '- Hard items (when used) must match 빅데이터분석기사 실기 style:',
-    '  * Put an explicit formula in markdown with KaTeX delimiters: inline `$...$` or block `$$...$$`.',
+    '  * Put an explicit formula in markdown with KaTeX `$...$` / `$$...$$` only (never `\\\\[` / `\\\\(`).',
     '  * Formula ONLY for quantities that are NOT a one-liner in the allowed stack',
     '    (do NOT paste formulas for mean/median/std/var/corr/ttest/chi2/AUC/F1 that pandas/numpy/scipy/sklearn/statsmodels already compute — just name the function/metric).',
     '  * Diversify custom metrics. Do NOT reuse 합동분산/pooled variance as the default hard item.',
@@ -139,7 +177,7 @@ export function authorDifficultyPromptKo(opts?: {
     '## 난이도 · 수식',
     prefer,
     '- 기초 패키지(pandas/numpy/scipy.stats/sklearn/statsmodels 등)로 한 줄 계산되는 값(평균·중앙값·표준편차·상관계수·t검정 p값·AUC·F1 등)은 본문에 수식을 넣지 마세요. 이름만 지시하세요.',
-    '- 고난도는 패키지 원라이너가 아닌 통계적으로 의미 있는 지표만 본문에 KaTeX 수식(`$...$` / `$$...$$`)으로 제시하고, 응시자·정답 코드가 동일 수식을 구현하세요.',
+    '- 고난도는 패키지 원라이너가 아닌 통계적으로 의미 있는 지표만 본문에 KaTeX 수식(`$...$` / `$$...$$`만, `\\\\[`·`\\\\(` 금지)으로 제시하고, 응시자·정답 코드가 동일 수식을 구현하세요.',
     '- 합동분산(pooled variance)을 기본/반복 출제하지 마세요. `lookup_statistic` / `web_search`로 다른 실존 지표를 찾아 쓰세요.',
     `- 시드 아이디어(선택 · 조사 후 바꿔도 됨): ${hint}`,
     '- 필터·ddof·반올림·대상 집단을 본문에 명시하고, 숫자는 run_answer_code 결과로만 set_short_answers 하세요.',
