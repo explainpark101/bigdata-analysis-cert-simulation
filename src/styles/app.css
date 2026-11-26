@@ -716,6 +716,7 @@ body.is-resizing-y * {
   line-height: inherit;
   /* Inherit zoom from .problem-body (font-size: N%) — do not lock to px */
   font-size: 1em;
+  overflow-x: auto;
 }
 
 .md-content h1,
@@ -751,6 +752,32 @@ body.is-resizing-y * {
 }
 
 .md-content b {
+  font-weight: 700;
+}
+
+/* GFM / exam markdown tables — keep readable with borders + horizontal scroll */
+.md-content table,
+.haim-wysiwyg table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75em 0;
+  font-size: 0.95em;
+}
+
+.md-content th,
+.md-content td,
+.haim-wysiwyg th,
+.haim-wysiwyg td {
+  border: 1px solid var(--dq-border);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.md-content thead th,
+.haim-wysiwyg thead th,
+.haim-wysiwyg th {
+  background: var(--dq-panel-muted);
   font-weight: 700;
 }
 
@@ -2111,6 +2138,7 @@ body.is-resizing-y * {
   padding: 12px;
   background: var(--dq-input-bg);
   color: var(--dq-text);
+  overflow-x: auto;
 }
 
 .haim-wysiwyg .ProseMirror {

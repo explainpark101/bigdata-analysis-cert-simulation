@@ -12,6 +12,7 @@ import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Placeholder } from '@tiptap/extensions';
 import Image from '@tiptap/extension-image';
+import { TableKit } from '@tiptap/extension-table';
 import { ImagePlus } from 'lucide-react';
 import { useTheme } from '@/context/ThemeContext';
 import { htmlToMarkdown, markdownToHtmlFragment } from '@/lib/markdown';
@@ -122,6 +123,14 @@ export function ProblemMarkdownEditor({
         allowBase64: true,
         HTMLAttributes: {
           class: 'md-inline-image',
+        },
+      }),
+      TableKit.configure({
+        table: {
+          resizable: false,
+          HTMLAttributes: {
+            class: 'md-table',
+          },
         },
       }),
     ],

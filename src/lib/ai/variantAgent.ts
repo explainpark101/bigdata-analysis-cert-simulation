@@ -119,6 +119,7 @@ function systemPrompt(
           '- SAVE GATE: save/apply re-runs answer code on stored CSV; type 2 must produce result.csv.',
           '- Do NOT paste CSV rows in chat.',
           '- Provide gradingCode via update_draft grading fields with SCORE_BANDS (5pt steps); no short-answer tools.',
+          '- Problem markdown: metric + submit rules only — do NOT prescribe preprocessing techniques/steps (encoding, imputation, scaling, feature recipes, model/hparams).',
           '- Examinee still submits result.csv; do not invent scores.',
         ].join('\n'),
     '',

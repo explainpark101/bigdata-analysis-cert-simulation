@@ -181,6 +181,38 @@ function findBalancedJsonObjects(
   return results;
 }
 
+/** First balanced `{...}` starting at `start`, or null if never closed. */
+function sliceBalancedObjectAt(
+  text: string,
+  start: number,
+): { raw: string; end: number } | null {
+  if (text[start] !== '{') return null;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let j = start; j < text.length; j += 1) {
+    const c = text[j];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === '\\') esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') {
+      inStr = true;
+      continue;
+    }
+    if (c === '{') depth += 1;
+    else if (c === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return { raw: text.slice(start, j + 1), end: j + 1 };
+      }
+    }
+  }
+  return null;
+}
+
 function toolCallsFromParsedJson(parsed: unknown): ToolCall[] {
   if (!parsed || typeof parsed !== 'object') return [];
   const obj = parsed as Record<string, unknown>;
@@ -199,8 +231,90 @@ function toolCallsFromParsedJson(parsed: unknown): ToolCall[] {
 }
 
 /**
+ * Models often append chat prose then `{"tool_calls":[...]}`.
+ * From the first `{"tool_calls":` marker onward is always tool-call payload.
+ */
+const TOOL_CALLS_MARKER_RE = /\{\s*"tool_calls"\s*:/i;
+
+/**
+ * If a markdown fence wraps the marker, expand strip range to the whole fence
+ * (open fence before marker → close fence after, or EOF).
+ */
+function expandStripRangeForFence(
+  text: string,
+  markerStart: number,
+): { stripStart: number; payloadStart: number } {
+  const before = text.slice(0, markerStart);
+  const openIdx = before.lastIndexOf('```');
+  if (openIdx < 0) {
+    return { stripStart: markerStart, payloadStart: markerStart };
+  }
+  // Another fence between open and marker → marker is not inside that fence.
+  if (before.slice(openIdx + 3).includes('```')) {
+    return { stripStart: markerStart, payloadStart: markerStart };
+  }
+  return { stripStart: openIdx, payloadStart: markerStart };
+}
+
+/**
+ * Parse tool_calls from text that begins at / contains `{"tool_calls":`.
+ * Tolerates truncated trailing JSON by scraping complete call objects.
+ */
+function parseToolCallsPayload(payload: string): ToolCall[] {
+  const marker = TOOL_CALLS_MARKER_RE.exec(payload);
+  if (!marker) return [];
+  const objStart = marker.index;
+
+  const balanced = sliceBalancedObjectAt(payload, objStart);
+  if (balanced) {
+    try {
+      const calls = toolCallsFromParsedJson(JSON.parse(balanced.raw));
+      if (calls.length) return calls;
+    } catch {
+      /* fall through to scrape */
+    }
+  }
+
+  // Truncated / messy: take the region after `"tool_calls":` and coerce
+  // every balanced object that looks like a function call.
+  const afterKey = payload.slice(objStart);
+  const arrayMatch = /"tool_calls"\s*:\s*\[/i.exec(afterKey);
+  const scrapeRegion = arrayMatch
+    ? afterKey.slice(arrayMatch.index + arrayMatch[0].length)
+    : afterKey;
+  const scraped = findBalancedJsonObjects(scrapeRegion)
+    .map((o) => {
+      try {
+        return JSON.parse(o.raw) as unknown;
+      } catch {
+        return null;
+      }
+    })
+    .filter((v): v is unknown => v != null);
+  return coerceToolCallList(scraped);
+}
+
+function toRecoveredContent(
+  original: ChatContent,
+  cleaned: string,
+): ChatContent {
+  const next = cleaned
+    .replace(/```(?:json|JSON)?\s*```/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  if (typeof original === 'string' || original == null) {
+    return next || null;
+  }
+  return next ? [{ type: 'text', text: next }] : null;
+}
+
+/**
  * If assistant content embeds tool_calls JSON, return real ToolCall[] and
  * content with that JSON (and its markdown fence) removed.
+ *
+ * Priority: first `{"tool_calls":` marker — everything from there is treated
+ * as tool calling (handles chat-then-append dumps). Fallbacks cover fenced
+ * single-call objects without the tool_calls wrapper.
  */
 export function recoverEmbeddedToolCalls(content: ChatContent): {
   content: ChatContent;
@@ -211,6 +325,26 @@ export function recoverEmbeddedToolCalls(content: ChatContent): {
     return { content, tool_calls: [] };
   }
 
+  // 1) Hard rule: first `{"tool_calls":` → from there = tool calling.
+  const markerMatch = TOOL_CALLS_MARKER_RE.exec(text);
+  if (markerMatch) {
+    const { stripStart, payloadStart } = expandStripRangeForFence(
+      text,
+      markerMatch.index,
+    );
+    const payload = text.slice(payloadStart);
+    const calls = parseToolCallsPayload(payload);
+    if (calls.length) {
+      // Strip from fence/marker through EOF — trailing junk after the JSON
+      // is part of the dumped tool-call block, not assistant narration.
+      const cleaned = text.slice(0, stripStart);
+      return {
+        content: toRecoveredContent(content, cleaned),
+        tool_calls: calls,
+      };
+    }
+  }
+
   type Hit = {
     tool_calls: ToolCall[];
     start: number;
@@ -218,6 +352,7 @@ export function recoverEmbeddedToolCalls(content: ChatContent): {
   };
   const hits: Hit[] = [];
 
+  // 2) Fallback: fenced JSON without a tool_calls key (single call object).
   const fenceRe = /```(?:json|JSON)?\s*([\s\S]*?)```/g;
   let fenceMatch: RegExpExecArray | null;
   while ((fenceMatch = fenceRe.exec(text)) != null) {
@@ -238,6 +373,7 @@ export function recoverEmbeddedToolCalls(content: ChatContent): {
     }
   }
 
+  // 3) Fallback: bare balanced objects with name / function.name.
   if (!hits.length) {
     for (const obj of findBalancedJsonObjects(text)) {
       if (!obj.raw.includes('tool_calls') && !/"name"\s*:/.test(obj.raw)) {
@@ -263,7 +399,6 @@ export function recoverEmbeddedToolCalls(content: ChatContent): {
     return { content, tool_calls: [] };
   }
 
-  // Prefer the hit with the most tool calls; tie-break: earliest.
   hits.sort((a, b) => {
     const byLen = b.tool_calls.length - a.tool_calls.length;
     if (byLen !== 0) return byLen;
@@ -271,20 +406,11 @@ export function recoverEmbeddedToolCalls(content: ChatContent): {
   });
   const best = hits[0];
 
-  let cleaned = `${text.slice(0, best.start)}${text.slice(best.end)}`;
-  cleaned = cleaned
-    .replace(/```(?:json|JSON)?\s*```/g, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-
-  const nextContent: ChatContent =
-    typeof content === 'string' || content == null
-      ? cleaned || null
-      : cleaned
-        ? [{ type: 'text', text: cleaned }]
-        : null;
-
-  return { content: nextContent, tool_calls: best.tool_calls };
+  const cleaned = `${text.slice(0, best.start)}${text.slice(best.end)}`;
+  return {
+    content: toRecoveredContent(content, cleaned),
+    tool_calls: best.tool_calls,
+  };
 }
 
 /**

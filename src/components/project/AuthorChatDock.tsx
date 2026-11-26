@@ -307,7 +307,9 @@ function autoPromptForType(
       metricHint: pickHardMetricHint(taskType, ordinalInType),
     }),
     '- 단순 사칙/한 줄 집계 장난감 문제는 금지합니다.',
-    '- 결측·형변환·그룹집계·피처/인코딩·모델지표·가설검정 등 실기에서 쓰는 다단계 파이프라인을 포함하세요.',
+    taskType === 2
+      ? '- 2유형 본문에는 전처리 기법·절차를 적지 마세요. 예측 목표·CSV·평가지표·제출 형식만 두고, 전처리·모델링은 응시자 자율입니다.'
+      : '- 결측·형변환·그룹집계·피처/인코딩·모델지표·가설검정 등 실기에서 쓰는 다단계 파이프라인을 포함하세요.',
     `- update_draft로 task_type=${taskType} 를 먼저 설정하세요.`,
     '',
     '## 데이터 설계 판단 (필수)',
@@ -333,7 +335,7 @@ function autoPromptForType(
     '',
     '## 유형별 마무리',
     taskType === 2
-      ? '- 2유형(40점): 본문에 채점 구간표 + 제출 형식. grading에 SCORE_BANDS(또는 EARNED_POINTS). 모델링은 sklearn/xgboost/lightgbm(또는 R 허용 스택) 기준.'
+      ? '- 2유형(40점): 본문에 평가지표·제출 형식만(구간표·전처리 기법 지시 금지). grading에 SCORE_BANDS(또는 EARNED_POINTS). 기준 모델은 sklearn/xgboost/lightgbm(또는 R 허용 스택)으로 작성하되 본문에 모델/전처리 방법을 적지 마세요.'
       : `- ${taskType}유형(${pts}점): 소문항별 반올림/절사 명시 → set_answer_code(줄마다 숫자) → run_answer_code → set_short_answers(소문항 수만큼). 제출은 답안 제출 화면의 칸마다 입력합니다.`,
     '- 마지막에 반드시 save_problem(confirm=true). 저장 없이 끝내면 실패입니다.',
     '- 도구가 없다고 말하거나 계획만 적고 끝내지 마세요. 모든 단계는 tool_calls로 실행하세요.',

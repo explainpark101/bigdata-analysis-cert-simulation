@@ -13,6 +13,41 @@ const md = new MarkdownIt({
 betterMdMarkdownItPlugin(md);
 katexMarkdownItPlugin(md);
 
+function tableCellText(cell: Element): string {
+  return (cell.textContent ?? '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\|/g, '\\|')
+    .replace(/\r?\n+/g, ' ')
+    .trim();
+}
+
+/** Convert an HTML <table> to a GFM pipe table (keeps WYSIWYG round-trips). */
+function htmlTableToMarkdown(table: HTMLTableElement): string {
+  const rows = Array.from(table.querySelectorAll('tr'));
+  if (!rows.length) return '';
+
+  const matrix = rows.map((tr) =>
+    Array.from(tr.querySelectorAll('th, td')).map(tableCellText),
+  );
+  const colCount = Math.max(0, ...matrix.map((r) => r.length));
+  if (!colCount) return '';
+
+  const normalized = matrix.map((row) => {
+    const next = row.slice(0, colCount);
+    while (next.length < colCount) next.push('');
+    return next;
+  });
+
+  const header = normalized[0]!;
+  const body = normalized.slice(1);
+  const lines = [
+    `| ${header.join(' | ')} |`,
+    `| ${header.map(() => '---').join(' | ')} |`,
+    ...body.map((r) => `| ${r.join(' | ')} |`),
+  ];
+  return `\n\n${lines.join('\n')}\n\n`;
+}
+
 function createTurndown(dataUrlToPath?: Map<string, string>): TurndownService {
   const turndown = new TurndownService({
     headingStyle: 'atx',
@@ -23,6 +58,25 @@ function createTurndown(dataUrlToPath?: Map<string, string>): TurndownService {
   turndown.addRule('boldAsB', {
     filter: ['b', 'strong'],
     replacement: (content) => `**${content}**`,
+  });
+
+  // Keep table structure; blank out sections/rows/cells so they are not emitted twice.
+  turndown.addRule('table', {
+    filter: 'table',
+    replacement: (_content, node) =>
+      htmlTableToMarkdown(node as HTMLTableElement),
+  });
+  turndown.addRule('tableSection', {
+    filter: ['thead', 'tbody', 'tfoot'],
+    replacement: (content) => content,
+  });
+  turndown.addRule('tableRow', {
+    filter: 'tr',
+    replacement: () => '',
+  });
+  turndown.addRule('tableCell', {
+    filter: ['th', 'td'],
+    replacement: () => '',
   });
 
   turndown.addRule('assetImage', {
