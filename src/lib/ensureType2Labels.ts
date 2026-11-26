@@ -17,7 +17,6 @@ import {
   runPython,
 } from '@/runtimes/pyodideRuntime';
 import {
-  preloadWebR,
   readWebRFileText,
   runR,
   writeWebRFile,

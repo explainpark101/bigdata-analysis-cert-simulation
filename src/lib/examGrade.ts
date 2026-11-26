@@ -1,6 +1,6 @@
 import type { ExamAsset, ExamSet, QuizProblem, RunResult } from '@/types/exam';
 import { preloadPyodide, runPython } from '@/runtimes/pyodideRuntime';
-import { preloadWebR, runR, writeWebRFile } from '@/runtimes/webrRuntime';
+import { runR, writeWebRFile } from '@/runtimes/webrRuntime';
 import { mountAssetsToPyodide, mountAssetsToWebR } from '@/runtimes/fsMount';
 import {
   resolveType2Points,
@@ -417,7 +417,8 @@ async function gradeType2Quiz(
     max,
   };
 
-  if (!quiz.submitted || !quiz.submittedCsv?.trim()) {
+  const submittedCsv = quiz.submittedCsv?.trim() ?? '';
+  if (!quiz.submitted || !submittedCsv) {
     return {
       ...base,
       status: 'unsubmitted',
@@ -426,8 +427,8 @@ async function gradeType2Quiz(
     };
   }
 
-  const preview = csvPreview(quiz.submittedCsv);
-  const format = type2FormatPenalties(quiz.submittedCsv);
+  const preview = csvPreview(submittedCsv);
+  const format = type2FormatPenalties(submittedCsv);
   const lang = quiz.language;
   const path = quiz.submitFile || 'result.csv';
   const grading = quiz.gradingCode?.[lang]?.trim();
@@ -445,7 +446,7 @@ async function gradeType2Quiz(
       ...base,
       status: earned >= max - 1e-9 ? 'pass' : earned <= 0 ? 'fail' : 'partial',
       detail: [
-        `제출 CSV 확인 (${quiz.submittedCsv.split(/\r?\n/).length} lines) · 채점 코드 없음`,
+        `제출 CSV 확인 (${submittedCsv.split(/\r?\n/).length} lines) · 채점 코드 없음`,
         format.reasons.length
           ? `형식 감점: ${format.reasons.join(' · ')}`
           : '형식 감점 없음',
@@ -485,7 +486,7 @@ async function gradeType2Quiz(
         await mountSynthesizedType2Labels(lang, ensured.csv);
       }
       // Answer-code runs overwrite result.csv — restore the examinee submit.
-      await writeRuntimeFile(lang, path, quiz.submittedCsv);
+      await writeRuntimeFile(lang, path, submittedCsv);
       return ensured;
     };
 
