@@ -27,6 +27,7 @@ import {
   activeModelStreamText,
   chatStepBubbleTitle,
   emptyAgentLiveTrail,
+  formatAssistantStepDetail,
   isCollapsibleChatStep,
   reduceAgentLiveTrail,
   type AgentLiveTrailState,
@@ -1076,7 +1077,7 @@ export function AuthorChatDock({
                   const detail =
                     m.role === 'tool'
                       ? chatContentToText(m.content)
-                      : visibleContent(m);
+                      : formatAssistantStepDetail(m);
                   return (
                     <ChatStepBubble
                       key={`${m.role}-${i}`}

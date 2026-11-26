@@ -449,6 +449,8 @@ export interface ChatCompletionResult {
 export type ChatStreamDeltaHandler = (delta: {
   content?: string;
   toolCallNames?: string[];
+  /** Accumulating tool_calls (name + arguments) while the stream is open. */
+  toolCalls?: Array<{ name: string; arguments: string }>;
 }) => void;
 
 function buildCompletionHeaders(settings: AiEndpointSettings): HeadersInit {
@@ -705,6 +707,18 @@ function applyToolCallDelta(
   }
 }
 
+function toolCallsSnapshot(
+  acc: Map<number, ToolCallAcc>,
+): Array<{ name: string; arguments: string }> {
+  return [...acc.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([, row]) => ({
+      name: row.function.name,
+      arguments: row.function.arguments,
+    }))
+    .filter((t) => t.name || t.arguments);
+}
+
 /**
  * OpenAI-compatible chat.completions with `stream: true` (SSE).
  * Falls back to non-streaming if the body is not an event stream.
@@ -814,6 +828,10 @@ export async function createChatCompletion(opts: {
       ) {
         opts.onDelta?.({
           toolCallNames: result.message.tool_calls.map((t) => t.function.name),
+          toolCalls: result.message.tool_calls.map((t) => ({
+            name: t.function.name,
+            arguments: t.function.arguments,
+          })),
         });
       }
       console.debug('[ai] chat.completions done', {
@@ -874,10 +892,7 @@ async function createChatCompletionOnce(opts: {
     throw new RepetitionLoopError();
   };
 
-  const debugDelta = (delta: {
-    content?: string;
-    toolCallNames?: string[];
-  }) => {
+  const debugDelta: ChatStreamDeltaHandler = (delta) => {
     console.debug('[ai] stream delta', delta);
     opts.onDelta?.(delta);
   };
@@ -1013,9 +1028,11 @@ async function createChatCompletionOnce(opts: {
             .filter((n) => n.length > 2);
           const fresh = names.filter((n) => !announcedTools.has(n));
           for (const n of fresh) announcedTools.add(n);
-          if (fresh.length) {
-            debugDelta({ toolCallNames: [...announcedTools] });
-          }
+          const snapshot = toolCallsSnapshot(toolAcc);
+          debugDelta({
+            toolCallNames: fresh.length ? [...announcedTools] : undefined,
+            toolCalls: snapshot,
+          });
         }
       }
     }
@@ -1070,6 +1087,7 @@ async function createChatCompletionOnce(opts: {
           }
           if (delta?.tool_calls?.length) {
             for (const tc of delta.tool_calls) applyToolCallDelta(toolAcc, tc);
+            debugDelta({ toolCalls: toolCallsSnapshot(toolAcc) });
           }
         } catch {
           /* ignore trailing partial */
@@ -1092,6 +1110,10 @@ async function createChatCompletionOnce(opts: {
   if (tool_calls.length) {
     debugDelta({
       toolCallNames: tool_calls.map((t) => t.function.name),
+      toolCalls: tool_calls.map((t) => ({
+        name: t.function.name,
+        arguments: t.function.arguments,
+      })),
     });
   }
 

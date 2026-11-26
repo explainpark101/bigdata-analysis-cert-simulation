@@ -20,6 +20,12 @@ export interface AiEndpointSettings {
    * (e.g. min_p, seed). Reserved keys are ignored.
    */
   extraParams?: Record<string, AiExtraParamValue>;
+  /**
+   * Max model↔tool rounds per author/modify agent turn
+   * (app-level; carried on the active endpoint for callers).
+   * `null` / omitted-as-unlimited → no round cap.
+   */
+  maxAgentRounds?: number | null;
 }
 
 export type AiProviderKind =
@@ -67,6 +73,41 @@ export const AI_RESERVED_BODY_KEYS = new Set([
 export interface AiSettingsState {
   activeProfileId: string;
   profiles: AiProviderProfile[];
+  /**
+   * Max model↔tool rounds per agent turn (shared across profiles).
+   * `null` = unlimited (empty / ≤0 in the settings UI).
+   */
+  maxAgentRounds?: number | null;
+}
+
+/** Default finite cap when the setting key is missing from storage. */
+export const DEFAULT_MAX_AGENT_ROUNDS = 20;
+export const MAX_MAX_AGENT_ROUNDS = 100;
+
+/**
+ * Parse max agent rounds.
+ * - empty / null / ≤0 → `null` (unlimited)
+ * - positive → clamped to 1…MAX_MAX_AGENT_ROUNDS
+ * - `undefined` → missingDefault (or DEFAULT_MAX_AGENT_ROUNDS)
+ */
+export function normalizeMaxAgentRounds(
+  raw: unknown,
+  opts?: { missingDefault?: number | null },
+): number | null {
+  if (raw === undefined) {
+    return opts?.missingDefault === undefined
+      ? DEFAULT_MAX_AGENT_ROUNDS
+      : opts.missingDefault;
+  }
+  if (raw === null || raw === '') return null;
+  const n = Math.round(Number(raw));
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.min(MAX_MAX_AGENT_ROUNDS, n);
+}
+
+/** @deprecated Prefer normalizeMaxAgentRounds */
+export function clampMaxAgentRounds(raw: unknown): number | null {
+  return normalizeMaxAgentRounds(raw, { missingDefault: null });
 }
 
 export const PROVIDER_PRESETS: Array<{
@@ -116,6 +157,7 @@ export const DEFAULT_AI_SETTINGS: AiEndpointSettings = {
   topP: null,
   topK: null,
   extraParams: {},
+  maxAgentRounds: DEFAULT_MAX_AGENT_ROUNDS,
 };
 
 function newId(): string {
@@ -230,6 +272,7 @@ export function createProviderProfile(
 
 export function profileToEndpoint(
   profile: AiProviderProfile,
+  opts?: { maxAgentRounds?: number | null },
 ): AiEndpointSettings {
   return {
     baseUrl: profile.baseUrl.replace(/\/+$/, ''),
@@ -244,6 +287,7 @@ export function profileToEndpoint(
     topP: normalizeOptionalNumber(profile.topP, 0, 1),
     topK: normalizeOptionalNumber(profile.topK, 0, 200),
     extraParams: normalizeExtraParams(profile.extraParams),
+    maxAgentRounds: normalizeMaxAgentRounds(opts?.maxAgentRounds),
   };
 }
 
@@ -268,6 +312,7 @@ export function normalizeAiSettings(
     topP: normalizeOptionalNumber(raw?.topP, 0, 1),
     topK: normalizeOptionalNumber(raw?.topK, 0, 200),
     extraParams: normalizeExtraParams(raw?.extraParams),
+    maxAgentRounds: normalizeMaxAgentRounds(raw?.maxAgentRounds),
   };
 }
 
@@ -293,21 +338,30 @@ export function normalizeAiSettingsState(
       kind: 'compatible',
       ...legacy,
     });
-    return { activeProfileId: profile.id, profiles: [profile] };
+    return {
+      activeProfileId: profile.id,
+      profiles: [profile],
+      maxAgentRounds: normalizeMaxAgentRounds(legacy.maxAgentRounds),
+    };
   }
 
   const state = raw as Partial<AiSettingsState> | null | undefined;
   const profiles = Array.isArray(state?.profiles)
     ? state!.profiles.map((p) => normalizeProfile(p))
     : [];
+  const maxAgentRounds = normalizeMaxAgentRounds(state?.maxAgentRounds);
   if (!profiles.length) {
     const profile = createProviderProfile({ label: 'OpenAI' });
-    return { activeProfileId: profile.id, profiles: [profile] };
+    return {
+      activeProfileId: profile.id,
+      profiles: [profile],
+      maxAgentRounds,
+    };
   }
   const activeProfileId =
     profiles.find((p) => p.id === state?.activeProfileId)?.id ??
     profiles[0].id;
-  return { activeProfileId, profiles };
+  return { activeProfileId, profiles, maxAgentRounds };
 }
 
 export async function loadAiSettingsState(): Promise<AiSettingsState> {
@@ -325,7 +379,9 @@ export async function loadAiSettings(): Promise<AiEndpointSettings> {
   const active =
     state.profiles.find((p) => p.id === state.activeProfileId) ??
     state.profiles[0];
-  return profileToEndpoint(active);
+  return profileToEndpoint(active, {
+    maxAgentRounds: state.maxAgentRounds,
+  });
 }
 
 export async function saveAiSettingsState(
@@ -354,7 +410,15 @@ export async function saveAiSettings(
         }
       : p,
   );
-  await saveAiSettingsState({ ...state, profiles });
+  await saveAiSettingsState({
+    ...state,
+    profiles,
+    maxAgentRounds: normalizeMaxAgentRounds(
+      next.maxAgentRounds !== undefined
+        ? next.maxAgentRounds
+        : state.maxAgentRounds,
+    ),
+  });
 }
 
 /**

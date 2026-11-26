@@ -2,7 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Plus, Trash2, X } from 'lucide-react';
 import {
   DEFAULT_AI_TEMPERATURE,
+  DEFAULT_MAX_AGENT_ROUNDS,
+  MAX_MAX_AGENT_ROUNDS,
   PROVIDER_PRESETS,
+  normalizeMaxAgentRounds,
   createProviderProfile,
   formatExtraParamValue,
   loadAiSettingsState,
@@ -607,6 +610,38 @@ export function GlobalSettingsModal({ open, onClose }: GlobalSettingsModalProps)
                   /models 불러오기
                 </button>
               </div>
+
+              <h3 className="global-settings-subhead">Agent</h3>
+              <p className="edit-page__sub">
+                출제·수정 에이전트가 한 턴에서 모델↔도구를 왕복할 수 있는 최대
+                라운드입니다. 비우거나 0 이하이면 무제한입니다 (중지로 끊기).
+              </p>
+              <TextField
+                label="최대 에이전트 라운드"
+                name="max_agent_rounds"
+                type="number"
+                inputMode="numeric"
+                step="1"
+                min={0}
+                max={MAX_MAX_AGENT_ROUNDS}
+                value={
+                  state.maxAgentRounds == null
+                    ? ''
+                    : String(state.maxAgentRounds)
+                }
+                disabled={busy}
+                placeholder="비우면 무제한"
+                hint={`비움/≤0 = 무제한 · 1–${MAX_MAX_AGENT_ROUNDS} · 미설정 시 기본 ${DEFAULT_MAX_AGENT_ROUNDS}`}
+                onChange={(raw) =>
+                  setState((prev) => ({
+                    ...prev,
+                    maxAgentRounds: normalizeMaxAgentRounds(
+                      raw.trim() === '' ? null : raw,
+                      { missingDefault: null },
+                    ),
+                  }))
+                }
+              />
 
               <h3 className="global-settings-subhead">Sampling</h3>
               <p className="edit-page__sub">

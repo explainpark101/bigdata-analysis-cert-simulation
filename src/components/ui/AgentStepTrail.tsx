@@ -29,12 +29,14 @@ function StepDetails({
   const summaryLabel =
     step.kind === 'model'
       ? step.active
-        ? '모델 응답 생성 중'
+        ? step.toolPreview
+          ? '모델 응답 · 도구 호출 수집 중'
+          : '모델 응답 스트리밍 중'
         : preview
           ? `모델 · ${preview}`
           : '모델 응답'
       : step.active
-        ? `도구 · ${step.title}`
+        ? `도구 실행 · ${step.title}`
         : preview && preview !== '완료'
           ? `${step.title} · ${preview}`
           : step.title;
@@ -63,7 +65,7 @@ function StepDetails({
       </summary>
       <pre className="agent-step__detail">
         {step.detail || (step.active ? '…' : '(내용 없음)')}
-        {showCaret && step.active && step.kind === 'model' ? (
+        {showCaret && step.active ? (
           <span className="variant-dock__caret" aria-hidden>
             ▍
           </span>

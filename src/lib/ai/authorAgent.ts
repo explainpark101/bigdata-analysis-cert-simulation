@@ -8,7 +8,10 @@ import {
   type ChatMessage,
   type ChatToolDef,
 } from '@/lib/ai/openaiCompatible';
-import type { AiEndpointSettings } from '@/lib/aiSettings';
+import {
+  normalizeMaxAgentRounds,
+  type AiEndpointSettings,
+} from '@/lib/aiSettings';
 import type { AuthorDraft } from '@/lib/ai/authorChatStore';
 import {
   assistantSkippedRequiredTools,
@@ -59,12 +62,13 @@ import {
 import { prepareDraftForVerifiedSave } from '@/lib/ai/commitVerifiedProblem';
 import { linkedCsvAssetIds } from '@/lib/ai/ensureProblemCsv';
 import {
+  formatToolRequest,
   truncateToolDetail,
   type AgentProgressEvent,
 } from '@/lib/ai/agentLiveTrail';
 
-const MAX_TOOL_ROUNDS = 14;
-const MAX_TOOL_ROUNDS_REQUIRE_SAVE = 20;
+/** Fallback when settings omit maxAgentRounds. */
+const DEFAULT_MAX_TOOL_ROUNDS = 20;
 
 /** author = new bank item; modify = update an existing bank item in place. */
 export type AuthorAgentMode = 'author' | 'modify';
@@ -919,18 +923,23 @@ export async function runAuthorAgentTurn(opts: {
     throw new DOMException('Generation aborted', 'AbortError');
   };
 
-  const maxRounds = requireSave
-    ? MAX_TOOL_ROUNDS_REQUIRE_SAVE
-    : MAX_TOOL_ROUNDS;
+  const maxRounds = normalizeMaxAgentRounds(
+    ctx.settings.maxAgentRounds !== undefined
+      ? ctx.settings.maxAgentRounds
+      : DEFAULT_MAX_TOOL_ROUNDS,
+  );
 
   // Seed UI with the outgoing user turn before the first model round.
   emitMessages(messages);
 
-  for (let round = 0; round < maxRounds; round++) {
+  for (let round = 0; maxRounds == null || round < maxRounds; round++) {
     throwIfAborted();
     report({
       kind: 'status',
-      text: `모델 응답 생성 중… (${round + 1}/${maxRounds})`,
+      text:
+        maxRounds == null
+          ? `모델 응답 생성 중… (${round + 1}/∞)`
+          : `모델 응답 생성 중… (${round + 1}/${maxRounds})`,
     });
     const completion = await createChatCompletion({
       settings: ctx.settings,
@@ -954,23 +963,30 @@ export async function runAuthorAgentTurn(opts: {
         if (delta.content) {
           report({ kind: 'assistant_delta', text: delta.content });
         }
-        if (delta.toolCallNames?.length) {
-          report({
-            kind: 'status',
-            text: `도구 준비: ${delta.toolCallNames.join(', ')}`,
-          });
+        if (delta.toolCalls?.length) {
+          // Keep the open model bubble streaming; do not start tool
+          // execution until this completion finishes.
+          report({ kind: 'assistant_tools', toolCalls: delta.toolCalls });
         }
       },
     });
     throwIfAborted();
     const msg = completion.message;
+    const text = chatContentToText(msg.content).trim();
+    report({
+      kind: 'assistant_finish',
+      text,
+      toolCalls: (msg.tool_calls ?? []).map((t) => ({
+        name: t.function.name,
+        arguments: t.function.arguments,
+      })),
+    });
     messages.push({
       role: 'assistant',
       content: msg.content,
       tool_calls: msg.tool_calls,
     });
     emitMessages(messages);
-    const text = chatContentToText(msg.content).trim();
     if (text) assistantText = text;
 
     const calls = msg.tool_calls ?? [];
@@ -998,7 +1014,13 @@ export async function runAuthorAgentTurn(opts: {
     for (const call of calls) {
       throwIfAborted();
       const name = call.function.name;
-      report({ kind: 'tool', name, phase: 'start' });
+      report({
+        kind: 'tool',
+        name,
+        phase: 'start',
+        arguments: call.function.arguments,
+        detail: formatToolRequest(name, call.function.arguments),
+      });
       report({ kind: 'status', text: `도구 실행: ${name}` });
       const args = parseArgs(call.function.arguments);
       let toolResult = '';
@@ -1512,6 +1534,22 @@ export async function runAuthorAgentTurn(opts: {
             text: `강제 저장 재시도… (${attempt})${msg ? ` · ${msg.slice(0, 80)}` : ''}`,
           });
         },
+        onDelta: (delta) => {
+          if (delta.content) {
+            report({ kind: 'assistant_delta', text: delta.content });
+          }
+          if (delta.toolCalls?.length) {
+            report({ kind: 'assistant_tools', toolCalls: delta.toolCalls });
+          }
+        },
+      });
+      report({
+        kind: 'assistant_finish',
+        text: chatContentToText(forced.message.content).trim(),
+        toolCalls: (forced.message.tool_calls ?? []).map((t) => ({
+          name: t.function.name,
+          arguments: t.function.arguments,
+        })),
       });
       messages.push({
         role: 'assistant',
@@ -1533,9 +1571,23 @@ export async function runAuthorAgentTurn(opts: {
               error: bad,
               regenerate: true,
             });
-            report({ kind: 'tool', name: saveToolName, phase: 'done' });
+            report({
+              kind: 'tool',
+              name: saveToolName,
+              phase: 'done',
+              detail: truncateToolDetail(toolResult),
+            });
           } else {
-            report({ kind: 'tool', name: saveToolName, phase: 'start' });
+            report({
+              kind: 'tool',
+              name: saveToolName,
+              phase: 'start',
+              arguments: call.function.arguments,
+              detail: formatToolRequest(
+                saveToolName,
+                call.function.arguments,
+              ),
+            });
             const committed = await tryCommitAuthorDraft({
               project: ctx.project,
               draft,
@@ -1562,7 +1614,12 @@ export async function runAuthorAgentTurn(opts: {
                 verified: true,
               });
             }
-            report({ kind: 'tool', name: saveToolName, phase: 'done' });
+            report({
+              kind: 'tool',
+              name: saveToolName,
+              phase: 'done',
+              detail: truncateToolDetail(toolResult),
+            });
           }
         }
         messages.push({
