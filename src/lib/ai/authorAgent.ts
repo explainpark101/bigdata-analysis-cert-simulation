@@ -649,15 +649,18 @@ async function runAnswer(
     }
     return { ok: out.ok, stdout: out.stdout, stderr: out.stderr };
   };
-  if (language === 'python') {
-    await preloadPyodide();
-    await mountAssetsToPyodide(files);
-    return finish(await runPython(source));
-  }
-  await preloadWebR();
-  const { mountAssetsToWebR } = await import('@/runtimes/fsMount');
-  await mountAssetsToWebR(files);
-  return finish(await runR(source));
+  const { withRuntimeLock } = await import('@/lib/runtimeMutex');
+  return withRuntimeLock(async () => {
+    if (language === 'python') {
+      await preloadPyodide();
+      await mountAssetsToPyodide(files);
+      return finish(await runPython(source));
+    }
+    await preloadWebR();
+    const { mountAssetsToWebR } = await import('@/runtimes/fsMount');
+    await mountAssetsToWebR(files);
+    return finish(await runR(source));
+  });
 }
 
 function assertType13AnswersFinite(draft: AuthorDraft): string | null {
@@ -1224,25 +1227,27 @@ export async function runAuthorAgentTurn(opts: {
               ctx.project.assets = hydrated.assets;
               const files = resolveAssets(hydrated, csvIds);
               const mounted = files.map((f) => f.path);
-              if (lang === 'python') {
-                await preloadPyodide();
-                await clearPyodideOutCsvs();
-                await mountAssetsToPyodide(files);
-                const out = await runPython(code);
-                const outFiles = await listOutFiles();
-                toolResult = JSON.stringify({
-                  ok: out.ok,
-                  language: lang,
-                  stdout: out.stdout,
-                  stderr: out.stderr,
-                  mounted,
-                  files: outFiles,
-                  rejected,
-                  hint: outFiles.length
-                    ? 'Call save_generated_assets with these out/*.csv basenames.'
-                    : 'No out/*.csv written — fix transform code.',
-                });
-              } else {
+              const { withRuntimeLock } = await import('@/lib/runtimeMutex');
+              toolResult = await withRuntimeLock(async () => {
+                if (lang === 'python') {
+                  await preloadPyodide();
+                  await clearPyodideOutCsvs();
+                  await mountAssetsToPyodide(files);
+                  const out = await runPython(code);
+                  const outFiles = await listOutFiles();
+                  return JSON.stringify({
+                    ok: out.ok,
+                    language: lang,
+                    stdout: out.stdout,
+                    stderr: out.stderr,
+                    mounted,
+                    files: outFiles,
+                    rejected,
+                    hint: outFiles.length
+                      ? 'Call save_generated_assets with these out/*.csv basenames.'
+                      : 'No out/*.csv written — fix transform code.',
+                  });
+                }
                 await preloadWebR();
                 await clearWebROutCsvs();
                 const { mountAssetsToWebR } = await import(
@@ -1255,7 +1260,7 @@ export async function runAuthorAgentTurn(opts: {
                 if (outFiles.length) {
                   await syncWebROutToPyodide(outFiles);
                 }
-                toolResult = JSON.stringify({
+                return JSON.stringify({
                   ok: out.ok,
                   language: lang,
                   stdout: out.stdout,
@@ -1267,7 +1272,7 @@ export async function runAuthorAgentTurn(opts: {
                     ? 'Call save_generated_assets with these out/*.csv basenames.'
                     : 'No out/*.csv written — fix transform code.',
                 });
-              }
+              });
             }
           }
         } else if (name === 'set_dataset_code') {
@@ -1285,14 +1290,17 @@ export async function runAuthorAgentTurn(opts: {
               error: 'datasetCode empty',
             });
           } else {
-            await clearPyodideOutCsvs();
-            const out = await runPython(draft.datasetCode);
-            const files = await listOutFiles();
-            toolResult = JSON.stringify({
-              ok: out.ok,
-              stdout: out.stdout,
-              stderr: out.stderr,
-              files,
+            const { withRuntimeLock } = await import('@/lib/runtimeMutex');
+            toolResult = await withRuntimeLock(async () => {
+              await clearPyodideOutCsvs();
+              const out = await runPython(draft.datasetCode);
+              const files = await listOutFiles();
+              return JSON.stringify({
+                ok: out.ok,
+                stdout: out.stdout,
+                stderr: out.stderr,
+                files,
+              });
             });
           }
         } else if (name === 'save_generated_assets') {

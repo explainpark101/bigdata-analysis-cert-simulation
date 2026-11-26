@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   CheckSquare,
@@ -9,11 +9,13 @@ import {
   Home,
   Library,
   ListChecks,
+  ListTodo,
   PenLine,
   Play,
   Plus,
   RotateCcw,
   Settings,
+  ShieldCheck,
   Sparkles,
   Square,
   Trash2,
@@ -37,6 +39,7 @@ import {
 } from '@/lib/assetImport';
 import { AnswerAuthorPanel } from '@/components/project/AnswerAuthorPanel';
 import { ExamAssemblePreview } from '@/components/project/ExamAssemblePreview';
+import { ExamAutoReviewQueueModal } from '@/components/project/ExamAutoReviewQueueModal';
 import { VariantChatDock } from '@/components/project/VariantChatDock';
 import { ModifyChatDock } from '@/components/project/ModifyChatDock';
 import { ProblemAuthorTab } from '@/components/project/ProblemAuthorTab';
@@ -60,6 +63,12 @@ import {
   pickOfficialProblemIds,
 } from '@/lib/examOfficialSpec';
 import { autoUploadExamFromProject } from '@/lib/autoUpload';
+import { startExamAutoReview } from '@/lib/ai/examAutoReview';
+import {
+  countRunningExamAutoReviews,
+  isExamAutoReviewRunning,
+  subscribeExamAutoReviewQueue,
+} from '@/lib/examAutoReviewQueue';
 
 interface PendingImportSession {
   ready: PendingAssetImport[];
@@ -93,6 +102,7 @@ const TASK_LABELS: Record<TaskType, string> = {
 export default function ProjectPage() {
   const {
     project,
+    getProject,
     activeExam,
     setProject,
     addAssetsFromFiles,
@@ -136,11 +146,23 @@ export default function ProjectPage() {
     MODIFY_DOCK_W_DEFAULT,
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [autoReviewQueueOpen, setAutoReviewQueueOpen] = useState(false);
+  const [runningAutoReviews, setRunningAutoReviews] = useState(0);
+  const [activeExamReviewing, setActiveExamReviewing] = useState(false);
   const [variantOpen, setVariantOpen] = useState(false);
   const [message, setMessage] = useState('');
   const [pendingDanger, setPendingDanger] = useState<PendingDanger | null>(null);
   const [importSession, setImportSession] = useState<PendingImportSession | null>(
     null,
+  );
+
+  useEffect(
+    () =>
+      subscribeExamAutoReviewQueue(() => {
+        setRunningAutoReviews(countRunningExamAutoReviews());
+        setActiveExamReviewing(isExamAutoReviewRunning(activeExam.id));
+      }),
+    [activeExam.id],
   );
   const csvRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
@@ -286,6 +308,21 @@ export default function ProjectPage() {
           </p>
         </div>
         <div className="row edit-page__actions">
+          <button
+            type="button"
+            className="ghost-btn btn-with-icon"
+            onClick={() => setAutoReviewQueueOpen(true)}
+            aria-label="자동 검수 큐"
+            title="자동 검수 큐"
+          >
+            <ListTodo size={16} />
+            검수 큐
+            {runningAutoReviews > 0 ? (
+              <span className="exam-auto-review-header-badge">
+                {runningAutoReviews}
+              </span>
+            ) : null}
+          </button>
           <button
             type="button"
             className="ghost-btn btn-with-icon"
@@ -1052,7 +1089,10 @@ export default function ProjectPage() {
                     onClick={() => selectExam(ex.id)}
                   >
                     <strong>{ex.title}</strong>
-                    <span>문제 {ex.problemIds.length}개</span>
+                    <span>
+                      문제 {ex.problemIds.length}개
+                      {isExamAutoReviewRunning(ex.id) ? ' · 검수 중' : ''}
+                    </span>
                   </button>
                   <div className="exam-paper-list__item-actions">
                     <button
@@ -1163,6 +1203,38 @@ export default function ProjectPage() {
                 <button
                   type="button"
                   className="primary-btn btn-with-icon"
+                  disabled={
+                    activeExamReviewing || !activeExam.problemIds.length
+                  }
+                  onClick={() => {
+                    const result = startExamAutoReview(activeExam.id, {
+                      getProject,
+                      addProjectAssets,
+                      updateBankProblem,
+                    });
+                    if (!result.started) {
+                      if (result.reason === 'already_running') {
+                        setMessage('이 시험지는 이미 자동 검수 중입니다.');
+                        setAutoReviewQueueOpen(true);
+                      } else if (result.reason === 'empty_exam') {
+                        setMessage('포함할 문제가 없습니다.');
+                      } else {
+                        setMessage('자동 검수를 시작할 수 없습니다.');
+                      }
+                      return;
+                    }
+                    setMessage(
+                      `자동 검수 시작: ${activeExam.title} · ${activeExam.problemIds.length}문제 병렬 실행`,
+                    );
+                    setAutoReviewQueueOpen(true);
+                  }}
+                >
+                  <ShieldCheck size={15} />
+                  {activeExamReviewing ? '검수 중…' : '자동 검수'}
+                </button>
+                <button
+                  type="button"
+                  className="primary-btn btn-with-icon"
                   onClick={async () => {
                     await exportExamPackage(activeExam.id);
                     setMessage(`시험 ZIP 저장: ${activeExam.title}`);
@@ -1185,6 +1257,11 @@ export default function ProjectPage() {
                   이 시험지 보기
                 </button>
               </div>
+              <p className="edit-page__sub" style={{ marginTop: -4 }}>
+                자동 검수: 모든 문제 정답 검증 → 오류·불일치 시 AI 수정 →
+                IndexedDB·미리보기 반영. 검수 중에도 다른 시험지로 이동·동시
+                검수 가능.
+              </p>
             </section>
             <section className="edit-card">
               <h2>포함할 문제 (유형별 선택 · 순서 = 응시 순서)</h2>
@@ -1349,6 +1426,16 @@ export default function ProjectPage() {
       <GlobalSettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+      />
+
+      <ExamAutoReviewQueueModal
+        open={autoReviewQueueOpen}
+        onClose={() => setAutoReviewQueueOpen(false)}
+        onSelectExam={(examId) => {
+          selectExam(examId);
+          setTab('exam');
+          setMessage('시험 조립 탭으로 이동했습니다.');
+        }}
       />
 
       <ConfirmModal

@@ -1,11 +1,11 @@
 import { useMemo, useState } from 'react';
 import { CheckCircle2, Pencil, Play, XCircle } from 'lucide-react';
 import { renderMarkdown } from '@/lib/markdown';
-import { resolveAssets } from '@/lib/projectIO';
 import { ensureShortAnswersForSubQuestions } from '@/lib/subQuestions';
-import { mountAssetsToPyodide } from '@/runtimes/fsMount';
-import { preloadPyodide, runPython } from '@/runtimes/pyodideRuntime';
-import { preloadWebR, runR } from '@/runtimes/webrRuntime';
+import {
+  verifyBankProblemAnswer,
+  type BankProblemVerifyResult,
+} from '@/lib/verifyBankProblem';
 import type { AuthoringProject, BankProblem } from '@/types/project';
 
 interface ExamAssemblePreviewProps {
@@ -17,15 +17,7 @@ interface ExamAssemblePreviewProps {
 type VerifyState =
   | { status: 'idle' }
   | { status: 'running' }
-  | {
-      status: 'done';
-      ok: boolean;
-      stdout: string;
-      stderr: string;
-      expected: string[];
-      got: string[];
-      match: boolean | null;
-    };
+  | ({ status: 'done' } & BankProblemVerifyResult);
 
 function expectedShorts(problem: BankProblem): string[] {
   if (problem.taskType === 2 || problem.submitFormat === 'csv') return [];
@@ -35,27 +27,6 @@ function expectedShorts(problem: BankProblem): string[] {
     problem.shortAnswer,
     problem.taskType,
   ).map((s) => s.trim());
-}
-
-function normalizeLine(s: string): string {
-  return s.trim().replace(/\s+/g, ' ');
-}
-
-function linesFromStdout(stdout: string): string[] {
-  return stdout
-    .split(/\r?\n/)
-    .map(normalizeLine)
-    .filter(Boolean);
-}
-
-function compareAnswers(expected: string[], got: string[]): boolean {
-  if (!expected.length) return got.length === 0;
-  if (got.length < expected.length) return false;
-  // Match expected to the last N stdout lines (common for verbose prints).
-  const slice = got.slice(-expected.length);
-  return expected.every(
-    (e, i) => normalizeLine(e) === normalizeLine(slice[i] ?? ''),
-  );
 }
 
 function PreviewCard({
@@ -85,58 +56,8 @@ function PreviewCard({
   const runVerify = async () => {
     if (verify.status === 'running') return;
     setVerify({ status: 'running' });
-    try {
-      if (!answerCode.trim()) {
-        setVerify({
-          status: 'done',
-          ok: false,
-          stdout: '',
-          stderr: '답안 코드가 비어 있습니다.',
-          expected,
-          got: [],
-          match: null,
-        });
-        return;
-      }
-      const { withProjectAssetContents } = await import('@/lib/assetStore');
-      const hydrated = await withProjectAssetContents(
-        project,
-        problem.assetIds,
-      );
-      const files = resolveAssets(hydrated, problem.assetIds);
-      let out;
-      if (lang === 'python') {
-        await preloadPyodide();
-        await mountAssetsToPyodide(files);
-        out = await runPython(answerCode);
-      } else {
-        await preloadWebR();
-        const { mountAssetsToWebR } = await import('@/runtimes/fsMount');
-        await mountAssetsToWebR(files);
-        out = await runR(answerCode);
-      }
-      const got = linesFromStdout(out.stdout);
-      const match = type2 ? null : compareAnswers(expected, got);
-      setVerify({
-        status: 'done',
-        ok: out.ok,
-        stdout: out.stdout,
-        stderr: out.stderr,
-        expected,
-        got,
-        match,
-      });
-    } catch (err) {
-      setVerify({
-        status: 'done',
-        ok: false,
-        stdout: '',
-        stderr: err instanceof Error ? err.message : String(err),
-        expected,
-        got: [],
-        match: null,
-      });
-    }
+    const result = await verifyBankProblemAnswer(project, problem);
+    setVerify({ status: 'done', ...result });
   };
 
   return (
@@ -267,13 +188,14 @@ function PreviewCard({
             <div className="exam-preview-verify__cmp">
               <div>
                 <span>기대</span>
-                <code>{expected.join(' | ') || '(없음)'}</code>
+                <code>{verify.expected.join(' | ') || '(없음)'}</code>
               </div>
               <div>
                 <span>실행(끝부분)</span>
                 <code>
-                  {(verify.got.slice(-Math.max(expected.length, 1)).join(' | ') ||
-                    '(없음)')}
+                  {(verify.got
+                    .slice(-Math.max(expected.length, 1))
+                    .join(' | ') || '(없음)')}
                 </code>
               </div>
             </div>

@@ -61,6 +61,8 @@ import {
 
 interface ProjectContextValue {
   project: AuthoringProject;
+  /** Latest project snapshot (safe inside async / queue workers). */
+  getProject: () => AuthoringProject;
   activeExam: ExamBlueprint;
   setProject: (p: AuthoringProject) => void;
   /** Import files; identical basename+content skipped; content conflicts auto-renamed */
@@ -165,37 +167,47 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const addProjectAssets = useCallback(async (incoming: ProjectAsset[]) => {
-    const prev = projectRef.current;
-    const assets = [...prev.assets];
-    const resolved: ProjectAsset[] = [];
-
+    // Persist bodies first (await), then merge against the latest snapshot so
+    // concurrent auto-review / agent saves do not clobber each other.
+    const prepared: ProjectAsset[] = [];
     for (const a of incoming) {
+      const prev = projectRef.current;
       const mount = mountPathForAsset(a);
-      const sameIdx = assets.findIndex((x) => mountPathForAsset(x) === mount);
-      const id = sameIdx >= 0 ? assets[sameIdx].id : a.id;
+      const existing = prev.assets.find((x) => mountPathForAsset(x) === mount);
+      const id = existing?.id ?? a.id;
       if (usesExternalBody(a) && a.content) {
         await putAssetBody(id, a.encoding, a.content);
       }
-      const lean: ProjectAsset = usesExternalBody(a)
-        ? {
-            ...a,
-            id,
-            content: '',
-            byteLength: a.byteLength ?? a.content.length,
-          }
-        : { ...a, id };
-      if (sameIdx >= 0) assets[sameIdx] = lean;
-      else assets.push(lean);
-      resolved.push(lean);
+      prepared.push(
+        usesExternalBody(a)
+          ? {
+              ...a,
+              id,
+              content: '',
+              byteLength: a.byteLength ?? a.content.length,
+            }
+          : { ...a, id },
+      );
     }
 
-    setProjectState({
-      ...prev,
-      assets,
-      updatedAt: new Date().toISOString(),
+    setProjectState((prev) => {
+      const assets = [...prev.assets];
+      for (const lean of prepared) {
+        const mount = mountPathForAsset(lean);
+        const sameIdx = assets.findIndex((x) => mountPathForAsset(x) === mount);
+        if (sameIdx >= 0) assets[sameIdx] = lean;
+        else assets.push(lean);
+      }
+      return {
+        ...prev,
+        assets,
+        updatedAt: new Date().toISOString(),
+      };
     });
-    return resolved;
+    return prepared;
   }, []);
+
+  const getProject = useCallback(() => projectRef.current, []);
 
   const addAssetsFromFiles = useCallback(async (files: FileList | File[]) => {
     // One file at a time: read → IDB → drop string → next (avoids folder-import OOM).
@@ -531,6 +543,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const value = useMemo(
     () => ({
       project,
+      getProject,
       activeExam,
       setProject,
       addAssetsFromFiles,
@@ -558,6 +571,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     }),
     [
       project,
+      getProject,
       activeExam,
       setProject,
       addAssetsFromFiles,

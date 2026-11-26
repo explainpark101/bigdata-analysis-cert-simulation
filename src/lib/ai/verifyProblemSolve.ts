@@ -126,16 +126,18 @@ export async function verifyDraftSolvedWithStoredCsv(
 
   let out: { ok: boolean; stdout: string; stderr: string };
   try {
-    if (lang === 'python') {
-      await preloadPyodide();
-      await mountAssetsToPyodide(files);
-      out = await runPython(source);
-    } else {
+    const { withRuntimeLock } = await import('@/lib/runtimeMutex');
+    out = await withRuntimeLock(async () => {
+      if (lang === 'python') {
+        await preloadPyodide();
+        await mountAssetsToPyodide(files);
+        return runPython(source);
+      }
       await preloadWebR();
       const { mountAssetsToWebR } = await import('@/runtimes/fsMount');
       await mountAssetsToWebR(files);
-      out = await runR(source);
-    }
+      return runR(source);
+    });
   } catch (err) {
     return {
       ok: false,
