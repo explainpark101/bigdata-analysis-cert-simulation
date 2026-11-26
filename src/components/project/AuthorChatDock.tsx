@@ -1,4 +1,4 @@
-import {
+﻿import {
   useEffect,
   useId,
   useMemo,
@@ -23,6 +23,14 @@ import {
   tryCommitAuthorDraft,
   type AuthorAgentProgress,
 } from '@/lib/ai/authorAgent';
+import {
+  activeModelStreamText,
+  chatStepBubbleTitle,
+  emptyAgentLiveTrail,
+  isCollapsibleChatStep,
+  reduceAgentLiveTrail,
+  type AgentLiveTrailState,
+} from '@/lib/ai/agentLiveTrail';
 import { playCompletionSound } from '@/lib/ai/completionSound';
 import {
   chatContentToText,
@@ -31,6 +39,10 @@ import {
   type ChatContentPart,
   type ChatMessage,
 } from '@/lib/ai/openaiCompatible';
+import {
+  AgentStepTrail,
+  ChatStepBubble,
+} from '@/components/ui/AgentStepTrail';
 import {
   clearAuthorSession,
   emptyAuthorDraft,
@@ -382,9 +394,9 @@ export function AuthorChatDock({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [ready, setReady] = useState(false);
-  const [liveStatus, setLiveStatus] = useState('');
-  const [liveStream, setLiveStream] = useState('');
-  const [liveTools, setLiveTools] = useState<string[]>([]);
+  const [liveTrail, setLiveTrail] = useState<AgentLiveTrailState>(
+    emptyAgentLiveTrail,
+  );
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [typeGenOpen, setTypeGenOpen] = useState(false);
   const [typeCounts, setTypeCounts] = useState<TypeGenCounts>({
@@ -399,21 +411,14 @@ export function AuthorChatDock({
   const projectRef = useRef(project);
   const referenceIdsRef = useRef(referenceIds);
   const busyRef = useRef(false);
-  const liveStreamRef = useRef('');
+  const liveTrailRef = useRef<AgentLiveTrailState>(emptyAgentLiveTrail());
   const abortRef = useRef<AbortController | null>(null);
   const bodyIdPrefix = useId();
   draftRef.current = draft;
   messagesRef.current = messages;
   projectRef.current = project;
   referenceIdsRef.current = referenceIds;
-
-  const setStream = (value: string | ((prev: string) => string)) => {
-    setLiveStream((prev) => {
-      const next = typeof value === 'function' ? value(prev) : value;
-      liveStreamRef.current = next;
-      return next;
-    });
-  };
+  liveTrailRef.current = liveTrail;
 
   useEffect(() => {
     return () => {
@@ -461,7 +466,7 @@ export function AuthorChatDock({
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, busy, liveStream, liveStatus]);
+  }, [messages, busy, liveTrail]);
 
   const hint = useMemo(() => {
     const n = referenceIds.length;
@@ -473,25 +478,11 @@ export function AuthorChatDock({
   }, [referenceIds.length]);
 
   const handleProgress = (event: AuthorAgentProgress) => {
-    if (event.kind === 'status') {
-      setLiveStatus(event.text);
-      return;
-    }
-    if (event.kind === 'assistant_delta') {
-      setLiveStatus((s) =>
-        s.startsWith('모델 응답') || s.startsWith('요청')
-          ? '응답 스트리밍 중…'
-          : s,
-      );
-      setStream((prev) => prev + event.text);
-      return;
-    }
-    if (event.kind === 'tool' && event.phase === 'start') {
-      setLiveTools((prev) =>
-        prev.includes(event.name) ? prev : [...prev, event.name],
-      );
-      setStream('');
-    }
+    setLiveTrail((prev) => reduceAgentLiveTrail(prev, event));
+  };
+
+  const setLiveStatusText = (text: string) => {
+    setLiveTrail((prev) => ({ ...prev, status: text }));
   };
 
   const beginAbortable = () => {
@@ -502,14 +493,14 @@ export function AuthorChatDock({
   };
 
   const clearLive = () => {
-    setLiveStatus('');
-    setStream('');
-    setLiveTools([]);
+    const empty = emptyAgentLiveTrail();
+    liveTrailRef.current = empty;
+    setLiveTrail(empty);
   };
 
   const handleAbortCatch = (err: unknown) => {
     if (isAbortError(err)) {
-      const partial = liveStreamRef.current.trim();
+      const partial = activeModelStreamText(liveTrailRef.current.steps);
       if (partial) {
         setMessages((prev) => [
           ...prev,
@@ -521,13 +512,13 @@ export function AuthorChatDock({
       return;
     }
     setError(err instanceof Error ? err.message : String(err));
-    setLiveStatus('');
+    setLiveTrail((prev) => ({ ...prev, status: '' }));
   };
 
   const abortGeneration = () => {
     const ctrl = abortRef.current;
     if (!ctrl || ctrl.signal.aborted) return;
-    setLiveStatus('중지 중…');
+    setLiveTrail((prev) => ({ ...prev, status: '중지 중…' }));
     ctrl.abort(new DOMException('Generation aborted', 'AbortError'));
   };
 
@@ -541,9 +532,12 @@ export function AuthorChatDock({
     /** Locked refs for batch auto-gen (avoids session-restore races). */
     referenceIds?: string[];
   }) => {
-    setLiveStatus('요청 준비 중…');
-    setStream('');
-    setLiveTools([]);
+    const next = {
+      ...emptyAgentLiveTrail(),
+      status: '요청 준비 중…',
+    };
+    liveTrailRef.current = next;
+    setLiveTrail(next);
     const settings = await loadAiSettings();
     throwIfAborted(opts.signal);
     const result = await runAuthorAgentTurn({
@@ -640,7 +634,7 @@ export function AuthorChatDock({
           attempt += 1;
           const msg = err instanceof Error ? err.message : String(err);
           setError('');
-          setLiveStatus(
+          setLiveStatusText(
             `실패 재시도 중… (${attempt})${msg ? ` · ${msg.slice(0, 80)}` : ''}`,
           );
           await sleepAbortable(
@@ -655,8 +649,7 @@ export function AuthorChatDock({
       if (abortRef.current === ctrl) abortRef.current = null;
       busyRef.current = false;
       setBusy(false);
-      setStream('');
-      setLiveTools([]);
+      clearLive();
     }
   };
 
@@ -765,11 +758,9 @@ export function AuthorChatDock({
           onDraftChange(emptyAuthorDraft(taskType));
           draftRef.current = emptyAuthorDraft(taskType);
 
-          setLiveStatus(
+          setLiveStatusText(
             `배치 ${paperLabel} · 제${taskType}유형 ${ordinalInType}/${totalInType} · 참고 ${turnRefs.length}개 · 생성 중… (${savedProblems.length + 1}/${totalPerRound})`,
           );
-          setStream('');
-          setLiveTools([]);
           setError('');
 
           try {
@@ -785,7 +776,7 @@ export function AuthorChatDock({
 
             if (!result.savedProblem) {
               throwIfAborted(ctrl.signal);
-              setLiveStatus(
+              setLiveStatusText(
                 `시험지 ${paperLabel} · 제${taskType}유형 저장 재시도…`,
               );
               const savePrompt =
@@ -808,7 +799,7 @@ export function AuthorChatDock({
                   taskType: result.draft.taskType,
                 });
               if (canSave) {
-                setLiveStatus(
+                setLiveStatusText(
                   `시험지 ${paperLabel} · 제${taskType}유형 초안 검증·저장…`,
                 );
                 const projectSnap = {
@@ -838,12 +829,12 @@ export function AuthorChatDock({
                     draft: committed.draft,
                     savedProblem: null,
                   };
-                  setLiveStatus(
+                  setLiveStatusText(
                     `시험지 ${paperLabel} · 제${taskType}유형 검증 실패 — 재생성…`,
                   );
                 }
               } else {
-                setLiveStatus(
+                setLiveStatusText(
                   `시험지 ${paperLabel} · 제${taskType}유형 정답 NaN/Inf — 재생성…`,
                 );
               }
@@ -861,7 +852,7 @@ export function AuthorChatDock({
                 { taskType: result.savedProblem.taskType },
               )
             ) {
-              setLiveStatus(
+              setLiveStatusText(
                 `시험지 ${paperLabel} · 제${taskType}유형 정답 NaN/Inf — 문항 재생성…`,
               );
               result = { ...result, savedProblem: null };
@@ -900,7 +891,7 @@ export function AuthorChatDock({
               draftRef.current = nextDraft;
               i += 1;
             } else {
-              setLiveStatus(
+              setLiveStatusText(
                 `배치 ${paperLabel} · 제${taskType}유형 미저장 — 같은 문항 재시도…`,
               );
               await sleepAbortable(800, ctrl.signal);
@@ -909,7 +900,7 @@ export function AuthorChatDock({
             if (isAbortError(itemErr)) throw itemErr;
             const msg =
               itemErr instanceof Error ? itemErr.message : String(itemErr);
-            setLiveStatus(
+            setLiveStatusText(
               `배치 ${paperLabel} · 제${taskType}유형 실패 재시도… · ${msg.slice(0, 80)}`,
             );
             setError('');
@@ -928,7 +919,7 @@ export function AuthorChatDock({
           let assembleAttempt = 0;
           while (true) {
             throwIfAborted(ctrl.signal);
-            setLiveStatus(
+            setLiveStatusText(
               assembleAttempt === 0
                 ? `배치 ${paperLabel} 시험 조립 중…`
                 : `배치 ${paperLabel} 시험 조립 재시도… (${assembleAttempt})`,
@@ -951,7 +942,7 @@ export function AuthorChatDock({
                 assembleErr instanceof Error
                   ? assembleErr.message
                   : String(assembleErr);
-              setLiveStatus(
+              setLiveStatusText(
                 `배치 ${paperLabel} 시험 조립 실패 재시도… (${assembleAttempt}) · ${msg.slice(0, 80)}`,
               );
               await sleepAbortable(
@@ -987,9 +978,7 @@ export function AuthorChatDock({
       if (abortRef.current === ctrl) abortRef.current = null;
       busyRef.current = false;
       setBusy(false);
-      setStream('');
-      setLiveTools([]);
-      setLiveStatus('');
+      clearLive();
     }
   };
 
@@ -1083,6 +1072,21 @@ export function AuthorChatDock({
               )
               .map((m, i) => {
                 const bodyId = `${bodyIdPrefix}-body-${i}`;
+                if (isCollapsibleChatStep(m)) {
+                  const detail =
+                    m.role === 'tool'
+                      ? chatContentToText(m.content)
+                      : visibleContent(m);
+                  return (
+                    <ChatStepBubble
+                      key={`${m.role}-${i}`}
+                      title={chatStepBubbleTitle(m)}
+                      detail={detail}
+                      kind={m.role === 'assistant' ? 'model' : 'tool'}
+                      bodyId={bodyId}
+                    />
+                  );
+                }
                 return (
                   <div
                     key={`${m.role}-${i}`}
@@ -1090,11 +1094,7 @@ export function AuthorChatDock({
                   >
                     <div className="variant-msg__top">
                       <span className="variant-msg__role">
-                        {m.role === 'user'
-                          ? '나'
-                          : m.role === 'assistant'
-                            ? 'Agent'
-                            : 'Tool'}
+                        {m.role === 'user' ? '나' : 'Agent'}
                       </span>
                       {m.role === 'user' ? (
                         <div
@@ -1146,12 +1146,12 @@ export function AuthorChatDock({
               className="variant-dock__live"
               role="progressbar"
               aria-busy="true"
-              aria-valuetext={liveStatus || '에이전트 작업 중'}
+              aria-valuetext={liveTrail.status || '에이전트 작업 중'}
             >
               <div className="variant-dock__busy-row">
                 <div className="variant-dock__busy">
                   <Loader2 size={14} className="spin" />
-                  <span>{liveStatus || '에이전트 작업 중…'}</span>
+                  <span>{liveTrail.status || '에이전트 작업 중…'}</span>
                 </div>
                 <button
                   type="button"
@@ -1163,21 +1163,7 @@ export function AuthorChatDock({
                   중지
                 </button>
               </div>
-              {liveTools.length ? (
-                <ul className="variant-dock__live-tools">
-                  {liveTools.map((name) => (
-                    <li key={name}>{name}</li>
-                  ))}
-                </ul>
-              ) : null}
-              {liveStream ? (
-                <pre className="variant-msg__body variant-dock__live-stream">
-                  {liveStream}
-                  <span className="variant-dock__caret" aria-hidden>
-                    ▍
-                  </span>
-                </pre>
-              ) : null}
+              <AgentStepTrail steps={liveTrail.steps} />
             </div>
           ) : null}
           <div ref={bottomRef} />

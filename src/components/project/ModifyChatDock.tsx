@@ -1,7 +1,17 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Loader2, RefreshCw, Save, Square, Wand2 } from 'lucide-react';
 import { loadAiSettings } from '@/lib/aiSettings';
-import { runAuthorAgentTurn } from '@/lib/ai/authorAgent';
+import {
+  runAuthorAgentTurn,
+  type AuthorAgentProgress,
+} from '@/lib/ai/authorAgent';
+import {
+  chatStepBubbleTitle,
+  emptyAgentLiveTrail,
+  isCollapsibleChatStep,
+  reduceAgentLiveTrail,
+  type AgentLiveTrailState,
+} from '@/lib/ai/agentLiveTrail';
 import {
   getAutoReviewChat,
   subscribeAutoReviewChat,
@@ -32,6 +42,10 @@ import {
 } from '@/lib/ai/modifyChatStore';
 import type { AuthoringProject, BankProblem, ProjectAsset } from '@/types/project';
 import { EdgeResizeHandle } from '@/components/layout/EdgeResizeHandle';
+import {
+  AgentStepTrail,
+  ChatStepBubble,
+} from '@/components/ui/AgentStepTrail';
 import { ChatComposer } from '@/components/ui/ChatComposer';
 import { CopyButton } from '@/components/ui/CopyButton';
 
@@ -95,7 +109,9 @@ export function ModifyChatDock({
   const [error, setError] = useState('');
   const [ready, setReady] = useState(false);
   const [csvNote, setCsvNote] = useState('');
-  const [liveStatus, setLiveStatus] = useState('');
+  const [liveTrail, setLiveTrail] = useState<AgentLiveTrailState>(
+    emptyAgentLiveTrail,
+  );
   const [autoReview, setAutoReview] = useState<AutoReviewChatSession | null>(
     () => getAutoReviewChat(problem.id),
   );
@@ -108,6 +124,19 @@ export function ModifyChatDock({
   messagesRef.current = messages;
   const autoReviewBusy = Boolean(autoReview?.busy);
   const dockBusy = busy || autoReviewBusy;
+  const liveStatus = liveTrail.status;
+
+  const setLiveStatus = (text: string) => {
+    setLiveTrail((prev) => ({ ...prev, status: text }));
+  };
+
+  const clearLive = () => {
+    setLiveTrail(emptyAgentLiveTrail());
+  };
+
+  const handleProgress = (event: AuthorAgentProgress) => {
+    setLiveTrail((prev) => reduceAgentLiveTrail(prev, event));
+  };
 
   useEffect(() => {
     return () => {
@@ -249,7 +278,7 @@ export function ModifyChatDock({
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, dockBusy, liveStatus]);
+  }, [messages, dockBusy, liveTrail]);
 
   const abortGeneration = () => {
     if (autoReviewBusy && autoReview) {
@@ -302,7 +331,10 @@ export function ModifyChatDock({
     if (clearComposer) setInput('');
     setBusy(true);
     setError('');
-    setLiveStatus('요청 준비 중…');
+    setLiveTrail({
+      ...emptyAgentLiveTrail(),
+      status: '요청 준비 중…',
+    });
 
     let attempt = 0;
     try {
@@ -370,6 +402,7 @@ export function ModifyChatDock({
             userText: trimmed,
             onDraft: setDraft,
             onSave: onApply,
+            onProgress: handleProgress,
             signal: ctrl.signal,
           });
           setMessages(result.messages);
@@ -405,7 +438,7 @@ export function ModifyChatDock({
       }
     } finally {
       if (abortRef.current === ctrl) abortRef.current = null;
-      setLiveStatus('');
+      clearLive();
       setBusy(false);
     }
   };
@@ -480,6 +513,21 @@ export function ModifyChatDock({
               )
               .map((m, i) => {
                 const bodyId = `${bodyIdPrefix}-body-${i}`;
+                if (isCollapsibleChatStep(m)) {
+                  const detail =
+                    m.role === 'tool'
+                      ? chatContentToText(m.content)
+                      : visibleContent(m);
+                  return (
+                    <ChatStepBubble
+                      key={`${m.role}-${i}`}
+                      title={chatStepBubbleTitle(m)}
+                      detail={detail}
+                      kind={m.role === 'assistant' ? 'model' : 'tool'}
+                      bodyId={bodyId}
+                    />
+                  );
+                }
                 return (
                   <div
                     key={`${m.role}-${i}`}
@@ -487,11 +535,7 @@ export function ModifyChatDock({
                   >
                     <div className="variant-msg__top">
                       <span className="variant-msg__role">
-                        {m.role === 'user'
-                          ? '나'
-                          : m.role === 'assistant'
-                            ? 'Agent'
-                            : 'Tool'}
+                        {m.role === 'user' ? '나' : 'Agent'}
                       </span>
                       {m.role === 'user' ? (
                         <div
@@ -557,6 +601,9 @@ export function ModifyChatDock({
                   중지
                 </button>
               </div>
+              {!autoReviewBusy ? (
+                <AgentStepTrail steps={liveTrail.steps} />
+              ) : null}
             </div>
           ) : null}
           <div ref={bottomRef} />

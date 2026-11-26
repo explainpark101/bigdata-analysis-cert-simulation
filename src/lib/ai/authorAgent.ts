@@ -58,6 +58,10 @@ import {
 } from '@/lib/ai/csvAssetPersist';
 import { prepareDraftForVerifiedSave } from '@/lib/ai/commitVerifiedProblem';
 import { linkedCsvAssetIds } from '@/lib/ai/ensureProblemCsv';
+import {
+  truncateToolDetail,
+  type AgentProgressEvent,
+} from '@/lib/ai/agentLiveTrail';
 
 const MAX_TOOL_ROUNDS = 14;
 const MAX_TOOL_ROUNDS_REQUIRE_SAVE = 20;
@@ -83,10 +87,7 @@ export interface AuthorAgentResult {
   savedProblem: BankProblem | null;
 }
 
-export type AuthorAgentProgress =
-  | { kind: 'status'; text: string }
-  | { kind: 'assistant_delta'; text: string }
-  | { kind: 'tool'; name: string; phase: 'start' | 'done' };
+export type AuthorAgentProgress = AgentProgressEvent;
 
 function systemPrompt(
   requireSave: boolean,
@@ -1475,7 +1476,12 @@ export async function runAuthorAgentTurn(opts: {
         content: toolResult,
       });
       emitMessages(messages);
-      report({ kind: 'tool', name, phase: 'done' });
+      report({
+        kind: 'tool',
+        name,
+        phase: 'done',
+        detail: truncateToolDetail(toolResult),
+      });
     }
   }
 

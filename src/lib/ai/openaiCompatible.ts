@@ -959,6 +959,7 @@ async function createChatCompletionOnce(opts: {
     clearStallWatch();
     opts.signal?.removeEventListener('abort', onParentAbort);
     rethrowIfControlledStop(err);
+    throw err;
   }
 
   if (!res.ok) {
