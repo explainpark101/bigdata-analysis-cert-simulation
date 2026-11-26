@@ -76,7 +76,13 @@ export interface QuizProblem {
     expectIncludes?: string[];
   }>;
   submitted?: boolean;
+  /** Active editor buffer (mirrors answerDrafts[language]). */
   answerDraft?: string;
+  /**
+   * Per-language editor drafts so switching Python ↔ R keeps both buffers.
+   * Grade reports read `answerDrafts[language] ?? answerDraft`.
+   */
+  answerDrafts?: Partial<CodeByLanguage>;
   /**
    * Snapshot of result.csv (or submitFile) captured on type-2 submit.
    * Used as the grading artifact.

@@ -166,6 +166,7 @@ train = read.csv("${train}")
 test = read.csv("${test}")
 
 # 사용자 코딩
+# 예: write.csv(data.frame(pred = pred), "result.csv", row.names = FALSE)
 
 # 예측 결과는 result.csv 로 저장한 뒤 제출 버튼을 사용하세요
 print(head(train))

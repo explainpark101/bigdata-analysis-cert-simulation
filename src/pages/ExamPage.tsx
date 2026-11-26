@@ -79,7 +79,7 @@ import { parseExamZipFrom } from '@/lib/examZip';
 import { loadZip, zipKindFrom } from '@/lib/zipKind';
 import type { AuthoringProject } from '@/types/project';
 import type JSZip from 'jszip';
-import { readPyodideFileText, runPython } from '@/runtimes/pyodideRuntime';
+import { runPython } from '@/runtimes/pyodideRuntime';
 import {
   mountAssetsToPyodide,
   mountAssetsToWebR,
@@ -88,6 +88,7 @@ import { preloadWebR, runR } from '@/runtimes/webrRuntime';
 import type { ShortAnswerSlot } from '@/types/exam';
 import { examineeDataFiles } from '@/lib/type2Assets';
 import { saveType2Submission } from '@/lib/type2ResultStore';
+import { readExamResultCsv } from '@/lib/examResultFile';
 
 const SIDEBAR_W_DEFAULT = 240;
 const SIDEBAR_W_MIN = 180;
@@ -375,11 +376,20 @@ export default function ExamPage() {
 
   const setLanguage = (next: ExamLanguage) => {
     if (!quiz) return;
-    const draft =
-      quiz.answerDraft && quiz.language === next
-        ? quiz.answerDraft
+    const drafts = { ...(quiz.answerDrafts ?? {}) };
+    const current = quiz.language ?? 'python';
+    if (quiz.answerDraft != null && quiz.answerDraft !== '') {
+      drafts[current] = quiz.answerDraft;
+    }
+    const restored =
+      drafts[next] != null && drafts[next] !== ''
+        ? drafts[next]!
         : quiz.starterCode[next];
-    patchQuiz({ language: next, answerDraft: draft });
+    patchQuiz({
+      language: next,
+      answerDraft: restored,
+      answerDrafts: drafts,
+    });
     setWorkspaceTab('code');
   };
 
@@ -493,11 +503,25 @@ export default function ExamPage() {
     if (!quiz || quiz.taskType !== 2 || quiz.kind !== 'submit') return;
     const path = quiz.submitFile || 'result.csv';
     try {
-      const csvText = await readPyodideFileText(path);
+      // R writes into webR VFS; Python into Pyodide FS.
+      if (language === 'r') await ensureR();
+      const csvText = await readExamResultCsv(language, path);
       if (!csvText.trim()) {
         throw new Error(`${path} 이 비어 있습니다.`);
       }
-      patchQuiz({ submitted: true, submittedCsv: csvText });
+      const drafts = {
+        ...(quiz.answerDrafts ?? {}),
+        [language]:
+          quiz.answerDraft != null && quiz.answerDraft !== ''
+            ? quiz.answerDraft
+            : quiz.answerDrafts?.[language] ?? '',
+      };
+      patchQuiz({
+        submitted: true,
+        submittedCsv: csvText,
+        answerDrafts: drafts,
+        answerDraft: drafts[language] || quiz.answerDraft,
+      });
       if (exam) {
         await saveType2Submission({
           examId: exam.id,
@@ -517,7 +541,7 @@ export default function ExamPage() {
       setResult((prev) => ({
         ok: true,
         stdout:
-          `${prev?.stdout ?? ''}\n\n[제출] ${path} 저장 완료 (${lines} lines). 채점은 시험 끝내기 후 진행됩니다.`.trim(),
+          `${prev?.stdout ?? ''}\n\n[제출] ${path} 저장 완료 (${lines} lines · ${language === 'r' ? 'webR' : 'Pyodide'}). 채점은 시험 끝내기 후 진행됩니다.`.trim(),
         stderr: prev?.stderr ?? '',
         durationMs: prev?.durationMs ?? 0,
       }));
@@ -551,10 +575,16 @@ export default function ExamPage() {
         let gradingExam = exam;
         if (opts?.submitPending) {
           gradingExam = await forceSubmitPending(exam, {
-            readCsv: async (path) => {
+            readCsv: async (path, lang) => {
               try {
-                const text = await readPyodideFileText(path);
-                return text.trim() ? text : null;
+                try {
+                  return await readExamResultCsv(lang, path);
+                } catch {
+                  return await readExamResultCsv(
+                    lang === 'r' ? 'python' : 'r',
+                    path,
+                  );
+                }
               } catch {
                 return null;
               }
@@ -1133,7 +1163,15 @@ export default function ExamPage() {
                       <CodeEditor
                         value={code}
                         language={language}
-                        onChange={(value) => patchQuiz({ answerDraft: value })}
+                        onChange={(value) =>
+                          patchQuiz({
+                            answerDraft: value,
+                            answerDrafts: {
+                              ...(quiz.answerDrafts ?? {}),
+                              [language]: value,
+                            },
+                          })
+                        }
                         prefs={{
                           fontSize: uiSettings.editorFontSize,
                           lineHeightPct: uiSettings.editorLineHeightPct,

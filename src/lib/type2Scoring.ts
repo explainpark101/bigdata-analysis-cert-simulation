@@ -521,9 +521,24 @@ export function suggestType2BandsFromRef(
   return bands;
 }
 
+/** True when student metric is strictly better than REF for the metric direction. */
+export function studentMetricBeatsRef(parsed: Type2MetricParse): boolean {
+  if (parsed.student == null || parsed.reference == null) return false;
+  const dir: MetricDirection =
+    parsed.direction === 'unknown'
+      ? parsed.mlKind === 'regression'
+        ? 'lower'
+        : 'higher'
+      : parsed.direction;
+  if (dir === 'lower') {
+    return parsed.student < parsed.reference - 1e-12;
+  }
+  return parsed.student > parsed.reference + 1e-12;
+}
+
 /**
  * Resolve type-2 metric points before CSV format penalties.
- * Priority (제13회): EARNED_POINTS → SCORE_BANDS → continuous ratio→5pt band.
+ * Priority (제13회): better-than-REF → full → EARNED_POINTS → SCORE_BANDS → ratio.
  */
 export function resolveType2Points(
   stdout: string,
@@ -538,6 +553,26 @@ export function resolveType2Points(
   const ratioResult = computeType2Earned(parsed);
   const bands = parseType2ScoreBands(blob);
   const earnedDirect = parseType2EarnedPoints(blob);
+
+  // Student metric better than reference model → always full credit.
+  if (studentMetricBeatsRef(parsed)) {
+    return {
+      points: max,
+      max,
+      source: 'ratio',
+      bands,
+      fullCredit: true,
+      earnedRatio: 1,
+      explanation: `만점 (STUDENT=${parsed.student} 이 REF=${parsed.reference} 보다 우수)`,
+      parsed,
+      ratioResult: {
+        ...ratioResult,
+        earned: 1,
+        fullCredit: true,
+        explanation: `학생 지표가 REF보다 우수 → 만점`,
+      },
+    };
+  }
 
   if (earnedDirect != null) {
     const points = Math.min(max, Math.max(0, earnedDirect));

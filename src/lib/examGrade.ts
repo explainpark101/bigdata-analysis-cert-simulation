@@ -99,7 +99,12 @@ export function listUnsubmitted(exam: ExamSet): QuizProblem[] {
  */
 export async function forceSubmitPending(
   exam: ExamSet,
-  opts?: { readCsv?: (path: string) => Promise<string | null> },
+  opts?: {
+    readCsv?: (
+      path: string,
+      language: 'python' | 'r',
+    ) => Promise<string | null>;
+  },
 ): Promise<ExamSet> {
   const quizzes: QuizProblem[] = [];
   for (const q of exam.quizzes) {
@@ -109,10 +114,11 @@ export async function forceSubmitPending(
     }
     if (q.taskType === 2 || q.submitFormat === 'csv') {
       const path = q.submitFile || 'result.csv';
+      const language = q.language ?? 'python';
       let csv: string | null = null;
       if (opts?.readCsv) {
         try {
-          csv = await opts.readCsv(path);
+          csv = await opts.readCsv(path, language);
         } catch {
           csv = null;
         }
@@ -131,15 +137,30 @@ export async function forceSubmitPending(
 
 function baseFields(quiz: QuizProblem) {
   const lang = quiz.language ?? 'python';
-  const draft = quiz.answerDraft?.trim();
-  const starter = quiz.starterCode?.[lang]?.trim();
+  const other: 'python' | 'r' = lang === 'python' ? 'r' : 'python';
+  const langDraft = quiz.answerDrafts?.[lang]?.trim();
+  const otherDraft = quiz.answerDrafts?.[other]?.trim();
+  const activeDraft = quiz.answerDraft?.trim();
+  // Prefer language-matched draft; if the active buffer looks like the other
+  // language's saved draft (legacy single-buffer switch), keep that code.
+  const userCode =
+    langDraft ||
+    activeDraft ||
+    otherDraft ||
+    quiz.starterCode?.[lang]?.trim() ||
+    quiz.starterCode?.[other]?.trim() ||
+    '';
+  const language: 'python' | 'r' =
+    langDraft || activeDraft || !otherDraft
+      ? lang
+      : other;
   return {
     quizId: quiz.id,
     title: quiz.title,
     taskType: quiz.taskType,
     markdown: quiz.markdown ?? '',
-    userCode: draft || starter || '',
-    language: lang as 'python' | 'r',
+    userCode,
+    language,
   };
 }
 
