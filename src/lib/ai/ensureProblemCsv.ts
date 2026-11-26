@@ -1,3 +1,8 @@
+import {
+  allocateUniqueCsvFileName,
+  type CsvMountRename,
+} from '@/lib/ai/csvAssetPersist';
+import { takenBasenames } from '@/lib/assetImport';
 import { createProjectAsset } from '@/lib/projectIO';
 import type {
   AuthoringProject,
@@ -83,6 +88,7 @@ function forcedCsvSpecs(taskType: TaskType): Array<{ name: string; content: stri
 /**
  * If the problem has no linked .csv assets, synthesize CSV(s), add them to the
  * project library, and return the ids to attach. Non-CSV assets are kept.
+ * Existing library basenames are never overwritten — a random hash is appended.
  */
 export async function ensureProblemHasCsv(opts: {
   project: AuthoringProject;
@@ -93,6 +99,8 @@ export async function ensureProblemHasCsv(opts: {
   created: ProjectAsset[];
   changed: boolean;
   csvNames: string[];
+  /** Mount renames when a forced basename already existed in the library. */
+  renames: CsvMountRename[];
 }> {
   const { project, problem, addProjectAssets } = opts;
   const existingCsv = linkedCsvAssetIds(project, problem.assetIds);
@@ -104,23 +112,34 @@ export async function ensureProblemHasCsv(opts: {
       csvNames: existingCsv
         .map((id) => project.assets.find((a) => a.id === id)?.name)
         .filter((n): n is string => Boolean(n)),
+      renames: [],
     };
   }
 
   const folder = `bank/${problem.id}`;
   const specs = forcedCsvSpecs(problem.taskType);
-  const pending = specs.map((s) =>
-    createProjectAsset(
+  const taken = takenBasenames(project.assets);
+  const renames: CsvMountRename[] = [];
+  const pending = specs.map((s) => {
+    const { name, renamed, original } = allocateUniqueCsvFileName(s.name, taken);
+    if (renamed) {
+      renames.push({ from: `data/${original}`, to: `data/${name}` });
+    }
+    return createProjectAsset(
       {
-        name: s.name,
+        name,
         content: s.content,
         encoding: 'utf-8',
         mimeType: 'text/csv',
       },
-      `${folder}/${s.name}`,
-    ),
-  );
+      `${folder}/${name}`,
+    );
+  });
   const created = await addProjectAssets(pending);
+  // Restore bodies for turn-local use (lean return strips content).
+  for (let i = 0; i < created.length; i++) {
+    created[i] = { ...created[i], content: pending[i]?.content ?? '' };
+  }
   const nonCsv = problem.assetIds.filter(
     (id) => !isCsvAsset(project.assets.find((a) => a.id === id)),
   );
@@ -130,6 +149,7 @@ export async function ensureProblemHasCsv(opts: {
     created,
     changed: true,
     csvNames: created.map((a) => a.name),
+    renames,
   };
 }
 

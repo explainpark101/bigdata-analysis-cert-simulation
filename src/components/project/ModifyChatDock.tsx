@@ -1,7 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { Loader2, RefreshCw, Save, Wand2 } from 'lucide-react';
+import { Loader2, RefreshCw, Save, Square, Wand2 } from 'lucide-react';
 import { loadAiSettings } from '@/lib/aiSettings';
 import { runAuthorAgentTurn } from '@/lib/ai/authorAgent';
+import { applyCsvRenamesToDraftFields } from '@/lib/ai/csvAssetPersist';
 import {
   appendCsvMountNote,
   ensureProblemHasCsv,
@@ -12,6 +13,7 @@ import {
   isAbortError,
   sleepAbortable,
   stripThinkingFromHistory,
+  throwIfAborted,
   type ChatMessage,
 } from '@/lib/ai/openaiCompatible';
 import {
@@ -34,10 +36,12 @@ interface ModifyChatDockProps {
   onWidthChange: (w: number) => void;
   maxWidth: number;
   addProjectAssets: (assets: ProjectAsset[]) => Promise<ProjectAsset[]>;
-  /** Persist CSV link (+ optional markdown note) onto the bank problem. */
+  /** Persist CSV link (+ optional markdown / code path rewrites) onto the bank problem. */
   onLinkCsv: (patch: {
     assetIds: string[];
     markdown?: string;
+    answerCode?: BankProblem['answerCode'];
+    gradingCode?: BankProblem['gradingCode'];
   }) => void;
   onApply: (partial: Partial<BankProblem>) => BankProblem;
   onApplied: (problem: BankProblem) => void;
@@ -85,12 +89,23 @@ export function ModifyChatDock({
   const [error, setError] = useState('');
   const [ready, setReady] = useState(false);
   const [csvNote, setCsvNote] = useState('');
+  const [liveStatus, setLiveStatus] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
   const draftRef = useRef(draft);
   const messagesRef = useRef(messages);
+  const abortRef = useRef<AbortController | null>(null);
   const bodyIdPrefix = useId();
   draftRef.current = draft;
   messagesRef.current = messages;
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort(
+        new DOMException('Generation aborted', 'AbortError'),
+      );
+      abortRef.current = null;
+    };
+  }, []);
 
   const linkedCsvKey = linkedCsvAssetIds(project, problem.assetIds).join(',');
 
@@ -110,16 +125,49 @@ export function ModifyChatDock({
         );
         return;
       }
-      const markdown = appendCsvMountNote(problem.markdown, ensured.csvNames);
-      onLinkCsv({ assetIds: ensured.assetIds, markdown });
+      let markdown = appendCsvMountNote(problem.markdown, ensured.csvNames);
+      let answerCode = problem.answerCode;
+      let gradingCode = problem.gradingCode;
+      if (ensured.renames.length) {
+        const rewritten = applyCsvRenamesToDraftFields(
+          {
+            markdown,
+            answerCode: answerCode ?? { python: '', r: '' },
+            gradingCode: gradingCode ?? { python: '', r: '' },
+          },
+          ensured.renames,
+        );
+        markdown = rewritten.markdown;
+        answerCode = rewritten.answerCode;
+        gradingCode = rewritten.gradingCode;
+      }
+      onLinkCsv({
+        assetIds: ensured.assetIds,
+        markdown,
+        answerCode,
+        gradingCode,
+      });
       setCsvNote(
         `CSV 자동 생성·연결: ${ensured.csvNames.map((n) => `data/${n}`).join(', ')}`,
       );
-      setDraft((prev) => ({
-        ...prev,
-        assetIds: ensured.assetIds,
-        markdown: appendCsvMountNote(prev.markdown, ensured.csvNames),
-      }));
+      setDraft((prev) => {
+        const nextMd = appendCsvMountNote(prev.markdown, ensured.csvNames);
+        if (!ensured.renames.length) {
+          return { ...prev, assetIds: ensured.assetIds, markdown: nextMd };
+        }
+        return {
+          ...prev,
+          ...applyCsvRenamesToDraftFields(
+            {
+              ...prev,
+              assetIds: ensured.assetIds,
+              markdown: nextMd,
+            },
+            ensured.renames,
+          ),
+          assetIds: ensured.assetIds,
+        };
+      });
     })();
     return () => {
       cancelled = true;
@@ -161,7 +209,14 @@ export function ModifyChatDock({
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, busy]);
+  }, [messages, busy, liveStatus]);
+
+  const abortGeneration = () => {
+    const ctrl = abortRef.current;
+    if (!ctrl || ctrl.signal.aborted) return;
+    setLiveStatus('중지 중…');
+    ctrl.abort(new DOMException('Generation aborted', 'AbortError'));
+  };
 
   const peerReferenceIds = useMemo(
     () =>
@@ -176,9 +231,9 @@ export function ModifyChatDock({
     const csvCount = linkedCsvAssetIds(project, draft.assetIds).length;
     const base =
       problem.taskType === 2
-        ? '제작 페이지와 동일한 도구로 채점·데이터를 수정합니다.'
-        : '제작 페이지와 동일한 도구로 본문·정답·CSV를 수정합니다.';
-    return `${base} · CSV ${csvCount}개 연결`;
+        ? '제작 페이지와 동일한 출제 도구가 이 채팅에 연결되어 있습니다.'
+        : '제작 페이지와 동일한 출제 도구가 이 채팅에 연결되어 있습니다.';
+    return `${base} · CSV ${csvCount}개 연결 · 도구 즉시 호출`;
   }, [problem.taskType, project, draft.assetIds]);
 
   const reloadFromProblem = () => {
@@ -192,19 +247,26 @@ export function ModifyChatDock({
     const trimmed = (opts?.text ?? input).trim();
     if (!trimmed || busy) return;
 
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
     const historyBefore = messagesRef.current;
     const userMsg = buildUserMessage(trimmed);
     setMessages([...historyBefore, userMsg]);
     if (clearComposer) setInput('');
     setBusy(true);
     setError('');
+    setLiveStatus('요청 준비 중…');
 
     let attempt = 0;
     try {
       while (true) {
+        throwIfAborted(ctrl.signal);
         try {
           // Re-ensure CSV before the agent turn (covers race after library edits).
           let workingDraft = draftRef.current;
+          setLiveStatus('CSV 확인 중…');
           const ensured = await ensureProblemHasCsv({
             project,
             problem: {
@@ -215,8 +277,9 @@ export function ModifyChatDock({
             },
             addProjectAssets,
           });
+          throwIfAborted(ctrl.signal);
           if (ensured.changed) {
-            const markdown = appendCsvMountNote(
+            let markdown = appendCsvMountNote(
               workingDraft.markdown,
               ensured.csvNames,
             );
@@ -225,14 +288,29 @@ export function ModifyChatDock({
               assetIds: ensured.assetIds,
               markdown,
             };
+            if (ensured.renames.length) {
+              workingDraft = {
+                ...workingDraft,
+                ...applyCsvRenamesToDraftFields(workingDraft, ensured.renames),
+                assetIds: ensured.assetIds,
+              };
+              markdown = workingDraft.markdown;
+            }
             setDraft(workingDraft);
-            onLinkCsv({ assetIds: ensured.assetIds, markdown });
+            onLinkCsv({
+              assetIds: ensured.assetIds,
+              markdown,
+              answerCode: workingDraft.answerCode,
+              gradingCode: workingDraft.gradingCode,
+            });
             setCsvNote(
               `CSV 자동 생성·연결: ${ensured.csvNames.map((n) => `data/${n}`).join(', ')}`,
             );
           }
 
+          setLiveStatus('에이전트 작업 중…');
           const settings = await loadAiSettings();
+          throwIfAborted(ctrl.signal);
           const result = await runAuthorAgentTurn({
             ctx: {
               settings,
@@ -247,6 +325,7 @@ export function ModifyChatDock({
             userText: trimmed,
             onDraft: setDraft,
             onSave: onApply,
+            signal: ctrl.signal,
           });
           setMessages(result.messages);
           setDraft(result.draft);
@@ -259,17 +338,29 @@ export function ModifyChatDock({
           if (isAbortError(err)) throw err;
           attempt += 1;
           const msg = err instanceof Error ? err.message : String(err);
+          setLiveStatus(`재시도 중… (${attempt})`);
           setError(
             `실패 재시도 중… (${attempt})${msg ? ` · ${msg.slice(0, 80)}` : ''}`,
           );
-          await sleepAbortable(Math.min(20_000, 800 * Math.min(attempt, 12)));
+          await sleepAbortable(
+            Math.min(20_000, 800 * Math.min(attempt, 12)),
+            ctrl.signal,
+          );
         }
       }
     } catch (err) {
-      if (!isAbortError(err)) {
+      if (isAbortError(err)) {
+        setMessages((prev) => [
+          ...prev,
+          { role: 'assistant', content: '(중지됨)' },
+        ]);
+        setError('수정을 중지했습니다.');
+      } else {
         setError(err instanceof Error ? err.message : String(err));
       }
     } finally {
+      if (abortRef.current === ctrl) abortRef.current = null;
+      setLiveStatus('');
       setBusy(false);
     }
   };
@@ -319,7 +410,8 @@ export function ModifyChatDock({
             .length ? (
             <p className="variant-dock__empty">
               예: &quot;본문을 다듬고 정답 코드를 다시 돌려줘&quot; / &quot;CSV를
-              변형한 뒤 단답을 맞춰줘&quot;
+              변형한 뒤 단답을 맞춰줘&quot;. 출제 도구는 이 채팅에 이미
+              연결되어 있습니다.
             </p>
           ) : (
             messages
@@ -380,9 +472,27 @@ export function ModifyChatDock({
               })
           )}
           {busy ? (
-            <div className="variant-dock__busy">
-              <Loader2 size={14} className="spin" />
-              에이전트 작업 중…
+            <div
+              className="variant-dock__live"
+              role="progressbar"
+              aria-busy="true"
+              aria-valuetext={liveStatus || '에이전트 작업 중'}
+            >
+              <div className="variant-dock__busy-row">
+                <div className="variant-dock__busy">
+                  <Loader2 size={14} className="spin" />
+                  <span>{liveStatus || '에이전트 작업 중…'}</span>
+                </div>
+                <button
+                  type="button"
+                  className="ghost-btn btn-with-icon variant-dock__abort"
+                  onClick={abortGeneration}
+                  aria-label="수정 중지"
+                >
+                  <Square size={12} fill="currentColor" aria-hidden />
+                  중지
+                </button>
+              </div>
             </div>
           ) : null}
           <div ref={bottomRef} />
@@ -406,6 +516,17 @@ export function ModifyChatDock({
             placeholder="수정 요청 · Enter 전송 · Shift+Enter 줄바꿈"
           />
           <div className="variant-dock__actions">
+            {busy ? (
+              <button
+                type="button"
+                className="ghost-btn btn-with-icon variant-dock__abort"
+                onClick={abortGeneration}
+                aria-label="수정 중지"
+              >
+                <Square size={12} fill="currentColor" aria-hidden />
+                중지
+              </button>
+            ) : null}
             <button
               type="button"
               className="ghost-btn btn-with-icon"
@@ -426,7 +547,7 @@ export function ModifyChatDock({
               disabled={busy}
               onClick={() =>
                 void send({
-                  text: '초안을 검토하고 apply_changes(confirm=true)로 이 문제에 반영해 주세요. CSV가 없으면 생성·연결한 뒤 적용하세요.',
+                  text: '도구는 이미 연결되어 있습니다. 계획만 쓰지 말고 즉시 list_project_csvs/set_dataset_code 또는 set_transform_code → run_* → save_generated_assets → set_answer_code → run_answer_code → set_short_answers → apply_changes(confirm=true)를 호출해 이 문제에 반영하세요. CSV와 정답이 어긋나면 CSV를 재생성·검증한 뒤 적용하세요.',
                   clearComposer: false,
                 })
               }

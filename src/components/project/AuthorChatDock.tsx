@@ -20,6 +20,7 @@ import { loadAiSettings } from '@/lib/aiSettings';
 import {
   isDraftReadyForSave,
   runAuthorAgentTurn,
+  tryCommitAuthorDraft,
   type AuthorAgentProgress,
 } from '@/lib/ai/authorAgent';
 import { playCompletionSound } from '@/lib/ai/completionSound';
@@ -42,6 +43,7 @@ import {
   authorDifficultyPromptKo,
   authorRuntimeEnvPromptKo,
   authorStatsResearchPromptKo,
+  authorToolContractPromptKo,
   authorType13AnswerFormatPromptKo,
   authorType2BandPromptKo,
   pickHardMetricHint,
@@ -62,7 +64,6 @@ import {
   shuffleCopy,
   takeAllOrRandom,
 } from '@/lib/examOfficialSpec';
-import { ensureShortAnswersForSubQuestions } from '@/lib/subQuestions';
 import { autoUploadGeneratedProblem } from '@/lib/autoUpload';
 import { ConfirmModal } from '@/components/exam/ConfirmModal';
 import { EdgeResizeHandle } from '@/components/layout/EdgeResizeHandle';
@@ -293,6 +294,8 @@ function autoPromptForType(
     '',
     authorRuntimeEnvPromptKo(),
     '',
+    authorToolContractPromptKo(),
+    '',
     authorStatsResearchPromptKo(),
     '',
     authorDifficultyPromptKo({
@@ -330,6 +333,7 @@ function autoPromptForType(
       ? '- 2유형(40점): 본문에 채점 구간표 + 제출 형식. grading에 SCORE_BANDS(또는 EARNED_POINTS). 모델링은 sklearn/xgboost/lightgbm(또는 R 허용 스택) 기준.'
       : `- ${taskType}유형(${pts}점): 소문항별 반올림/절사 명시 → set_answer_code(줄마다 숫자) → run_answer_code → set_short_answers(소문항 수만큼). 제출은 답안 제출 화면의 칸마다 입력합니다.`,
     '- 마지막에 반드시 save_problem(confirm=true). 저장 없이 끝내면 실패입니다.',
+    '- 도구가 없다고 말하거나 계획만 적고 끝내지 마세요. 모든 단계는 tool_calls로 실행하세요.',
     '- 이번 턴에서는 해당 유형 하나만 작업·저장하세요.',
   ]
     .filter((line) => line !== '')
@@ -800,41 +804,39 @@ export function AuthorChatDock({
                 });
               if (canSave) {
                 setLiveStatus(
-                  `시험지 ${paperLabel} · 제${taskType}유형 초안 직접 저장…`,
+                  `시험지 ${paperLabel} · 제${taskType}유형 초안 검증·저장…`,
                 );
-                const shorts =
-                  result.draft.taskType === 2
-                    ? undefined
-                    : ensureShortAnswersForSubQuestions(
-                        result.draft.markdown,
-                        result.draft.shortAnswers,
-                        result.draft.shortAnswers[0],
-                        result.draft.taskType,
-                      );
-                const created = onSaveProblem({
-                  title: result.draft.title,
-                  note: result.draft.note,
-                  showNoteOnExam: false,
-                  taskType: result.draft.taskType,
-                  kind: 'submit',
-                  language: result.draft.language,
-                  markdown: result.draft.markdown,
-                  answerCode: result.draft.answerCode,
-                  gradingCode: result.draft.gradingCode,
-                  datasetCode: result.draft.datasetCode || undefined,
-                  assetIds: result.draft.assetIds,
-                  sourceProblemId: turnRefs[0],
-                  submitFormat: result.draft.taskType === 2 ? 'csv' : 'short',
-                  submitFile:
-                    result.draft.taskType === 2 ? 'result.csv' : undefined,
-                  shortAnswers: shorts,
-                  shortAnswer: shorts?.[0] ?? '',
-                });
-                result = {
-                  ...result,
-                  savedProblem: created,
-                  messages: result.messages,
+                const projectSnap = {
+                  ...projectRef.current,
+                  assets: [...projectRef.current.assets],
                 };
+                const committed = await tryCommitAuthorDraft({
+                  project: projectSnap,
+                  draft: result.draft,
+                  mode: 'author',
+                  referenceIds: turnRefs,
+                  addProjectAssets,
+                  onSave: onSaveProblem,
+                });
+                onDraftChange(committed.draft);
+                draftRef.current = committed.draft;
+                if (committed.ok) {
+                  result = {
+                    ...result,
+                    draft: committed.draft,
+                    savedProblem: committed.problem,
+                    messages: result.messages,
+                  };
+                } else {
+                  result = {
+                    ...result,
+                    draft: committed.draft,
+                    savedProblem: null,
+                  };
+                  setLiveStatus(
+                    `시험지 ${paperLabel} · 제${taskType}유형 검증 실패 — 재생성…`,
+                  );
+                }
               } else {
                 setLiveStatus(
                   `시험지 ${paperLabel} · 제${taskType}유형 정답 NaN/Inf — 재생성…`,
@@ -928,7 +930,7 @@ export function AuthorChatDock({
             );
             try {
               const isLast = paper === examCount - 1;
-              onAssembleExam([...savedProblems], { navigate: isLast });
+              onAssembleExam?.([...savedProblems], { navigate: isLast });
               assembledPapers += 1;
               if (canAssembleOfficial && isOfficialStructure(savedCounts)) {
                 summary +=

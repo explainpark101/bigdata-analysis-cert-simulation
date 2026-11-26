@@ -910,7 +910,7 @@ export default function ProjectPage() {
               onWidthChange={setModifyDockWidth}
               maxWidth={modifyDockMaxWidth}
               addProjectAssets={addProjectAssets}
-              onLinkCsv={({ assetIds, markdown }) => {
+              onLinkCsv={({ assetIds, markdown, answerCode, gradingCode }) => {
                 const paths = assetIds
                   .map((id) => project.assets.find((a) => a.id === id))
                   .filter((a): a is NonNullable<typeof a> => Boolean(a))
@@ -918,6 +918,8 @@ export default function ProjectPage() {
                 updateBankProblem(problem.id, {
                   assetIds,
                   ...(markdown != null ? { markdown } : {}),
+                  ...(answerCode != null ? { answerCode } : {}),
+                  ...(gradingCode != null ? { gradingCode } : {}),
                   starterCode: buildStarterCode(problem.taskType, paths),
                 });
                 setMessage('CSV가 없어 자동 생성·연결했습니다.');

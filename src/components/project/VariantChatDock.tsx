@@ -316,7 +316,7 @@ export function VariantChatDock({
               disabled={busy}
               onClick={() =>
                 void send({
-                  text: '초안을 검토하고 save_variant(confirm=true)로 문제은행에 저장해 주세요.',
+                  text: '도구는 이미 연결되어 있습니다. 계획만 쓰지 말고 도구를 호출해 초안을 검토한 뒤 save_variant(confirm=true)로 문제은행에 저장하세요.',
                   clearComposer: false,
                 })
               }

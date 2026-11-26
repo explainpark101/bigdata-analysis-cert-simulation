@@ -351,3 +351,79 @@ export function validateNumericShortAnswers(
     rejected,
   };
 }
+
+/** Hard contract: tools are attached on every authoring/modify turn. */
+export function authorToolContractPromptEn(toolNames: string[]): string {
+  const listed =
+    toolNames.length > 0
+      ? toolNames.join(', ')
+      : 'list_project_csvs, set_dataset_code, run_dataset_code, set_transform_code, run_transform_code, save_generated_assets, set_answer_code, run_answer_code, set_short_answers, update_draft, apply_changes / save_problem / save_variant';
+  return [
+    '## Tools are LIVE (mandatory — never deny this)',
+    'This request already includes OpenAI-compatible function tools. Tool calling IS connected in THIS turn.',
+    `Available tools: ${listed}.`,
+    'NEVER claim that tools, file access, shell, set_dataset_code, run_answer_code, or similar are disconnected, missing, unavailable, or only work in another session.',
+    'NEVER ask the user to "retry in a session with tools" or end with only a planned SYNTHESIZE/MUTATE write-up.',
+    'If CSV and answers disagree: call tools NOW — e.g. list_project_csvs / set_dataset_code or set_transform_code → run_* → save_generated_assets → set_answer_code → run_answer_code → set_short_answers → apply_changes/save_*.',
+    'A text-only reply that postpones work is a failure. Emit tool_calls; brief Korean narration is fine alongside tools.',
+  ].join('\n');
+}
+
+/** Korean block for auto-generate / dock user prompts. */
+export function authorToolContractPromptKo(): string {
+  return [
+    '## 도구는 이미 연결됨 (필수)',
+    '이 요청에는 출제 도구(function calling)가 이미 포함되어 있습니다. 지금 턴에서 바로 호출하세요.',
+    '도구/파일/셸/`set_dataset_code`/`run_answer_code` 등이 연결되지 않았다고 말하지 마세요. 다른 세션에서 다시 보내 달라고 하지 마세요.',
+    '계획만 적고 끝내지 마세요. MUTATE/SYNTHESIZE·정답 재계산·저장은 전부 도구 호출로 실행하세요.',
+    'CSV와 정답이 어긋나면 즉시 도구로 CSV를 재생성·검증·set_short_answers·save/apply 하세요.',
+  ].join('\n');
+}
+
+/**
+ * Detect assistant text that wrongly claims tools are missing or only plans work.
+ */
+export function assistantSkippedRequiredTools(text: string): boolean {
+  const raw = String(text ?? '');
+  if (!raw.trim()) return false;
+  const patterns = [
+    /도구가?\s*(아직\s*)?(붙|연결|제공|포함)?\s*(어?\s*있)?\s*(지\s*않|안\s*되|없)/i,
+    /출제용\s*도구.{0,40}(없|안|불가|연결)/i,
+    /파일\s*\/?\s*셸\s*접근/i,
+    /이\s*턴에서.{0,60}(할\s*수\s*없|불가)/i,
+    /다시\s*보내\s*주/i,
+    /도구가\s*붙은\s*세션/i,
+    /세션에서\s*같은\s*요청/i,
+    /tools?\s*(are\s*|is\s*)?(not\s+)?(available|connected|attached|enabled|present|missing)/i,
+    /tool[- ]?calling\s+(is\s+)?(not|unavailable|disabled)/i,
+    /cannot\s+(actually\s+)?(regenerate|run|save|execute|call)/i,
+    /without\s+(access\s+to\s+)?tools?/i,
+    /no\s+(access\s+to\s+)?tools?\b/i,
+    /retry\s+.{0,40}(with\s+)?tools?/i,
+    /의도한\s*수정.{0,80}예정/i,
+    /바로\s*실행하겠/i,
+  ];
+  return patterns.some((re) => re.test(raw));
+}
+
+/** User nudge when the model returned zero tool_calls. */
+export function toolCallNudgeMessage(
+  toolNames: string[],
+  opts?: { saveTool?: string },
+): string {
+  const names =
+    toolNames.length > 0
+      ? toolNames.join(', ')
+      : 'list_project_csvs, set_dataset_code, run_answer_code, save_generated_assets, apply_changes';
+  return [
+    'TOOLS_ARE_CONNECTED=true. Your previous message used zero tool_calls.',
+    'Do NOT say tools are missing or ask the user to retry elsewhere.',
+    `Call tools now. Available: ${names}.`,
+    'Typical fix path when CSV≠answers: set_dataset_code or set_transform_code → run_* → save_generated_assets → set_answer_code → run_answer_code → set_short_answers → then save/apply.',
+    opts?.saveTool
+      ? `When ready, call ${opts.saveTool}(confirm=true).`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}

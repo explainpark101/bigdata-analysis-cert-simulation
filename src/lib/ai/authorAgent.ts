@@ -11,13 +11,16 @@ import {
 import type { AiEndpointSettings } from '@/lib/aiSettings';
 import type { AuthorDraft } from '@/lib/ai/authorChatStore';
 import {
+  assistantSkippedRequiredTools,
   authorDifficultyPromptEn,
   authorRuntimeEnvPromptEn,
   authorStatsResearchPromptEn,
+  authorToolContractPromptEn,
   authorType13AnswerFormatPromptEn,
   authorType2BandPromptEn,
   shortAnswersAreFinite,
   stdoutHasNonFiniteAnswer,
+  toolCallNudgeMessage,
   validateNumericShortAnswers,
 } from '@/lib/ai/authorRuntimePrompt';
 import {
@@ -26,7 +29,7 @@ import {
   WEB_TOOL_DEFS,
 } from '@/lib/ai/webTools';
 import { mountPathForAsset } from '@/lib/assetPaths';
-import { resolveAssets, createProjectAsset } from '@/lib/projectIO';
+import { resolveAssets } from '@/lib/projectIO';
 import { ensureShortAnswersForSubQuestions } from '@/lib/subQuestions';
 import { mountAssetsToPyodide } from '@/runtimes/fsMount';
 import {
@@ -48,10 +51,12 @@ import type {
   TaskType,
 } from '@/types/project';
 import {
-  appendCsvMountNote,
-  ensureProblemHasCsv,
-  linkedCsvAssetIds,
-} from '@/lib/ai/ensureProblemCsv';
+  applyCsvRenamesToDraftFields,
+  persistGeneratedCsvAssets,
+  upsertProjectAssets,
+} from '@/lib/ai/csvAssetPersist';
+import { prepareDraftForVerifiedSave } from '@/lib/ai/commitVerifiedProblem';
+import { linkedCsvAssetIds } from '@/lib/ai/ensureProblemCsv';
 
 const MAX_TOOL_ROUNDS = 14;
 const MAX_TOOL_ROUNDS_REQUIRE_SAVE = 20;
@@ -85,6 +90,7 @@ export type AuthorAgentProgress =
 function systemPrompt(
   requireSave: boolean,
   mode: AuthorAgentMode,
+  toolNames: string[],
 ): string {
   const isModify = mode === 'modify';
   const lines = [
@@ -92,6 +98,8 @@ function systemPrompt(
     isModify
       ? 'Your job is to MODIFY the existing bank problem in place — improve wording, answers, grading, or CSV-backed data as the user asks. Keep the same problem id; do not invent a separate variant unless asked.'
       : 'Your job is to author ORIGINAL exam items that a real candidate could meet on the practical test — not toy drills.',
+    '',
+    authorToolContractPromptEn(toolNames),
     '',
     isModify
       ? [
@@ -149,7 +157,9 @@ function systemPrompt(
     'Type 1/3: CSV ready (mutate or synthesize) → update_draft → set_answer_code → run_answer_code → set_short_answers.',
     'Type 1/3 소문항: one item may have multiple sub-questions (type1 max 5, type3 max 3). Mark with line-leading ①②/(1)(2); set_short_answers length = 소문항 count; print one number per line.',
     'Type 1/3 NaN: if run_answer_code prints NaN/Inf, do not save — change data/metric and regenerate until every answer is a finite number.',
-    'Type 2: CSV ready → update_draft with markdown 구간표 + grading_python/r (SCORE_BANDS) → verify.',
+    'Type 2: CSV ready → update_draft with markdown 구간표 + grading_python/r (SCORE_BANDS) → answer code must write result.csv.',
+    'SAVE GATE: save/apply re-runs answer code against the stored library CSV and rejects the write unless that run confirms the answers (type 1/3) or result.csv (type 2).',
+    'CSV names: save_generated_assets never overwrites an existing library basename — a random hash suffix is appended when needed; update data/<file>.csv paths accordingly.',
     'Never invent final numeric answers yourself — compute via tools, then set answers from stdout.',
     'For stats formulas/metrics: prefer lookup_statistic / web_search → fetch_url. If those return ok=false or skip=true, continue with your own knowledge — do not stall.',
   ];
@@ -413,7 +423,7 @@ const BASE_TOOLS: ChatToolDef[] = [
     function: {
       name: 'save_generated_assets',
       description:
-        'Persist out/*.csv into the project library and draft.assetIds. Non-csv paths are rejected.',
+        'Persist out/*.csv as-is into the project library and draft.assetIds. If a basename already exists, append _<randomHash> instead of overwriting. Non-csv paths are rejected.',
       parameters: {
         type: 'object',
         properties: {
@@ -657,6 +667,91 @@ function assertType13AnswersFinite(draft: AuthorDraft): string | null {
   return 'Answers are missing or NaN/Inf — regenerate the item until run_answer_code yields finite numbers, then set_short_answers.';
 }
 
+/**
+ * Ensure stored CSV is linked, re-run answer code against it, then persist.
+ * Used by save_problem / apply_changes and auto-batch fallbacks (create + edit).
+ */
+export async function tryCommitAuthorDraft(opts: {
+  project: AuthoringProject;
+  draft: AuthorDraft;
+  mode: AuthorAgentMode;
+  targetProblem?: BankProblem;
+  referenceIds: string[];
+  addProjectAssets: (assets: ProjectAsset[]) => Promise<ProjectAsset[]>;
+  onSave: (problem: Partial<BankProblem>) => BankProblem;
+}): Promise<
+  | { ok: true; problem: BankProblem; draft: AuthorDraft }
+  | {
+      ok: false;
+      error: string;
+      regenerate?: boolean;
+      draft: AuthorDraft;
+    }
+> {
+  const bad = assertType13AnswersFinite(opts.draft);
+  if (bad) {
+    return { ok: false, error: bad, regenerate: true, draft: opts.draft };
+  }
+
+  const target = opts.targetProblem;
+  const shell: BankProblem = {
+    ...(target ?? {
+      id: `draft-${crypto.randomUUID().slice(0, 8)}`,
+      number: '',
+      title: opts.draft.title,
+      taskType: opts.draft.taskType,
+      kind: 'submit',
+      language: opts.draft.language,
+      markdown: opts.draft.markdown,
+      starterCode: { python: '', r: '' },
+      assetIds: opts.draft.assetIds,
+    }),
+    taskType: opts.draft.taskType,
+    assetIds: opts.draft.assetIds,
+    markdown: opts.draft.markdown,
+    title: opts.draft.title,
+  };
+
+  const prepared = await prepareDraftForVerifiedSave({
+    project: opts.project,
+    draft: {
+      title: opts.draft.title,
+      markdown: opts.draft.markdown,
+      language: opts.draft.language,
+      answerCode: opts.draft.answerCode,
+      gradingCode: opts.draft.gradingCode,
+      shortAnswers: opts.draft.shortAnswers,
+      assetIds: opts.draft.assetIds,
+      taskType: opts.draft.taskType,
+    },
+    problemShell: shell,
+    addProjectAssets: opts.addProjectAssets,
+  });
+
+  const draft: AuthorDraft = {
+    ...opts.draft,
+    markdown: prepared.draft.markdown,
+    assetIds: prepared.draft.assetIds,
+    answerCode: prepared.draft.answerCode,
+    gradingCode: prepared.draft.gradingCode,
+    shortAnswers: prepared.draft.shortAnswers,
+  };
+
+  if (!prepared.ok) {
+    return {
+      ok: false,
+      error: prepared.error,
+      regenerate: prepared.regenerate,
+      draft,
+    };
+  }
+
+  const problem = opts.onSave(
+    draftToBankPartial(draft, opts.referenceIds, opts.mode, target),
+  );
+  return { ok: true, problem, draft };
+}
+
 function refsOf(ctx: AuthorAgentContext): BankProblem[] {
   if (ctx.referenceIds.length) {
     const set = new Set(ctx.referenceIds);
@@ -730,6 +825,7 @@ export async function runAuthorAgentTurn(opts: {
   const target = ctx.targetProblem;
   const saveToolName = mode === 'modify' ? 'apply_changes' : 'save_problem';
   const tools = toolsFor(mode);
+  const toolNames = tools.map((t) => t.function.name);
 
   const contextLines =
     mode === 'modify'
@@ -743,6 +839,7 @@ export async function runAuthorAgentTurn(opts: {
           `peer references (${ctx.referenceIds.length}):`,
           refBrief || '(none)',
           'Edit THIS bank item in place. Use the same tool suite as problem authoring.',
+          `TOOLS_LIVE=true — tools on this request: ${toolNames.join(', ')}. Never claim tools are disconnected.`,
           'DATA_POLICY=csv_only — every problem MUST have ≥1 .csv; MUTATE/SYNTHESIZE/use_project_assets before apply if needed.',
           'RUNTIME=python(pandas,numpy,scipy.stats,statsmodels,sklearn,xgboost,lightgbm) | r(tidyverse,broom,lubridate).',
           'DIFFICULTY=hard custom metrics via lookup_statistic/web_search/fetch_url + KaTeX when available; if search fails/skips, use trained knowledge; do NOT default to 합동분산; no formulas for package one-liners.',
@@ -757,6 +854,7 @@ export async function runAuthorAgentTurn(opts: {
           `selected references (${ctx.referenceIds.length}):`,
           refBrief || '(none)',
           'Analyze references with list_references / get_reference, then invent a NEW exam-realistic item.',
+          `TOOLS_LIVE=true — tools on this request: ${toolNames.join(', ')}. Never claim tools are disconnected.`,
           'DATA_POLICY=csv_only — every problem MUST have ≥1 .csv; choose MUTATE (list_project_csvs / transform) or SYNTHESIZE (dataset_code) at design time.',
           'RUNTIME=python(pandas,numpy,scipy.stats,statsmodels,sklearn,xgboost,lightgbm) | r(tidyverse,broom,lubridate).',
           'DIFFICULTY=hard custom metrics via lookup_statistic/web_search/fetch_url + KaTeX when available; if search fails/skips, use trained knowledge; do NOT default to 합동분산; no formulas for package one-liners.',
@@ -767,7 +865,7 @@ export async function runAuthorAgentTurn(opts: {
         ];
 
   const messages: ChatMessage[] = [
-    { role: 'system', content: systemPrompt(requireSave, mode) },
+    { role: 'system', content: systemPrompt(requireSave, mode, toolNames) },
     {
       role: 'user',
       content: contextLines.filter(Boolean).join('\n'),
@@ -785,6 +883,8 @@ export async function runAuthorAgentTurn(opts: {
 
   let assistantText = '';
   let savedProblem: BankProblem | null = null;
+  let emptyToolNudges = 0;
+  const MAX_EMPTY_TOOL_NUDGES = 2;
   const throwIfAborted = () => {
     if (!signal?.aborted) return;
     const reason = signal.reason;
@@ -843,7 +943,25 @@ export async function runAuthorAgentTurn(opts: {
     if (text) assistantText = text;
 
     const calls = msg.tool_calls ?? [];
-    if (!calls.length) break;
+    if (!calls.length) {
+      const needsWork =
+        requireSave ||
+        assistantSkippedRequiredTools(text) ||
+        (emptyToolNudges === 0 && /SYNTHESIZE|MUTATE|set_dataset|run_answer|CSV|재생성|검증/i.test(text));
+      if (needsWork && emptyToolNudges < MAX_EMPTY_TOOL_NUDGES) {
+        emptyToolNudges += 1;
+        report({
+          kind: 'status',
+          text: `도구 미호출 — 재촉구 (${emptyToolNudges}/${MAX_EMPTY_TOOL_NUDGES})…`,
+        });
+        messages.push({
+          role: 'user',
+          content: toolCallNudgeMessage(toolNames, { saveTool: saveToolName }),
+        });
+        continue;
+      }
+      break;
+    }
 
     for (const call of calls) {
       throwIfAborted();
@@ -1191,35 +1309,24 @@ export async function runAuthorAgentTurn(opts: {
               typeof args.library_folder === 'string' && args.library_folder.trim()
                 ? args.library_folder.trim().replace(/^\/+|\/+$/g, '')
                 : `authored/type${draft.taskType}`;
-            const created: ProjectAsset[] = [];
+            const bodies: Array<{ basename: string; content: string }> = [];
             for (const raw of csvFiles) {
               const base = raw.replace(/^out\//, '').replace(/^.*\//, '');
               if (!base.toLowerCase().endsWith('.csv')) continue;
-              const content = await readPyodideFileText(`out/${base}`);
-              created.push(
-                createProjectAsset(
-                  {
-                    name: base,
-                    content,
-                    encoding: 'utf-8',
-                    mimeType: 'text/csv',
-                  },
-                  `${folder}/${base}`,
-                ),
-              );
+              bodies.push({
+                basename: base,
+                content: await readPyodideFileText(`out/${base}`),
+              });
             }
-            const added = await ctx.addProjectAssets(created);
-            // addProjectAssets returns lean assets (content stripped). Keep the
-            // just-read CSV bodies on the turn-local project for run_answer.
-            for (let i = 0; i < added.length; i++) {
-              const lean = added[i];
-              const full: ProjectAsset = {
-                ...lean,
-                content: created[i]?.content ?? lean.content,
-              };
-              const idx = ctx.project.assets.findIndex((x) => x.id === lean.id);
-              if (idx >= 0) ctx.project.assets[idx] = full;
-              else ctx.project.assets.push(full);
+            const { added, renames } = await persistGeneratedCsvAssets({
+              files: bodies,
+              folder,
+              existingAssets: ctx.project.assets,
+              addProjectAssets: ctx.addProjectAssets,
+            });
+            upsertProjectAssets(ctx.project.assets, added);
+            if (renames.length) {
+              draft = applyCsvRenamesToDraftFields(draft, renames);
             }
             draft.assetIds = added.map((a) => a.id);
             onDraft?.(draft);
@@ -1228,7 +1335,11 @@ export async function runAuthorAgentTurn(opts: {
               assetIds: draft.assetIds,
               paths: added.map((a) => a.path),
               mount: added.map((a) => mountPathForAsset(a)),
-              hint: 'In answer_code / markdown load via mount paths only (data/<file>.csv).',
+              renamed: renames,
+              hint:
+                renames.length > 0
+                  ? 'Some CSV basenames already existed — saved with _<hash> suffix (no overwrite). Use the returned mount paths in answer_code / markdown.'
+                  : 'In answer_code / markdown load via mount paths only (data/<file>.csv).',
               rejected,
             });
           }
@@ -1275,77 +1386,36 @@ export async function runAuthorAgentTurn(opts: {
           } else if (!onSave) {
             toolResult = JSON.stringify({ ok: false, error: 'save unavailable' });
           } else {
-            const bad = assertType13AnswersFinite(draft);
-            if (bad) {
+            const committed = await tryCommitAuthorDraft({
+              project: ctx.project,
+              draft,
+              mode,
+              targetProblem: target,
+              referenceIds: ctx.referenceIds,
+              addProjectAssets: ctx.addProjectAssets,
+              onSave,
+            });
+            draft = committed.draft;
+            onDraft?.(draft);
+            if (!committed.ok) {
               toolResult = JSON.stringify({
                 ok: false,
-                error: bad,
-                regenerate: true,
+                error: committed.error,
+                regenerate: committed.regenerate,
               });
             } else {
-              // Every problem must depend on ≥1 CSV — force-create & link if missing.
-              if (linkedCsvAssetIds(ctx.project, draft.assetIds).length === 0) {
-                const shell: BankProblem = {
-                  ...(target ?? {
-                    id: `draft-${crypto.randomUUID().slice(0, 8)}`,
-                    number: '',
-                    title: draft.title,
-                    taskType: draft.taskType,
-                    kind: 'submit',
-                    language: draft.language,
-                    markdown: draft.markdown,
-                    starterCode: { python: '', r: '' },
-                    assetIds: draft.assetIds,
-                  }),
-                  taskType: draft.taskType,
-                  assetIds: draft.assetIds,
-                  markdown: draft.markdown,
-                  title: draft.title,
-                };
-                const ensured = await ensureProblemHasCsv({
-                  project: ctx.project,
-                  problem: shell,
-                  addProjectAssets: ctx.addProjectAssets,
-                });
-                for (const lean of ensured.created) {
-                  const idx = ctx.project.assets.findIndex((x) => x.id === lean.id);
-                  if (idx < 0) ctx.project.assets.push(lean);
-                }
-                draft.assetIds = ensured.assetIds;
-                if (ensured.changed) {
-                  draft.markdown = appendCsvMountNote(
-                    draft.markdown,
-                    ensured.csvNames,
-                  );
-                }
-                onDraft?.(draft);
-              }
-              if (linkedCsvAssetIds(ctx.project, draft.assetIds).length === 0) {
-                toolResult = JSON.stringify({
-                  ok: false,
-                  error:
-                    'CSV_REQUIRED: draft still has no .csv assets after ensure',
-                });
-              } else {
-                savedProblem = onSave(
-                  draftToBankPartial(
-                    draft,
-                    ctx.referenceIds,
-                    mode,
-                    target,
-                  ),
-                );
-                toolResult = JSON.stringify({
-                  ok: true,
-                  id: savedProblem.id,
-                  title: savedProblem.title,
-                  mode,
-                  csvAssetIds: linkedCsvAssetIds(
-                    ctx.project,
-                    savedProblem.assetIds,
-                  ),
-                });
-              }
+              savedProblem = committed.problem;
+              toolResult = JSON.stringify({
+                ok: true,
+                id: savedProblem.id,
+                title: savedProblem.title,
+                mode,
+                verified: true,
+                csvAssetIds: linkedCsvAssetIds(
+                  ctx.project,
+                  savedProblem.assetIds,
+                ),
+              });
             }
           }
         } else if (isWebToolName(name)) {
@@ -1422,14 +1492,32 @@ export async function runAuthorAgentTurn(opts: {
             report({ kind: 'tool', name: saveToolName, phase: 'done' });
           } else {
             report({ kind: 'tool', name: saveToolName, phase: 'start' });
-            savedProblem = onSave(
-              draftToBankPartial(draft, ctx.referenceIds, mode, target),
-            );
-            toolResult = JSON.stringify({
-              ok: true,
-              id: savedProblem.id,
-              title: savedProblem.title,
+            const committed = await tryCommitAuthorDraft({
+              project: ctx.project,
+              draft,
+              mode,
+              targetProblem: target,
+              referenceIds: ctx.referenceIds,
+              addProjectAssets: ctx.addProjectAssets,
+              onSave,
             });
+            draft = committed.draft;
+            onDraft?.(draft);
+            if (!committed.ok) {
+              toolResult = JSON.stringify({
+                ok: false,
+                error: committed.error,
+                regenerate: committed.regenerate,
+              });
+            } else {
+              savedProblem = committed.problem;
+              toolResult = JSON.stringify({
+                ok: true,
+                id: savedProblem.id,
+                title: savedProblem.title,
+                verified: true,
+              });
+            }
             report({ kind: 'tool', name: saveToolName, phase: 'done' });
           }
         }
@@ -1459,14 +1547,34 @@ export async function runAuthorAgentTurn(opts: {
       isDraftReadyForSave(draft) &&
       !assertType13AnswersFinite(draft)
     ) {
-      report({ kind: 'status', text: '초안을 직접 저장합니다…' });
-      savedProblem = onSave(
-        draftToBankPartial(draft, ctx.referenceIds, mode, target),
-      );
-      messages.push({
-        role: 'assistant',
-        content: `${saveToolName}이 누락되어 초안을 직접 저장했습니다: ${savedProblem.title}`,
+      report({ kind: 'status', text: '초안 검증 후 직접 저장…' });
+      const committed = await tryCommitAuthorDraft({
+        project: ctx.project,
+        draft,
+        mode,
+        targetProblem: target,
+        referenceIds: ctx.referenceIds,
+        addProjectAssets: ctx.addProjectAssets,
+        onSave,
       });
+      draft = committed.draft;
+      onDraft?.(draft);
+      if (committed.ok) {
+        savedProblem = committed.problem;
+        messages.push({
+          role: 'assistant',
+          content: `${saveToolName}이 누락되어 저장된 CSV로 풀이 검증 후 저장했습니다: ${savedProblem.title}`,
+        });
+      } else {
+        report({
+          kind: 'status',
+          text: `저장 보류 — ${committed.error.slice(0, 120)}`,
+        });
+        messages.push({
+          role: 'assistant',
+          content: `저장하지 않았습니다: ${committed.error}`,
+        });
+      }
     } else if (
       !savedProblem &&
       assertType13AnswersFinite(draft)

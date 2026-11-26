@@ -10,13 +10,16 @@ import {
 import type { AiEndpointSettings } from '@/lib/aiSettings';
 import type { VariantDraft } from '@/lib/ai/variantChatStore';
 import {
+  assistantSkippedRequiredTools,
   authorDifficultyPromptEn,
   authorRuntimeEnvPromptEn,
   authorStatsResearchPromptEn,
+  authorToolContractPromptEn,
   authorType13AnswerFormatPromptEn,
   authorType2BandPromptEn,
   shortAnswersAreFinite,
   stdoutHasNonFiniteAnswer,
+  toolCallNudgeMessage,
   validateNumericShortAnswers,
 } from '@/lib/ai/authorRuntimePrompt';
 import {
@@ -25,7 +28,7 @@ import {
   WEB_TOOL_DEFS,
 } from '@/lib/ai/webTools';
 import { mountPathForAsset } from '@/lib/assetPaths';
-import { resolveAssets, createProjectAsset } from '@/lib/projectIO';
+import { resolveAssets } from '@/lib/projectIO';
 import { ensureShortAnswersForSubQuestions } from '@/lib/subQuestions';
 import { mountAssetsToPyodide } from '@/runtimes/fsMount';
 import {
@@ -41,6 +44,13 @@ import {
   WEBR_HOME,
 } from '@/runtimes/webrRuntime';
 import type { AuthoringProject, BankProblem, ProjectAsset } from '@/types/project';
+import {
+  applyCsvRenamesToDraftFields,
+  persistGeneratedCsvAssets,
+  upsertProjectAssets,
+} from '@/lib/ai/csvAssetPersist';
+import { prepareDraftForVerifiedSave } from '@/lib/ai/commitVerifiedProblem';
+import { linkedCsvAssetIds } from '@/lib/ai/ensureProblemCsv';
 
 const MAX_TOOL_ROUNDS = 12;
 
@@ -64,7 +74,11 @@ export interface VariantAgentResult {
   savedProblem: BankProblem | null;
 }
 
-function systemPrompt(source: BankProblem, mode: ProblemEditMode): string {
+function systemPrompt(
+  source: BankProblem,
+  mode: ProblemEditMode,
+  toolNames: string[],
+): string {
   const type = source.taskType;
   const isModify = mode === 'modify';
   return [
@@ -73,6 +87,8 @@ function systemPrompt(source: BankProblem, mode: ProblemEditMode): string {
       ? 'MODIFY the existing bank problem in place. Improve wording, answers, grading, or data only as the user asks — do not invent a separate variant title unless asked.'
       : 'Transform the source problem into a VARIANT that tests related skills.',
     'Never invent final numeric answers yourself. Always write executable code that computes answers, then use tools to run it and set answers from stdout.',
+    '',
+    authorToolContractPromptEn(toolNames),
     '',
     `Source task type: ${type}`,
     type === 1 || type === 3
@@ -98,6 +114,8 @@ function systemPrompt(source: BankProblem, mode: ProblemEditMode): string {
           '- MUTATE: list_project_csvs → preview_csv_asset → set_transform_code (python|r) → run_transform_code(asset_ids=source) → save_generated_assets.',
           '  Read data/<file>.csv; write NEW out/*.csv (rename columns, resample, shift target — not a verbatim copy).',
           '- SYNTHESIZE: set_dataset_code (seeded Python) → run_dataset_code → save_generated_assets.',
+          '- save_generated_assets never overwrites an existing library basename — a _<hash> suffix is added when needed.',
+          '- SAVE GATE: save/apply re-runs answer code on stored CSV; type 2 must produce result.csv.',
           '- Do NOT paste CSV rows in chat.',
           '- Provide gradingCode via update_draft grading fields with SCORE_BANDS (5pt steps); no short-answer tools.',
           '- Examinee still submits result.csv; do not invent scores.',
@@ -327,7 +345,7 @@ function toolsFor(source: BankProblem, mode: ProblemEditMode): ChatToolDef[] {
         function: {
           name: 'save_generated_assets',
           description:
-            'Read listed out/*.csv files from the runtime FS and save them into the project library; attach to draft.assetIds.',
+            'Read listed out/*.csv as-is into the project library and attach to draft.assetIds. Existing basenames get a _<randomHash> suffix (never overwrite).',
           parameters: {
             type: 'object',
             properties: {
@@ -527,8 +545,11 @@ export async function runVariantAgentTurn(opts: {
     shortAnswers: [...ctx.draft.shortAnswers],
     assetIds: [...ctx.draft.assetIds],
   };
+  const tools = toolsFor(ctx.source, mode);
+  const toolNames = tools.map((t) => t.function.name);
+  const saveToolName = mode === 'modify' ? 'apply_changes' : 'save_variant';
   const messages: ChatMessage[] = [
-    { role: 'system', content: systemPrompt(ctx.source, mode) },
+    { role: 'system', content: systemPrompt(ctx.source, mode, toolNames) },
     ...stripThinkingFromHistory(
       opts.history.filter((m) => m.role !== 'system'),
     ),
@@ -541,6 +562,7 @@ export async function runVariantAgentTurn(opts: {
     `taskType=${ctx.source.taskType}`,
     `assetIds=${JSON.stringify(ctx.draft.assetIds)}`,
     `markdown:\n${ctx.source.markdown.slice(0, 6000)}`,
+    `TOOLS_LIVE=true — tools on this request: ${toolNames.join(', ')}. Never claim tools are disconnected.`,
     mode === 'modify'
       ? `CURRENT DRAFT SNAPSHOT:\ntitle=${draft.title}\nnote=${(draft.note ?? '').slice(0, 500)}\nmarkdown:\n${draft.markdown.slice(0, 6000)}`
       : '',
@@ -554,7 +576,8 @@ export async function runVariantAgentTurn(opts: {
 
   let assistantText = '';
   let savedProblem: BankProblem | null = null;
-  const tools = toolsFor(ctx.source, mode);
+  let emptyToolNudges = 0;
+  const MAX_EMPTY_TOOL_NUDGES = 2;
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const completion = await createChatCompletion({
@@ -580,13 +603,29 @@ export async function runVariantAgentTurn(opts: {
       content: msg.content,
       tool_calls: msg.tool_calls,
     });
-    {
-      const text = chatContentToText(msg.content).trim();
-      if (text) assistantText = text;
-    }
+    const text = chatContentToText(msg.content).trim();
+    if (text) assistantText = text;
 
     const calls = msg.tool_calls ?? [];
-    if (!calls.length) break;
+    if (!calls.length) {
+      const needsWork =
+        assistantSkippedRequiredTools(text) ||
+        (emptyToolNudges === 0 &&
+          /SYNTHESIZE|MUTATE|set_dataset|run_answer|CSV|재생성|검증/i.test(
+            text,
+          ));
+      if (needsWork && emptyToolNudges < MAX_EMPTY_TOOL_NUDGES) {
+        emptyToolNudges += 1;
+        messages.push({
+          role: 'user',
+          content: toolCallNudgeMessage(toolNames, {
+            saveTool: saveToolName,
+          }),
+        });
+        continue;
+      }
+      break;
+    }
 
     for (const call of calls) {
       const name = call.function.name;
@@ -892,35 +931,24 @@ export async function runVariantAgentTurn(opts: {
               typeof args.library_folder === 'string' && args.library_folder.trim()
                 ? args.library_folder.trim().replace(/^\/+|\/+$/g, '')
                 : `variants/${ctx.source.id}`;
-            const created: ProjectAsset[] = [];
+            const bodies: Array<{ basename: string; content: string }> = [];
             for (const raw of files) {
               const base = raw.replace(/^out\//, '').replace(/^.*\//, '');
-              const fsPath = `out/${base}`;
-              const content = await readPyodideFileText(fsPath);
-              const libraryPath = `${folder}/${base}`;
-              created.push(
-                createProjectAsset(
-                  {
-                    name: base,
-                    content,
-                    encoding: 'utf-8',
-                    mimeType: 'text/csv',
-                  },
-                  libraryPath,
-                ),
-              );
+              if (!base.toLowerCase().endsWith('.csv')) continue;
+              bodies.push({
+                basename: base,
+                content: await readPyodideFileText(`out/${base}`),
+              });
             }
-            const added = await ctx.addProjectAssets(created);
-            // Keep just-read bodies on the turn-local project (lean return).
-            for (let i = 0; i < added.length; i++) {
-              const lean = added[i];
-              const full: ProjectAsset = {
-                ...lean,
-                content: created[i]?.content ?? lean.content,
-              };
-              const idx = ctx.project.assets.findIndex((x) => x.id === lean.id);
-              if (idx >= 0) ctx.project.assets[idx] = full;
-              else ctx.project.assets.push(full);
+            const { added, renames } = await persistGeneratedCsvAssets({
+              files: bodies,
+              folder,
+              existingAssets: ctx.project.assets,
+              addProjectAssets: ctx.addProjectAssets,
+            });
+            upsertProjectAssets(ctx.project.assets, added);
+            if (renames.length) {
+              draft = applyCsvRenamesToDraftFields(draft, renames);
             }
             draft.assetIds = added.map((a) => a.id);
             onDraft?.(draft);
@@ -929,7 +957,11 @@ export async function runVariantAgentTurn(opts: {
               assetIds: draft.assetIds,
               paths: added.map((a) => a.path),
               mount: added.map((a) => mountPathForAsset(a)),
-              hint: 'In answer_code / markdown load via mount paths only (data/<file>.csv).',
+              renamed: renames,
+              hint:
+                renames.length > 0
+                  ? 'Some CSV basenames already existed — saved with _<hash> suffix (no overwrite). Use the returned mount paths.'
+                  : 'In answer_code / markdown load via mount paths only (data/<file>.csv).',
             });
           }
         } else if (name === 'save_variant' || name === 'apply_changes') {
@@ -964,50 +996,90 @@ export async function runVariantAgentTurn(opts: {
               regenerate: true,
             });
           } else {
-            const partial: Partial<BankProblem> = {
-              title: draft.title,
-              note: draft.note,
-              showNoteOnExam:
-                mode === 'modify'
-                  ? ctx.source.showNoteOnExam
-                  : false,
-              taskType: ctx.source.taskType,
-              kind: ctx.source.kind,
-              language: draft.language,
-              markdown: draft.markdown,
-              answerCode: draft.answerCode,
-              gradingCode: draft.gradingCode,
-              datasetCode: draft.datasetCode || undefined,
-              assetIds: draft.assetIds,
-              ...(mode === 'variant'
-                ? { sourceProblemId: ctx.source.id }
-                : {}),
-              submitFormat: ctx.source.taskType === 2 ? 'csv' : 'short',
-              submitFile:
-                ctx.source.taskType === 2 ? 'result.csv' : undefined,
-              ...(() => {
-                if (ctx.source.taskType === 2) {
-                  return { shortAnswers: undefined, shortAnswer: '' };
-                }
-                const shorts = ensureShortAnswersForSubQuestions(
-                  draft.markdown,
-                  draft.shortAnswers,
-                  draft.shortAnswers[0],
-                  ctx.source.taskType,
-                );
-                return {
-                  shortAnswers: shorts,
-                  shortAnswer: shorts[0] ?? '',
-                };
-              })(),
-            };
-            savedProblem = onSave(partial);
-            toolResult = JSON.stringify({
-              ok: true,
-              id: savedProblem.id,
-              title: savedProblem.title,
-              mode,
+            const prepared = await prepareDraftForVerifiedSave({
+              project: ctx.project,
+              draft: {
+                title: draft.title,
+                markdown: draft.markdown,
+                language: draft.language,
+                answerCode: draft.answerCode,
+                gradingCode: draft.gradingCode,
+                shortAnswers: draft.shortAnswers,
+                assetIds: draft.assetIds,
+                taskType: ctx.source.taskType,
+              },
+              problemShell: {
+                ...ctx.source,
+                assetIds: draft.assetIds,
+                markdown: draft.markdown,
+                title: draft.title,
+              },
+              addProjectAssets: ctx.addProjectAssets,
             });
+            draft.markdown = prepared.draft.markdown;
+            draft.assetIds = prepared.draft.assetIds;
+            draft.answerCode = prepared.draft.answerCode;
+            draft.gradingCode = prepared.draft.gradingCode;
+            draft.shortAnswers = prepared.draft.shortAnswers;
+            onDraft?.(draft);
+            if (!prepared.ok) {
+              toolResult = JSON.stringify({
+                ok: false,
+                error: prepared.error,
+                regenerate: prepared.regenerate,
+              });
+            } else {
+              const partial: Partial<BankProblem> = {
+                title: draft.title,
+                note: draft.note,
+                showNoteOnExam:
+                  mode === 'modify'
+                    ? ctx.source.showNoteOnExam
+                    : false,
+                taskType: ctx.source.taskType,
+                kind: ctx.source.kind,
+                language: draft.language,
+                markdown: draft.markdown,
+                answerCode: draft.answerCode,
+                gradingCode: draft.gradingCode,
+                datasetCode: draft.datasetCode || undefined,
+                assetIds: draft.assetIds,
+                ...(mode === 'variant'
+                  ? { sourceProblemId: ctx.source.id }
+                  : {}),
+                submitFormat: ctx.source.taskType === 2 ? 'csv' : 'short',
+                submitFile:
+                  ctx.source.taskType === 2 ? 'result.csv' : undefined,
+                ...(() => {
+                  if (ctx.source.taskType === 2) {
+                    return { shortAnswers: undefined, shortAnswer: '' };
+                  }
+                  const shorts = ensureShortAnswersForSubQuestions(
+                    draft.markdown,
+                    draft.shortAnswers,
+                    draft.shortAnswers[0],
+                    ctx.source.taskType,
+                  );
+                  return {
+                    shortAnswers: shorts,
+                    shortAnswer: shorts[0] ?? '',
+                  };
+                })(),
+              };
+              savedProblem = onSave(partial);
+              toolResult = JSON.stringify({
+                ok: true,
+                id: savedProblem.id,
+                title: savedProblem.title,
+                mode,
+                verified: true,
+                verifiedLanguage: prepared.verifiedLanguage,
+                csvAssetIds: linkedCsvAssetIds(
+                  ctx.project,
+                  savedProblem.assetIds,
+                ),
+              });
+            }
           }
         } else if (isWebToolName(name)) {
           toolResult = await runWebTool(name, args);
