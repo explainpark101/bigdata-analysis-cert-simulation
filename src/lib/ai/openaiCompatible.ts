@@ -518,20 +518,6 @@ export class RepetitionLoopError extends Error {
   }
 }
 
-/** Abort and retry when the model produces no bytes for this long. */
-const STALL_TIMEOUT_MS = 30_000;
-
-/** Idle stream / request with no progress — abort and regenerate. */
-export class StallTimeoutError extends Error {
-  readonly regenerate = true;
-  constructor(
-    message = `AI 응답이 ${STALL_TIMEOUT_MS / 1000}초 이상 멈춰 재요청합니다.`,
-  ) {
-    super(message);
-    this.name = 'StallTimeoutError';
-  }
-}
-
 /**
  * Detect pathological repetition (same line / phrase loop) in assistant text.
  * Used mid-stream to abort and regenerate.
@@ -732,13 +718,6 @@ export type ChatToolChoice =
 const RETRY_BASE_MS = 800;
 const RETRY_MAX_MS = 20_000;
 
-function isStallTimeoutError(err: unknown): boolean {
-  return (
-    err instanceof StallTimeoutError ||
-    (err instanceof Error && err.name === 'StallTimeoutError')
-  );
-}
-
 function isAbortError(err: unknown): boolean {
   if (err instanceof DOMException && err.name === 'AbortError') return true;
   if (err instanceof Error && err.name === 'AbortError') return true;
@@ -788,8 +767,8 @@ function errorMessage(err: unknown): string {
 
 /**
  * OpenAI-compatible chat.completions.
- * Retries **forever** on any failure (empty stream, HTTP errors, network,
- * 30s idle stall, …) until a usable message/tool_calls arrives or `signal` aborts.
+ * Retries **forever** on any failure (empty stream, HTTP errors, network, …)
+ * until a usable message/tool_calls arrives or `signal` aborts.
  * Model traffic is always logged with `console.debug`.
  */
 export async function createChatCompletion(opts: {
@@ -846,13 +825,11 @@ export async function createChatCompletion(opts: {
       });
       return result;
     } catch (err) {
-      // StallTimeoutError is retriable; user AbortError is not.
-      if (isAbortError(err) && !isStallTimeoutError(err)) throw err;
+      if (isAbortError(err)) throw err;
       attempt += 1;
       console.debug('[ai] chat.completions retry', {
         attempt,
         error: errorMessage(err),
-        stall: isStallTimeoutError(err),
       });
       opts.onRetry?.(attempt, err);
       opts.onEmptyStreamRetry?.(attempt);
@@ -878,7 +855,6 @@ async function createChatCompletionOnce(opts: {
 }): Promise<ChatCompletionResult> {
   const body = buildCompletionBody({ ...opts, stream: true });
   let stopForRepetition = false;
-  let stopForStall = false;
   const localCtrl = new AbortController();
   const onParentAbort = () => {
     localCtrl.abort(
@@ -887,53 +863,15 @@ async function createChatCompletionOnce(opts: {
   };
   opts.signal?.addEventListener('abort', onParentAbort);
 
-  let stallTimer: ReturnType<typeof setTimeout> | null = null;
-  const clearStallWatch = () => {
-    if (stallTimer != null) {
-      clearTimeout(stallTimer);
-      stallTimer = null;
-    }
-  };
-  const armStallWatch = () => {
-    clearStallWatch();
-    stallTimer = setTimeout(() => {
-      if (stopForRepetition || stopForStall || localCtrl.signal.aborted) return;
-      stopForStall = true;
-      console.debug('[ai] stall timeout — aborting idle response', {
-        idleMs: STALL_TIMEOUT_MS,
-      });
-      try {
-        localCtrl.abort(new StallTimeoutError());
-      } catch {
-        /* ignore */
-      }
-    }, STALL_TIMEOUT_MS);
-  };
-
   const throwIfRepetition = (text: string) => {
     if (!detectTextRepetitionLoop(text)) return;
     stopForRepetition = true;
-    clearStallWatch();
     try {
       localCtrl.abort();
     } catch {
       /* ignore */
     }
     throw new RepetitionLoopError();
-  };
-
-  const rethrowIfControlledStop = (err: unknown): never => {
-    if (stopForRepetition || err instanceof RepetitionLoopError) {
-      throw new RepetitionLoopError();
-    }
-    if (
-      stopForStall ||
-      isStallTimeoutError(err) ||
-      isStallTimeoutError(localCtrl.signal.reason)
-    ) {
-      throw new StallTimeoutError();
-    }
-    throw err;
   };
 
   const debugDelta = (delta: {
@@ -944,8 +882,6 @@ async function createChatCompletionOnce(opts: {
     opts.onDelta?.(delta);
   };
 
-  armStallWatch();
-
   let res: Response;
   try {
     res = await fetch(chatCompletionsUrl(opts.settings.baseUrl), {
@@ -954,23 +890,19 @@ async function createChatCompletionOnce(opts: {
       body: JSON.stringify(body),
       signal: localCtrl.signal,
     });
-    armStallWatch();
   } catch (err) {
-    clearStallWatch();
     opts.signal?.removeEventListener('abort', onParentAbort);
-    rethrowIfControlledStop(err);
+    if (stopForRepetition) throw new RepetitionLoopError();
     throw err;
   }
 
   if (!res.ok) {
-    clearStallWatch();
     opts.signal?.removeEventListener('abort', onParentAbort);
     const text = await res.text();
     throw parseErrorPayload(res.status, text);
   }
 
   if (!res.body) {
-    clearStallWatch();
     opts.signal?.removeEventListener('abort', onParentAbort);
     throw new Error('AI 스트림 본문이 비어 있습니다.');
   }
@@ -989,7 +921,6 @@ async function createChatCompletionOnce(opts: {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      armStallWatch();
       buffer += decoder.decode(value, { stream: true });
 
       if (mode === 'unknown') {
@@ -1089,9 +1020,11 @@ async function createChatCompletionOnce(opts: {
       }
     }
   } catch (err) {
-    rethrowIfControlledStop(err);
+    if (stopForRepetition || err instanceof RepetitionLoopError) {
+      throw new RepetitionLoopError();
+    }
+    throw err;
   } finally {
-    clearStallWatch();
     opts.signal?.removeEventListener('abort', onParentAbort);
     try {
       reader.releaseLock();
