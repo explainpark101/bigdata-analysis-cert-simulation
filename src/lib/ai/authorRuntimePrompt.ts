@@ -364,8 +364,9 @@ export function authorToolContractPromptEn(toolNames: string[]): string {
     `Available tools: ${listed}.`,
     'NEVER claim that tools, file access, shell, set_dataset_code, run_answer_code, or similar are disconnected, missing, unavailable, or only work in another session.',
     'NEVER ask the user to "retry in a session with tools" or end with only a planned SYNTHESIZE/MUTATE write-up.',
+    'NEVER paste tool calls as markdown/JSON in the assistant text (e.g. ```json {"tool_calls":[...]} ```). That does NOT run. Use the API native function/tool_calls channel only.',
     'If CSV and answers disagree: call tools NOW — e.g. list_project_csvs / set_dataset_code or set_transform_code → run_* → save_generated_assets → set_answer_code → run_answer_code → set_short_answers → apply_changes/save_*.',
-    'A text-only reply that postpones work is a failure. Emit tool_calls; brief Korean narration is fine alongside tools.',
+    'A text-only reply that postpones work is a failure. Emit native tool_calls; brief Korean narration is fine alongside tools.',
   ].join('\n');
 }
 
@@ -376,6 +377,7 @@ export function authorToolContractPromptKo(): string {
     '이 요청에는 출제 도구(function calling)가 이미 포함되어 있습니다. 지금 턴에서 바로 호출하세요.',
     '도구/파일/셸/`set_dataset_code`/`run_answer_code` 등이 연결되지 않았다고 말하지 마세요. 다른 세션에서 다시 보내 달라고 하지 마세요.',
     '계획만 적고 끝내지 마세요. MUTATE/SYNTHESIZE·정답 재계산·저장은 전부 도구 호출로 실행하세요.',
+    '본문에 ```json {"tool_calls":[...]} ``` 형태로 도구를 적지 마세요. 그건 실행되지 않습니다. API 네이티브 function/tool_calls만 사용하세요.',
     'CSV와 정답이 어긋나면 즉시 도구로 CSV를 재생성·검증·set_short_answers·save/apply 하세요.',
   ].join('\n');
 }
@@ -402,6 +404,8 @@ export function assistantSkippedRequiredTools(text: string): boolean {
     /retry\s+.{0,40}(with\s+)?tools?/i,
     /의도한\s*수정.{0,80}예정/i,
     /바로\s*실행하겠/i,
+    /```(?:json)?\s*\{\s*"tool_calls"/i,
+    /\{\s*"tool_calls"\s*:\s*\[/i,
   ];
   return patterns.some((re) => re.test(raw));
 }

@@ -114,6 +114,198 @@ export interface ToolCall {
   extra_content?: ToolCallExtraContent;
 }
 
+/**
+ * Some models dump `{"tool_calls":[...]}` into assistant *content* (often inside
+ * a ```json fence) instead of the API `tool_calls` field. Recover those so
+ * agents still execute the tools.
+ */
+function coerceToolCallList(value: unknown): ToolCall[] {
+  if (!Array.isArray(value)) return [];
+  const out: ToolCall[] = [];
+  for (let i = 0; i < value.length; i += 1) {
+    const item = value[i] as Record<string, unknown> | null;
+    if (!item || typeof item !== 'object') continue;
+    const fnRaw = (item.function ?? item) as Record<string, unknown>;
+    const name = String(fnRaw.name ?? item.name ?? '').trim();
+    if (!name) continue;
+    let args: unknown = fnRaw.arguments ?? item.arguments ?? '{}';
+    if (typeof args !== 'string') {
+      try {
+        args = JSON.stringify(args ?? {});
+      } catch {
+        args = '{}';
+      }
+    }
+    out.push({
+      id: String(item.id ?? `call_embedded_${i + 1}`),
+      type: 'function',
+      function: { name, arguments: args as string },
+    });
+  }
+  return out;
+}
+
+/** Brace-balanced JSON object slices in `text` (string-aware). */
+function findBalancedJsonObjects(
+  text: string,
+): Array<{ raw: string; start: number; end: number }> {
+  const results: Array<{ raw: string; start: number; end: number }> = [];
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== '{') continue;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let j = i; j < text.length; j += 1) {
+      const c = text[j];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === '\\') esc = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') {
+        inStr = true;
+        continue;
+      }
+      if (c === '{') depth += 1;
+      else if (c === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          results.push({ raw: text.slice(i, j + 1), start: i, end: j + 1 });
+          i = j;
+          break;
+        }
+      }
+    }
+  }
+  return results;
+}
+
+function toolCallsFromParsedJson(parsed: unknown): ToolCall[] {
+  if (!parsed || typeof parsed !== 'object') return [];
+  const obj = parsed as Record<string, unknown>;
+  if (Array.isArray(obj.tool_calls)) {
+    return coerceToolCallList(obj.tool_calls);
+  }
+  // Single call object: { name, arguments } or { function: { name, arguments } }
+  if (
+    typeof (obj as { function?: { name?: unknown } }).function?.name ===
+      'string' ||
+    typeof obj.name === 'string'
+  ) {
+    return coerceToolCallList([obj]);
+  }
+  return [];
+}
+
+/**
+ * If assistant content embeds tool_calls JSON, return real ToolCall[] and
+ * content with that JSON (and its markdown fence) removed.
+ */
+export function recoverEmbeddedToolCalls(content: ChatContent): {
+  content: ChatContent;
+  tool_calls: ToolCall[];
+} {
+  const text = chatContentToText(content);
+  if (!text.trim()) {
+    return { content, tool_calls: [] };
+  }
+
+  type Hit = {
+    tool_calls: ToolCall[];
+    start: number;
+    end: number;
+  };
+  const hits: Hit[] = [];
+
+  const fenceRe = /```(?:json|JSON)?\s*([\s\S]*?)```/g;
+  let fenceMatch: RegExpExecArray | null;
+  while ((fenceMatch = fenceRe.exec(text)) != null) {
+    const inner = fenceMatch[1]?.trim() ?? '';
+    if (!inner.includes('tool_calls') && !/"name"\s*:/.test(inner)) continue;
+    try {
+      const parsed = JSON.parse(inner) as unknown;
+      const calls = toolCallsFromParsedJson(parsed);
+      if (calls.length) {
+        hits.push({
+          tool_calls: calls,
+          start: fenceMatch.index,
+          end: fenceMatch.index + fenceMatch[0].length,
+        });
+      }
+    } catch {
+      /* ignore bad fence */
+    }
+  }
+
+  if (!hits.length) {
+    for (const obj of findBalancedJsonObjects(text)) {
+      if (!obj.raw.includes('tool_calls') && !/"name"\s*:/.test(obj.raw)) {
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(obj.raw) as unknown;
+        const calls = toolCallsFromParsedJson(parsed);
+        if (calls.length) {
+          hits.push({
+            tool_calls: calls,
+            start: obj.start,
+            end: obj.end,
+          });
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  if (!hits.length) {
+    return { content, tool_calls: [] };
+  }
+
+  // Prefer the hit with the most tool calls; tie-break: earliest.
+  hits.sort((a, b) => {
+    const byLen = b.tool_calls.length - a.tool_calls.length;
+    if (byLen !== 0) return byLen;
+    return a.start - b.start;
+  });
+  const best = hits[0];
+
+  let cleaned = `${text.slice(0, best.start)}${text.slice(best.end)}`;
+  cleaned = cleaned
+    .replace(/```(?:json|JSON)?\s*```/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  const nextContent: ChatContent =
+    typeof content === 'string' || content == null
+      ? cleaned || null
+      : cleaned
+        ? [{ type: 'text', text: cleaned }]
+        : null;
+
+  return { content: nextContent, tool_calls: best.tool_calls };
+}
+
+/**
+ * Promote content-embedded tool_calls into the message.tool_calls field.
+ * Native tool_calls win; embedded JSON is still stripped from content.
+ */
+export function normalizeAssistantMessage(message: ChatMessage): ChatMessage {
+  if (message.role !== 'assistant') return message;
+  const recovered = recoverEmbeddedToolCalls(message.content);
+  if (message.tool_calls?.length) {
+    if (recovered.tool_calls.length === 0) return message;
+    return { ...message, content: recovered.content };
+  }
+  if (!recovered.tool_calls.length) return message;
+  return {
+    ...message,
+    content: recovered.content,
+    tool_calls: recovered.tool_calls,
+  };
+}
+
 export interface ChatToolDef {
   type: 'function';
   function: {
@@ -472,11 +664,24 @@ export async function createChatCompletion(opts: {
   while (true) {
     throwIfAborted(opts.signal);
     try {
-      const result = await createChatCompletionOnce(opts);
+      const raw = await createChatCompletionOnce(opts);
+      const result: ChatCompletionResult = {
+        ...raw,
+        message: normalizeAssistantMessage(raw.message),
+      };
       assertNonEmptyCompletion(result);
       const text = chatContentToText(result.message.content);
       if (text && detectTextRepetitionLoop(text)) {
         throw new RepetitionLoopError();
+      }
+      // Recovered content-embedded tool_calls — surface names for UI progress.
+      if (
+        result.message.tool_calls?.length &&
+        !(raw.message.tool_calls?.length)
+      ) {
+        opts.onDelta?.({
+          toolCallNames: result.message.tool_calls.map((t) => t.function.name),
+        });
       }
       return result;
     } catch (err) {
