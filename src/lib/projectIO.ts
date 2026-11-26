@@ -150,6 +150,117 @@ export function collectExamAssetIds(
   return [...ids];
 }
 
+/** Bank problem ids referenced by at least one exam paper. */
+export function collectAssignedProblemIds(
+  project: AuthoringProject,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const exam of project.exams) {
+    for (const pid of exam.problemIds ?? []) {
+      if (pid) ids.add(pid);
+    }
+  }
+  return ids;
+}
+
+/** True when the asset is a CSV (data file), not an image / other binary. */
+export function isCsvLibraryAsset(asset: ProjectAsset): boolean {
+  if (asset.mimeType?.includes('csv')) return true;
+  const name = (asset.name || asset.path || '').toLowerCase();
+  return name.endsWith('.csv');
+}
+
+/**
+ * CSV asset ids attached to at least one bank problem via `assetIds`.
+ * Images and other non-CSV assets are ignored.
+ */
+export function collectAssignedCsvAssetIds(
+  project: AuthoringProject,
+): Set<string> {
+  const csvIds = new Set(
+    project.assets.filter(isCsvLibraryAsset).map((a) => a.id),
+  );
+  const used = new Set<string>();
+  for (const problem of project.bank) {
+    for (const assetId of problem.assetIds ?? []) {
+      if (csvIds.has(assetId)) used.add(assetId);
+    }
+  }
+  return used;
+}
+
+export type ProjectExportOptions = {
+  /** Drop bank items not listed on any exam paper. */
+  omitUnassignedProblems?: boolean;
+  /** Drop .csv assets not attached to any (remaining) bank problem. */
+  omitUnassignedCsvs?: boolean;
+};
+
+export type ProjectExportPreview = {
+  problemTotal: number;
+  problemKept: number;
+  problemOmitted: number;
+  csvTotal: number;
+  csvKept: number;
+  csvOmitted: number;
+};
+
+/** Counts for the export options dialog (does not mutate the live project). */
+export function previewProjectExport(
+  project: AuthoringProject,
+  options: ProjectExportOptions = {},
+): ProjectExportPreview {
+  const filtered = projectForExport(project, options);
+  const csvTotal = project.assets.filter(isCsvLibraryAsset).length;
+  const csvKept = filtered.assets.filter(isCsvLibraryAsset).length;
+  return {
+    problemTotal: project.bank.length,
+    problemKept: filtered.bank.length,
+    problemOmitted: project.bank.length - filtered.bank.length,
+    csvTotal,
+    csvKept,
+    csvOmitted: csvTotal - csvKept,
+  };
+}
+
+/**
+ * Build a lean copy for .project.zip export.
+ * Does not mutate the in-memory authoring project.
+ */
+export function projectForExport(
+  project: AuthoringProject,
+  options: ProjectExportOptions = {},
+): AuthoringProject {
+  const omitProblems = Boolean(options.omitUnassignedProblems);
+  const omitCsvs = Boolean(options.omitUnassignedCsvs);
+
+  let bank = project.bank;
+  if (omitProblems) {
+    const assigned = collectAssignedProblemIds(project);
+    bank = project.bank.filter((p) => assigned.has(p.id));
+  }
+
+  let assets = project.assets;
+  if (omitCsvs) {
+    const assignedCsv = collectAssignedCsvAssetIds({ ...project, bank });
+    assets = project.assets.filter(
+      (a) => !isCsvLibraryAsset(a) || assignedCsv.has(a.id),
+    );
+    // Drop dangling CSV refs from bank items (defensive).
+    const keepIds = new Set(assets.map((a) => a.id));
+    bank = bank.map((p) => ({
+      ...p,
+      assetIds: (p.assetIds ?? []).filter((id) => keepIds.has(id)),
+    }));
+  }
+
+  return {
+    ...project,
+    bank,
+    assets,
+  };
+}
+
 type LegacyProject = AuthoringProject & {
   exam?: ExamBlueprint;
   exams?: ExamBlueprint[];

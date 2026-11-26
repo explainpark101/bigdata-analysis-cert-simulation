@@ -20,8 +20,10 @@ import {
   createEmptyProject,
   loadProjectFromStorage,
   materializeExamAsync,
+  projectForExport,
   saveExamSession,
   saveProjectToStorage,
+  type ProjectExportOptions,
 } from '@/lib/projectIO';
 import { exportExamZip } from '@/lib/examZip';
 import { exportProjectZip, importProjectZip } from '@/lib/projectZip';
@@ -82,7 +84,7 @@ interface ProjectContextValue {
   setExamProblemIds: (ids: string[]) => void;
   toggleExamProblem: (id: string) => void;
   updateExamMeta: (patch: Partial<ExamBlueprint>) => void;
-  exportProject: () => Promise<void>;
+  exportProject: (options?: ProjectExportOptions) => Promise<void>;
   /** File (web) or absolute filesystem path (Tauri dialog). */
   importProject: (source: File | string) => Promise<void>;
   /**
@@ -380,8 +382,10 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setProjectState((prev) => patchActiveExam(prev, patch));
   }, []);
 
-  const exportProject = useCallback(async () => {
-    const lean = stripExternalContents(projectRef.current);
+  const exportProject = useCallback(async (options?: ProjectExportOptions) => {
+    const lean = stripExternalContents(
+      projectForExport(projectRef.current, options),
+    );
     if (isTauriRuntime()) {
       // Save dialog + zip write both run in Rust (JS dialog plugin OOMs).
       await rustExportProjectZipAsk(

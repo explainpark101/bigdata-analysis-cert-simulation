@@ -4381,6 +4381,89 @@ body.is-resizing-y * {
   font-size: 13px;
 }
 
+.bank-list-filter {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 12px;
+  padding: 3px;
+  border: 1px solid var(--dq-border);
+  border-radius: 8px;
+  background: var(--dq-ghost);
+}
+
+.bank-list-filter__btn {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dq-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.bank-list-filter__btn:hover {
+  color: var(--dq-text);
+}
+
+.bank-list-filter__btn.active {
+  background: var(--dq-surface);
+  color: var(--dq-text);
+  box-shadow: 0 0 0 1px var(--dq-border);
+}
+
+.edit-sidebar .quiz-item__badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.project-export-dialog__panel {
+  width: min(440px, 100%);
+}
+
+.project-export-dialog__body {
+  display: grid;
+  gap: 14px;
+}
+
+.project-export-dialog__options {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.project-export-dialog__option {
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--dq-border);
+  border-radius: 8px;
+  color: var(--dq-text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.project-export-dialog__option input {
+  margin-top: 2px;
+  flex: 0 0 auto;
+}
+
+.project-export-dialog__hint {
+  display: block;
+  margin-top: 2px;
+  color: var(--dq-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .exam-type-block {
   margin-bottom: 16px;
   padding-bottom: 12px;
@@ -4771,7 +4854,6 @@ body.is-resizing-y * {
   display: grid;
   gap: 12px;
   align-content: start;
-  max-width: 720px;
 }
 
 .exam-assemble-preview {
@@ -4955,10 +5037,6 @@ body.is-resizing-y * {
     flex: 0 0 auto;
     width: 100%;
     max-height: none;
-  }
-
-  .exam-assemble-main {
-    max-width: none;
   }
 
   .exam-assemble-preview {

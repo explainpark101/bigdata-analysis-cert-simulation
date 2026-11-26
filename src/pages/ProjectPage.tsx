@@ -41,6 +41,7 @@ import {
 import { AnswerAuthorPanel } from '@/components/project/AnswerAuthorPanel';
 import { ExamAssemblePreview } from '@/components/project/ExamAssemblePreview';
 import { ExamAutoReviewQueueModal } from '@/components/project/ExamAutoReviewQueueModal';
+import { ProjectExportModal } from '@/components/project/ProjectExportModal';
 import { RuntimeLockQueueModal } from '@/components/project/RuntimeLockQueueModal';
 import { VariantChatDock } from '@/components/project/VariantChatDock';
 import { ModifyChatDock } from '@/components/project/ModifyChatDock';
@@ -50,6 +51,10 @@ import { ConfirmModal } from '@/components/exam/ConfirmModal';
 import type { ExamLanguage, QuizKind, SubmitFormat } from '@/types/exam';
 import type { BankProblem, TaskType } from '@/types/project';
 import { mountPathForAsset } from '@/lib/assetPaths';
+import {
+  collectAssignedProblemIds,
+  type ProjectExportOptions,
+} from '@/lib/projectIO';
 import { buildStarterCode } from '@/lib/starterCode';
 import {
   OFFICIAL_COUNTS,
@@ -98,6 +103,7 @@ const MODIFY_DOCK_W_MIN = 300;
 const MODIFY_DOCK_W_DEFAULT = 380;
 
 type Tab = 'assets' | 'bank' | 'author' | 'exam';
+type BankListFilter = 'all' | 'unassigned';
 
 const TASK_LABELS: Record<TaskType, string> = {
   1: '작업형 1유형',
@@ -152,6 +158,10 @@ export default function ProjectPage() {
     MODIFY_DOCK_W_DEFAULT,
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [bankListFilter, setBankListFilter] =
+    useState<BankListFilter>('all');
   const [autoReviewQueueOpen, setAutoReviewQueueOpen] = useState(false);
   const [runtimeQueueOpen, setRuntimeQueueOpen] = useState(false);
   const [runningAutoReviews, setRunningAutoReviews] = useState(0);
@@ -256,6 +266,16 @@ export default function ProjectPage() {
     [project.assets, selectedAssetId],
   );
 
+  const assignedProblemIds = useMemo(
+    () => collectAssignedProblemIds(project),
+    [project],
+  );
+
+  const unassignedProblemCount = useMemo(
+    () => project.bank.filter((b) => !assignedProblemIds.has(b.id)).length,
+    [project.bank, assignedProblemIds],
+  );
+
   const bankByType = useMemo(() => {
     const groups: Record<TaskType, typeof project.bank> = {
       1: [],
@@ -267,6 +287,19 @@ export default function ProjectPage() {
     }
     return groups;
   }, [project.bank]);
+
+  const filteredBankByType = useMemo(() => {
+    if (bankListFilter !== 'unassigned') return bankByType;
+    const groups: Record<TaskType, typeof project.bank> = {
+      1: [],
+      2: [],
+      3: [],
+    };
+    for (const tt of [1, 2, 3] as TaskType[]) {
+      groups[tt] = bankByType[tt].filter((b) => !assignedProblemIds.has(b.id));
+    }
+    return groups;
+  }, [bankByType, bankListFilter, assignedProblemIds]);
 
   const examTypeCounts = useMemo(
     () => countIdsByType(activeExam.problemIds, project.bank),
@@ -375,17 +408,7 @@ export default function ProjectPage() {
           <button
             type="button"
             className="ghost-btn btn-with-icon"
-            onClick={() => {
-              void (async () => {
-                try {
-                  setMessage('프로젝트 ZIP 저장 중…');
-                  await exportProject();
-                  setMessage('프로젝트 ZIP 저장 완료');
-                } catch (err) {
-                  setMessage(err instanceof Error ? err.message : String(err));
-                }
-              })();
-            }}
+            onClick={() => setExportOpen(true)}
           >
             <Download size={16} />
             프로젝트 ZIP
@@ -662,10 +685,42 @@ export default function ProjectPage() {
                   }}
                 />
               </div>
+              <div
+                className="bank-list-filter"
+                role="group"
+                aria-label="문제은행 목록 필터"
+              >
+                <button
+                  type="button"
+                  className={`bank-list-filter__btn ${
+                    bankListFilter === 'all' ? 'active' : ''
+                  }`}
+                  aria-pressed={bankListFilter === 'all'}
+                  onClick={() => setBankListFilter('all')}
+                >
+                  전체 ({project.bank.length})
+                </button>
+                <button
+                  type="button"
+                  className={`bank-list-filter__btn ${
+                    bankListFilter === 'unassigned' ? 'active' : ''
+                  }`}
+                  aria-pressed={bankListFilter === 'unassigned'}
+                  onClick={() => setBankListFilter('unassigned')}
+                  title="어떤 시험 조립에도 넣지 않은 문제만 보기"
+                >
+                  미배정 ({unassignedProblemCount})
+                </button>
+              </div>
               {([1, 2, 3] as TaskType[]).map((tt) => (
                 <div key={tt} className="bank-type-group">
                   <div className="bank-type-group__head">
-                    <strong>{TASK_LABELS[tt]}</strong>
+                    <strong>
+                      {TASK_LABELS[tt]}
+                      {bankListFilter === 'unassigned'
+                        ? ` · ${filteredBankByType[tt].length}`
+                        : ''}
+                    </strong>
                     <button
                       type="button"
                       className="primary-btn btn-with-icon"
@@ -676,24 +731,36 @@ export default function ProjectPage() {
                     </button>
                   </div>
                   <div className="quiz-list">
-                    {bankByType[tt].map((b) => (
-                      <button
-                        key={b.id}
-                        id={`bank-problem-${b.id}`}
-                        type="button"
-                        className={`quiz-item ${b.id === problem?.id ? 'active' : ''}`}
-                        onClick={() => setSelectedId(b.id)}
-                      >
-                        <div className="quiz-item__top">
-                          <span>{b.number || '·'}</span>
-                          <span className="badge">{b.assetIds.length} files</span>
-                        </div>
-                        <div className="quiz-item__title">{b.title}</div>
-                      </button>
-                    ))}
-                    {!bankByType[tt].length && (
+                    {filteredBankByType[tt].map((b) => {
+                      const unassigned = !assignedProblemIds.has(b.id);
+                      return (
+                        <button
+                          key={b.id}
+                          id={`bank-problem-${b.id}`}
+                          type="button"
+                          className={`quiz-item ${b.id === problem?.id ? 'active' : ''}`}
+                          onClick={() => setSelectedId(b.id)}
+                        >
+                          <div className="quiz-item__top">
+                            <span>{b.number || '·'}</span>
+                            <span className="quiz-item__badges">
+                              {unassigned ? (
+                                <span className="badge warn">미배정</span>
+                              ) : null}
+                              <span className="badge">
+                                {b.assetIds.length} files
+                              </span>
+                            </span>
+                          </div>
+                          <div className="quiz-item__title">{b.title}</div>
+                        </button>
+                      );
+                    })}
+                    {!filteredBankByType[tt].length && (
                       <p className="edit-page__sub" style={{ margin: '4px 0 10px' }}>
-                        문제 없음
+                        {bankListFilter === 'unassigned'
+                          ? '미배정 문제 없음'
+                          : '문제 없음'}
                       </p>
                     )}
                   </div>
@@ -717,7 +784,14 @@ export default function ProjectPage() {
               <>
                 <section className="edit-card form-grid">
                   <div className="row" style={{ justifyContent: 'space-between' }}>
-                    <h2 style={{ margin: 0 }}>{problem.title}</h2>
+                    <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {problem.title}
+                      {!assignedProblemIds.has(problem.id) ? (
+                        <span className="badge warn" title="어떤 시험 조립에도 포함되지 않음">
+                          미배정
+                        </span>
+                      ) : null}
+                    </h2>
                     <div className="row">
                       <button
                         type="button"
@@ -1454,6 +1528,37 @@ export default function ProjectPage() {
           }}
         />
       )}
+
+      <ProjectExportModal
+        open={exportOpen}
+        project={project}
+        busy={exportBusy}
+        onCancel={() => {
+          if (!exportBusy) setExportOpen(false);
+        }}
+        onConfirm={(options: ProjectExportOptions) => {
+          void (async () => {
+            try {
+              setExportBusy(true);
+              setMessage('프로젝트 ZIP 저장 중…');
+              await exportProject(options);
+              setExportOpen(false);
+              const bits: string[] = [];
+              if (options.omitUnassignedProblems) bits.push('미배정 문제 제외');
+              if (options.omitUnassignedCsvs) bits.push('미배정 CSV 제외');
+              setMessage(
+                bits.length
+                  ? `프로젝트 ZIP 저장 완료 (${bits.join(' · ')})`
+                  : '프로젝트 ZIP 저장 완료',
+              );
+            } catch (err) {
+              setMessage(err instanceof Error ? err.message : String(err));
+            } finally {
+              setExportBusy(false);
+            }
+          })();
+        }}
+      />
 
       <GlobalSettingsModal
         open={settingsOpen}
