@@ -1,6 +1,7 @@
 import type { AuthoringProject } from '@/types/project';
 import {
   SAMPLE_CUSTOMER_TEST_CSV,
+  SAMPLE_CUSTOMER_TEST_LABEL_CSV,
   SAMPLE_CUSTOMER_TRAIN_CSV,
   SAMPLE_STD_CSV,
   SAMPLE_TTEST_CSV,
@@ -10,6 +11,7 @@ import {
 const TYPE1_ID = 'asset-type1';
 const TRAIN_ID = 'asset-train';
 const TEST_ID = 'asset-test';
+const TEST_LABEL_ID = 'asset-test-label';
 const STD_ID = 'asset-std';
 const TTEST_ID = 'asset-ttest';
 
@@ -75,6 +77,14 @@ export const SAMPLE_PROJECT: AuthoringProject = {
       name: 'customer_test.csv',
       encoding: 'utf-8',
       content: SAMPLE_CUSTOMER_TEST_CSV,
+      mimeType: 'text/csv',
+    },
+    {
+      id: TEST_LABEL_ID,
+      path: 'data/type2/test_label.csv',
+      name: 'test_label.csv',
+      encoding: 'utf-8',
+      content: SAMPLE_CUSTOMER_TEST_LABEL_CSV,
       mimeType: 'text/csv',
     },
     {
@@ -196,7 +206,7 @@ print(round(max(m$value), 1))
       submitFormat: 'csv',
       submitFile: 'result.csv',
       language: 'python',
-      assetIds: [TRAIN_ID, TEST_ID],
+      assetIds: [TRAIN_ID, TEST_ID, TEST_LABEL_ID],
       markdown: `## 제2유형
 
 제공된 \`data/customer_train.csv\` / \`data/customer_test.csv\` 로 총구매액(\`total_purchase\`)을 예측하고
@@ -266,9 +276,9 @@ print(nrow(train))
       gradingCode: {
         python: `"""
 Type-2 grading reference (regression / RMSE)
-- Answer model: RandomForestRegressor(n_estimators=80, random_state=42)
-- Test has no labels → compare student pred to answer-model pred
-- Print ML_TYPE / METRIC / STUDENT / REF / Y_SCALE for the app scorer
+- y_true from data/test_label.csv (hidden from examinee)
+- REF = answer-model RMSE vs y_true
+- STUDENT = examinee RMSE vs y_true
 """
 import pandas as pd
 import numpy as np
@@ -278,6 +288,11 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 train = pd.read_csv("data/customer_train.csv")
 test = pd.read_csv("data/customer_test.csv")
+try:
+    y_true = pd.read_csv("data/test_label.csv")["total_purchase"].to_numpy(dtype=float)
+except Exception:
+    y_true = pd.read_csv("data/test_labels.csv")["total_purchase"].to_numpy(dtype=float)
+
 y = train["total_purchase"]
 X = train.drop(columns=["total_purchase", "id"])
 X_test = test.drop(columns=["id"])
@@ -294,29 +309,32 @@ sub = pd.read_csv("result.csv")
 if "pred" not in sub.columns:
     raise SystemExit("FAIL: result.csv must contain column 'pred'")
 pred = sub["pred"].to_numpy(dtype=float)
-if len(pred) != len(ref_pred):
-    raise SystemExit(f"FAIL: pred length {len(pred)} != {len(ref_pred)}")
+if len(pred) != len(y_true):
+    raise SystemExit(f"FAIL: pred length {len(pred)} != {len(y_true)}")
 
-# Error vs answer-model predictions (REF=0 means identical to answer)
-student_rmse = float(np.sqrt(mean_squared_error(ref_pred, pred)))
-student_mae = float(mean_absolute_error(ref_pred, pred))
-y_scale = float(np.std(y, ddof=1)) if len(y) > 1 else float(np.std(ref_pred))
+student_rmse = float(np.sqrt(mean_squared_error(y_true, pred)))
+ref_rmse = float(np.sqrt(mean_squared_error(y_true, ref_pred)))
+student_mae = float(mean_absolute_error(y_true, pred))
+y_scale = float(np.std(y_true, ddof=1)) if len(y_true) > 1 else 1.0
 
 print("ML_TYPE=regression")
 print("METRIC=rmse")
 print(f"STUDENT={student_rmse:.6f}")
-print("REF=0")
+print(f"REF={ref_rmse:.6f}")
 print(f"Y_SCALE={y_scale:.6f}")
-# 제13회: 평가지표 구간별 5점 단위 (hidden; not shown in problem markdown)
 print("SCORE_BANDS=8:40,12:35,16:30,22:25,30:20,40:15,55:10,75:5")
 print(f"METRIC_MAE={student_mae:.6f}")
 print(f"REF_MODEL=RandomForestRegressor(n_estimators=80, random_state=42)")
 `,
-        r: `# Type-2 grading (R sketch): compare result.csv pred length to test rows
+        r: `# Type-2 grading (R sketch): compare result.csv to test_label
 train <- read.csv("data/customer_train.csv")
 test <- read.csv("data/customer_test.csv")
+y_true <- tryCatch(
+  read.csv("data/test_label.csv"),
+  error = function(e) read.csv("data/test_labels.csv")
+)
 sub <- read.csv("result.csv")
-stopifnot("pred" %in% names(sub))
+stopifnot("pred" %in% names(sub), nrow(sub) == nrow(y_true))
 print("ML_TYPE=regression")
 print("METRIC=rmse")
 print(paste("n_test", nrow(test), "n_pred", length(sub$pred)))

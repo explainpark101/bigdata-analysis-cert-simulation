@@ -26,16 +26,30 @@ function isDataPath(p: string): boolean {
   return !/\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(p);
 }
 
+function csvBasename(path: string): string | null {
+  const b = assetBasename(path).toLowerCase();
+  return b.endsWith('.csv') ? b : null;
+}
+
+/** Keep in sync with src/lib/starterCode.ts pickTrainPath. */
 function pickTrainPath(paths: string[]): string | undefined {
   const data = paths.filter(isDataPath);
   const scored = data
     .map((p) => {
-      const b = assetBasename(p).toLowerCase();
-      if (!b.includes('train') || b.includes('test')) return null;
-      let score = 10;
-      if (/^y[_-]?train\.csv$/.test(b)) score = 1;
-      else if (/^x[_-]?train\.csv$/.test(b)) score = 8;
-      else if (/_train\.csv$/.test(b)) score = 9;
+      const b = csvBasename(p);
+      if (!b) return null;
+      if (b.startsWith('test') || /_test\.csv$/.test(b)) return null;
+
+      let score = 0;
+      if (b.startsWith('train')) score = 100;
+      else if (/_train\.csv$/.test(b)) score = 50;
+      else return null;
+
+      if (b === 'train.csv') score = 110;
+
+      if (/^y[_-]?train\.csv$/.test(b)) score = 10;
+      else if (/^x[_-]?train\.csv$/.test(b)) score = 40;
+
       return { p, score };
     })
     .filter((x): x is { p: string; score: number } => x != null)
@@ -43,15 +57,29 @@ function pickTrainPath(paths: string[]): string | undefined {
   return scored[0]?.p;
 }
 
+function isType2LabelCsv(pathOrName: string): boolean {
+  const b = assetBasename(pathOrName).toLowerCase();
+  return /^test_labels?(?:_|\.csv$)/.test(b);
+}
+
+/** Keep in sync with src/lib/starterCode.ts pickTestPath. */
 function pickTestPath(paths: string[]): string | undefined {
   const data = paths.filter(isDataPath);
   const scored = data
     .map((p) => {
-      const b = assetBasename(p).toLowerCase();
-      if (!b.includes('test') || b.includes('train')) return null;
-      let score = 10;
-      if (/^x[_-]?test\.csv$/.test(b)) score = 9;
-      else if (/_test\.csv$/.test(b)) score = 8;
+      const b = csvBasename(p);
+      if (!b) return null;
+      if (isType2LabelCsv(b)) return null;
+      if (b.startsWith('train') || /_train\.csv$/.test(b)) return null;
+
+      let score = 0;
+      if (b.startsWith('test')) score = 100;
+      else if (/_test\.csv$/.test(b)) score = 50;
+      else return null;
+
+      if (b === 'test.csv') score = 110;
+      if (/^x[_-]?test\.csv$/.test(b)) score = 40;
+
       return { p, score };
     })
     .filter((x): x is { p: string; score: number } => x != null)
@@ -295,22 +323,31 @@ export function defaultGradingCode(): CodeByLanguage {
   return {
     python: `import pandas as pd
 
-# Type-2 scaffold — replace with real metric(y_true, pred) vs answer model
+# Type-2 scaffold — metric(y_true from data/test_label.csv, student pred)
 # print("ML_TYPE=classification")  # or regression
 # print("METRIC=auc")              # auc|f1|accuracy|rmse|mae|...
 # print("STUDENT=0.85")
 # print("REF=0.90")
 # print("Y_SCALE=1.0")             # regression: std/IQR of target
+try:
+    y_true = pd.read_csv("data/test_label.csv")
+except Exception:
+    y_true = pd.read_csv("data/test_labels.csv")
 pred = pd.read_csv("result.csv")
 assert len(pred) > 0, "empty result.csv"
+assert len(pred) == len(y_true), "pred rows != test_label rows"
 print("rows", len(pred))
 print("cols", list(pred.columns))
 print(pred.head())
 `,
     r: `# print("ML_TYPE=regression"); print("METRIC=rmse")
 # print("STUDENT=0.12"); print("REF=0.10"); print("Y_SCALE=5")
+y_true <- tryCatch(
+  read.csv("data/test_label.csv"),
+  error = function(e) read.csv("data/test_labels.csv")
+)
 pred <- read.csv("result.csv")
-stopifnot(nrow(pred) > 0)
+stopifnot(nrow(pred) > 0, nrow(pred) == nrow(y_true))
 print(nrow(pred))
 print(colnames(pred))
 print(head(pred))

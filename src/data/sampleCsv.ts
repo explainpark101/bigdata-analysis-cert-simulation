@@ -69,6 +69,17 @@ export const SAMPLE_CUSTOMER_TEST_CSV = rowsToCsv(
   }),
 );
 
+/** Type2 hidden labels for test rows (grading only; not shown to examinees). */
+export const SAMPLE_CUSTOMER_TEST_LABEL_CSV = rowsToCsv(
+  ['id', 'total_purchase'],
+  Array.from({ length: 12 }, (_, i) => {
+    const visit = 3 + (i % 8);
+    const avg = 25 + (i % 10) * 2;
+    const total = visit * avg + (i % 7);
+    return [1001 + i, total];
+  }),
+);
+
 /** Type3-1: sample std (ddof=1), rounded 4 decimals → 1.5811 */
 export const SAMPLE_STD_CSV = rowsToCsv(
   ['x'],

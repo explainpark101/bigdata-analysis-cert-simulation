@@ -72,17 +72,15 @@ import { parseExamZipFrom } from '@/lib/examZip';
 import { loadZip, zipKindFrom } from '@/lib/zipKind';
 import type { AuthoringProject } from '@/types/project';
 import type JSZip from 'jszip';
-import {
-  downloadPyodideFile,
-  readPyodideFileText,
-  runPython,
-} from '@/runtimes/pyodideRuntime';
+import { readPyodideFileText, runPython } from '@/runtimes/pyodideRuntime';
 import {
   mountAssetsToPyodide,
   mountAssetsToWebR,
 } from '@/runtimes/fsMount';
 import { preloadWebR, runR } from '@/runtimes/webrRuntime';
 import type { ShortAnswerSlot } from '@/types/exam';
+import { examineeDataFiles } from '@/lib/type2Assets';
+import { saveType2Submission } from '@/lib/type2ResultStore';
 
 const SIDEBAR_W_DEFAULT = 240;
 const SIDEBAR_W_MIN = 180;
@@ -229,7 +227,10 @@ export default function ExamPage() {
     quiz?.notepad ||
     '';
   const dataFiles = useMemo(
-    () => (quiz?.files ?? []).filter((f) => !isImageAsset(f)),
+    () =>
+      examineeDataFiles(
+        (quiz?.files ?? []).filter((f) => !isImageAsset(f)),
+      ),
     [quiz?.files],
   );
 
@@ -335,13 +336,16 @@ export default function ExamPage() {
 
   const mountCurrentFiles = useCallback(async () => {
     if (!quiz?.files?.length) return [];
+    // Hide grading-only labels (test_label*) from the examinee runtime mount.
+    const visible = examineeDataFiles(quiz.files);
+    if (!visible.length) return [];
     // Always sync Pyodide; also sync webR when the active language is R
     // (or after R has been loaded once).
     const tasks: Array<Promise<string[]>> = [
-      mountAssetsToPyodide(quiz.files),
+      mountAssetsToPyodide(visible),
     ];
     if (language === 'r' || runtime.r === 'ready') {
-      tasks.push(mountAssetsToWebR(quiz.files));
+      tasks.push(mountAssetsToWebR(visible));
     }
     const results = await Promise.all(tasks);
     return results[0] ?? [];
@@ -377,8 +381,9 @@ export default function ExamPage() {
       ensureRuntimes();
       await preloadWebR();
     }
-    if (quiz?.files?.length) {
-      await mountAssetsToWebR(quiz.files).catch(() => undefined);
+    const visible = examineeDataFiles(quiz?.files);
+    if (visible.length) {
+      await mountAssetsToWebR(visible).catch(() => undefined);
     }
   };
 
@@ -473,7 +478,10 @@ export default function ExamPage() {
     });
   };
 
-  /** Type-2 only: capture result.csv from runtime FS as grading artifact. */
+  /**
+   * Type-2 only: capture result.csv into exam session + IndexedDB.
+   * Do not download or grade here — grading runs when the exam ends.
+   */
   const submitCsvResult = async () => {
     if (!quiz || quiz.taskType !== 2 || quiz.kind !== 'submit') return;
     const path = quiz.submitFile || 'result.csv';
@@ -484,6 +492,12 @@ export default function ExamPage() {
       }
       patchQuiz({ submitted: true, submittedCsv: csvText });
       if (exam) {
+        await saveType2Submission({
+          examId: exam.id,
+          quizId: quiz.id,
+          csv: csvText,
+          submitFile: path,
+        });
         appendActivityEvent(exam.id, {
           type: 'submit',
           at: Date.now(),
@@ -492,40 +506,11 @@ export default function ExamPage() {
           tab: 'code',
         });
       }
-      try {
-        await downloadPyodideFile(path, path);
-      } catch {
-        /* download is optional convenience */
-      }
-
-      const grading = quiz.gradingCode?.[language]?.trim();
-      let gradeOut = '';
-      if (grading) {
-        setRunning(true);
-        try {
-          await mountCurrentFiles();
-          const opts = { timeoutMs: runTimeoutMs };
-          const out =
-            language === 'python'
-              ? await runPython(grading, opts)
-              : ((await ensureR()), await runR(grading, opts));
-          gradeOut = `\n\n[채점]\n${out.stdout}${out.stderr ? `\n${out.stderr}` : ''}`;
-          setResult({
-            ok: out.ok,
-            stdout: `[제출] ${path} 저장·채점 대상 등록 (${csvText.split(/\r?\n/).length} lines)${gradeOut}`.trim(),
-            stderr: out.stderr,
-            durationMs: out.durationMs,
-          });
-          return;
-        } finally {
-          setRunning(false);
-        }
-      }
-
+      const lines = csvText.split(/\r?\n/).length;
       setResult((prev) => ({
         ok: true,
         stdout:
-          `${prev?.stdout ?? ''}\n\n[제출] ${path} 을 채점 대상으로 등록했습니다.`.trim(),
+          `${prev?.stdout ?? ''}\n\n[제출] ${path} 저장 완료 (${lines} lines). 채점은 시험 끝내기 후 진행됩니다.`.trim(),
         stderr: prev?.stderr ?? '',
         durationMs: prev?.durationMs ?? 0,
       }));
@@ -575,6 +560,14 @@ export default function ExamPage() {
               submittedCsv: q.submittedCsv,
               shortSlots: q.shortSlots,
             });
+            if (q.taskType === 2 && q.submittedCsv?.trim()) {
+              await saveType2Submission({
+                examId: exam.id,
+                quizId: q.id,
+                csv: q.submittedCsv,
+                submitFile: q.submitFile || 'result.csv',
+              });
+            }
           }
         }
         appendActivityEvent(exam.id, {

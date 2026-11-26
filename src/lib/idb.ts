@@ -14,7 +14,9 @@ export type IdbKey =
   | 'variantChats'
   | 'modifyChats'
   | 'authorChats'
-  | 'gradeResult';
+  | 'gradeResult'
+  /** examId → quizId → type-2 result.csv snapshot */
+  | 'type2Results';
 
 export interface AssetBodyRecord {
   encoding: 'utf-8' | 'base64';

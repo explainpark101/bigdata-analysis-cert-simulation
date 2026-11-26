@@ -75,11 +75,26 @@ function type2TestCsv(): string {
   return `${rows.join('\n')}\n`;
 }
 
+/** Hidden labels for test rows (same generative rule as train target `y`). */
+function type2TestLabelCsv(): string {
+  const header = 'id,y';
+  const rows: string[] = [header];
+  for (let i = 101; i <= 120; i++) {
+    const x1 = (i % 7) + 1;
+    const x2 = (i % 5) * 0.5;
+    const x3 = i % 2;
+    const y = x1 * 1.2 + x2 - x3 + (i % 3) * 0.1;
+    rows.push(`${i},${y.toFixed(2)}`);
+  }
+  return `${rows.join('\n')}\n`;
+}
+
 function forcedCsvSpecs(taskType: TaskType): Array<{ name: string; content: string }> {
   if (taskType === 2) {
     return [
       { name: 'train.csv', content: type2TrainCsv() },
       { name: 'test.csv', content: type2TestCsv() },
+      { name: 'test_label.csv', content: type2TestLabelCsv() },
     ];
   }
   return [{ name: 'data.csv', content: type13CsvContent() }];

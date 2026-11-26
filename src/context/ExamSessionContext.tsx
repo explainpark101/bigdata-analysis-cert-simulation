@@ -16,6 +16,7 @@ import {
 } from '@/lib/projectIO';
 import { SAMPLE_PROJECT } from '@/data/sampleProject';
 import { parseExamZip, exportExamZip } from '@/lib/examZip';
+import { clearType2ExamSubmissions } from '@/lib/type2ResultStore';
 import type { ExamSet, QuizProblem } from '@/types/exam';
 
 interface ExamSessionContextValue {
@@ -70,7 +71,9 @@ export function ExamSessionProvider({ children }: { children: ReactNode }) {
 
   const setExam = useCallback((next: ExamSet | null) => {
     if (!next) {
+      const prevId = examRef.current?.id;
       void clearExamSession();
+      if (prevId) void clearType2ExamSubmissions(prevId);
       setExamState(null);
       return;
     }
@@ -117,7 +120,9 @@ export function ExamSessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const clear = useCallback(() => {
+    const prevId = examRef.current?.id;
     void clearExamSession();
+    if (prevId) void clearType2ExamSubmissions(prevId);
     setExamState(null);
   }, []);
 

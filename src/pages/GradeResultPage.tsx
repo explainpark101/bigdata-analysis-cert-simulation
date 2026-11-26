@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Home, Sparkles } from 'lucide-react';
 import {
@@ -9,6 +9,10 @@ import { formatDurationMs } from '@/lib/examActivityLog';
 import type { GradeItem, GradeStatus } from '@/lib/examGrade';
 import { askGradeCoach } from '@/lib/ai/gradeCoach';
 import { renderMarkdown } from '@/lib/markdown';
+import { EdgeResizeHandle } from '@/components/layout/EdgeResizeHandle';
+
+const CODE_W_DEFAULT = 420;
+const CODE_W_MIN = 260;
 
 function statusLabel(s: GradeStatus): string {
   switch (s) {
@@ -33,23 +37,44 @@ function tabLabel(tab: string): string {
   return tab;
 }
 
+function itemHeading(item: GradeItem): string {
+  return `${item.taskType ? `제${item.taskType}유형 · ` : ''}${item.title}`;
+}
+
 export default function GradeResultPage() {
   const [snap, setSnap] = useState<GradeResultSnapshot | null>(null);
   const [ready, setReady] = useState(false);
   const [coachBusyId, setCoachBusyId] = useState<string | null>(null);
   const [coachReply, setCoachReply] = useState<Record<string, string>>({});
   const [coachError, setCoachError] = useState<Record<string, string>>({});
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [codeWidth, setCodeWidth] = useState(CODE_W_DEFAULT);
+  const [narrow, setNarrow] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     void loadGradeResult().then((data) => {
       if (cancelled) return;
       setSnap(data);
+      setSelectedId(data?.report.items[0]?.quizId ?? null);
       setReady(true);
     });
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 900px)');
+    const sync = () => setNarrow(mq.matches);
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
+
+  const maxCodeWidth = useMemo(() => {
+    if (typeof window === 'undefined') return 720;
+    return Math.max(CODE_W_MIN, Math.floor(window.innerWidth * 0.55));
   }, []);
 
   const askCoach = async (item: GradeItem) => {
@@ -100,6 +125,8 @@ export default function GradeResultPage() {
     report.max > 0
       ? Math.round((report.earned / report.max) * 1000) / 10
       : 0;
+  const selected =
+    report.items.find((i) => i.quizId === selectedId) ?? report.items[0];
 
   return (
     <div className="grade-report-page">
@@ -144,247 +171,311 @@ export default function GradeResultPage() {
         </ul>
       </section>
 
-      <section className="grade-report-items">
-        <h2>문항별 결과</h2>
-        {report.items.map((item) => (
-          <article
-            key={item.quizId}
-            className={`grade-report-card grade-report-card--${item.status}`}
-          >
-            <header className="grade-report-card__head">
-              <span className="grade-result-item__badge">
-                {statusLabel(item.status)}
-              </span>
-              <strong>
-                {item.taskType ? `제${item.taskType}유형 · ` : ''}
-                {item.title}
-              </strong>
-              <span className="grade-result-item__score">
-                {item.earned}/{item.max}
-              </span>
-            </header>
+      <div
+        className={`grade-report-split${narrow ? ' grade-report-split--narrow' : ''}`}
+      >
+        <aside
+          className="grade-report-split__code"
+          style={narrow ? undefined : { width: codeWidth }}
+        >
+          <h2>내 코드</h2>
+          <div className="grade-report-split__scroll">
+            {report.items.map((item) => {
+              const active = item.quizId === selected?.quizId;
+              const lang = item.language ?? 'python';
+              const code = item.userCode?.trim() || '(코드 없음)';
+              return (
+                <button
+                  key={`code-${item.quizId}`}
+                  type="button"
+                  className={`grade-report-code-card${active ? ' is-active' : ''}`}
+                  onClick={() => setSelectedId(item.quizId)}
+                >
+                  <header className="grade-report-code-card__head">
+                    <span className="grade-result-item__badge">
+                      {statusLabel(item.status)}
+                    </span>
+                    <strong>{itemHeading(item)}</strong>
+                    <span className="grade-report-code-card__lang">
+                      {lang}
+                    </span>
+                  </header>
+                  <pre className="grade-report-code-card__pre">
+                    <code>{code}</code>
+                  </pre>
+                </button>
+              );
+            })}
+          </div>
+          {!narrow ? (
+            <EdgeResizeHandle
+              axis="x"
+              value={codeWidth}
+              onChange={setCodeWidth}
+              min={CODE_W_MIN}
+              max={maxCodeWidth}
+              label="코드 패널 너비 조절"
+            />
+          ) : null}
+        </aside>
 
-            {item.markdown?.trim() ? (
-              <div
-                className="grade-report-card__md md-content"
-                dangerouslySetInnerHTML={{
-                  __html: renderMarkdown(item.markdown),
-                }}
+        <section className="grade-report-split__results">
+          <h2>채점 결과</h2>
+          <div className="grade-report-split__scroll">
+            {selected ? (
+              <GradeResultDetail
+                item={selected}
+                coachBusy={coachBusyId === selected.quizId}
+                coachError={coachError[selected.quizId]}
+                coachReply={coachReply[selected.quizId]}
+                onAskCoach={() => void askCoach(selected)}
               />
-            ) : null}
+            ) : (
+              <p className="edit-page__sub">문항을 선택하세요.</p>
+            )}
 
-            {item.answers?.length ? (
-              <div className="grade-report-answers">
-                <h3>정답 · 제출</h3>
-                <table>
+            <div className="grade-report-log edit-card">
+              <h2>시험 활동 로그</h2>
+              <h3>문제별 요약</h3>
+              {!activity.byQuiz.length ? (
+                <p className="edit-page__sub">기록된 체류 로그가 없습니다.</p>
+              ) : (
+                <table className="grade-report-log-table">
                   <thead>
                     <tr>
-                      <th>항목</th>
-                      <th>정답</th>
-                      <th>내 제출</th>
-                      <th>결과</th>
+                      <th>문제</th>
+                      <th>체류</th>
+                      <th>탭</th>
+                      <th>실행</th>
+                      <th>제출</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {item.answers.map((row) => (
-                      <tr
-                        key={`${item.quizId}-${row.label}`}
-                        className={
-                          row.ok
-                            ? 'grade-report-answers__ok'
-                            : 'grade-report-answers__bad'
-                        }
-                      >
-                        <td>{row.label}</td>
+                    {activity.byQuiz.map((q) => (
+                      <tr key={q.quizId}>
+                        <td>{q.title}</td>
+                        <td>{formatDurationMs(q.focusMs)}</td>
                         <td>
-                          <code>{row.expected || '—'}</code>
+                          {Object.entries(q.tabMs)
+                            .map(
+                              ([tab, ms]) =>
+                                `${tabLabel(tab)} ${formatDurationMs(ms)}`,
+                            )
+                            .join(' · ') || '—'}
                         </td>
                         <td>
-                          <code>{row.submitted || '(미입력)'}</code>
+                          {q.runCount}회 / {formatDurationMs(q.runMs)}
                         </td>
-                        <td>{row.ok ? '정답' : '오답'}</td>
+                        <td>{q.submitCount}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-              </div>
-            ) : null}
+              )}
 
-            {item.type2Score ? (
-              <div className="grade-report-type2">
-                <h3>제2유형 점수</h3>
-                <ul>
-                  <li>
-                    유형{' '}
-                    <code>{item.type2Score.mlKind}</code>
-                    {' · '}
-                    지표 <code>{item.type2Score.label}</code>
-                    {' '}
-                    (
-                    {item.type2Score.direction === 'higher'
-                      ? '높을수록 좋음'
-                      : item.type2Score.direction === 'lower'
-                        ? '낮을수록 좋음'
-                        : '방향 미상'}
-                    )
-                  </li>
-                  <li>
-                    제출 모델 지표 (STUDENT){' '}
-                    <strong>
-                      {item.type2Score.achieved != null
-                        ? item.type2Score.achieved
-                        : '—'}
-                    </strong>
-                  </li>
-                  <li>
-                    정답 모델 지표 (REF){' '}
-                    <strong>
-                      {item.type2Score.expected != null
-                        ? item.type2Score.expected
-                        : '—'}
-                    </strong>
-                  </li>
-                  {item.type2Score.yScale != null ? (
-                    <li>
-                      타깃 스케일 (Y_SCALE){' '}
-                      <strong>{item.type2Score.yScale}</strong>
-                    </li>
-                  ) : null}
-                  <li>
-                    오차{' '}
-                    <strong>
-                      {item.type2Score.gap != null
-                        ? item.type2Score.gap
-                        : '—'}
-                    </strong>
-                    {item.type2Score.gapBasis === 'perfect'
-                      ? ' (만점 기준 대비)'
-                      : item.type2Score.gapBasis === 'expected'
-                        ? ' (|REF − STUDENT|)'
+              <h3>타임라인</h3>
+              <ol className="grade-report-timeline">
+                {activity.events.map((e, i) => (
+                  <li key={`${e.type}-${e.at}-${i}`}>
+                    <time dateTime={new Date(e.at).toISOString()}>
+                      {new Date(e.at).toLocaleTimeString('ko-KR')}
+                    </time>
+                    <span>
+                      {e.type}
+                      {e.title ? ` · ${e.title}` : ''}
+                      {e.tab ? ` · ${tabLabel(e.tab)}` : ''}
+                      {e.durationMs != null
+                        ? ` · ${formatDurationMs(e.durationMs)}`
                         : ''}
+                      {e.ok === false ? ' · fail' : e.ok ? ' · ok' : ''}
+                    </span>
                   </li>
-                  <li>
-                    구간 채점{' '}
-                    <code>{item.type2Score.bandSource ?? 'ratio'}</code>
-                    {item.type2Score.pointsBeforePenalty != null
-                      ? ` · 구간점수 ${item.type2Score.pointsBeforePenalty}/${item.max}`
-                      : ''}
-                  </li>
-                  <li>
-                    최종 점수{' '}
-                    <strong>
-                      {item.earned}/{item.max}
-                      {item.type2Score.fullCredit ? ' · 만점 구간' : ''}
-                    </strong>
-                    {' '}
-                    (형식 감점은 구간점수에서 차감)
-                  </li>
-                </ul>
-                {item.submittedCsvPreview ? (
-                  <pre className="grade-report-pre">
-                    {item.submittedCsvPreview}
-                  </pre>
-                ) : null}
-              </div>
-            ) : null}
+                ))}
+              </ol>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
 
-            {item.detail ? (
-              <pre className="grade-report-pre grade-report-pre--muted">
-                {item.detail}
-              </pre>
-            ) : null}
+function GradeResultDetail({
+  item,
+  coachBusy,
+  coachError,
+  coachReply,
+  onAskCoach,
+}: {
+  item: GradeItem;
+  coachBusy: boolean;
+  coachError?: string;
+  coachReply?: string;
+  onAskCoach: () => void;
+}) {
+  return (
+    <article
+      className={`grade-report-card grade-report-card--${item.status}`}
+    >
+      <header className="grade-report-card__head">
+        <span className="grade-result-item__badge">
+          {statusLabel(item.status)}
+        </span>
+        <strong>{itemHeading(item)}</strong>
+        <span className="grade-result-item__score">
+          {item.earned}/{item.max}
+        </span>
+      </header>
 
-            {item.status !== 'pass' ? (
-              <div className="grade-report-coach">
-                <button
-                  type="button"
-                  className="ghost-btn btn-with-icon"
-                  disabled={coachBusyId === item.quizId}
-                  onClick={() => void askCoach(item)}
-                >
-                  <Sparkles size={15} />
-                  {coachBusyId === item.quizId
-                    ? 'AI 분석 중…'
-                    : 'AI에게 왜 틀렸는지 묻기'}
-                </button>
-                {coachError[item.quizId] ? (
-                  <p className="edit-page__sub" role="alert">
-                    {coachError[item.quizId]}
-                  </p>
-                ) : null}
-                {coachReply[item.quizId] ? (
-                  <div
-                    className="grade-report-coach__reply md-content"
-                    dangerouslySetInnerHTML={{
-                      __html: renderMarkdown(coachReply[item.quizId]),
-                    }}
-                  />
-                ) : null}
-              </div>
-            ) : null}
-          </article>
-        ))}
-      </section>
+      {item.markdown?.trim() ? (
+        <div
+          className="grade-report-card__md md-content"
+          dangerouslySetInnerHTML={{
+            __html: renderMarkdown(item.markdown),
+          }}
+        />
+      ) : null}
 
-      <section className="grade-report-log edit-card">
-        <h2>시험 활동 로그</h2>
-        <h3>문제별 요약</h3>
-        {!activity.byQuiz.length ? (
-          <p className="edit-page__sub">기록된 체류 로그가 없습니다.</p>
-        ) : (
-          <table className="grade-report-log-table">
+      {item.answers?.length ? (
+        <div className="grade-report-answers">
+          <h3>정답 · 제출</h3>
+          <table>
             <thead>
               <tr>
-                <th>문제</th>
-                <th>체류</th>
-                <th>탭</th>
-                <th>실행</th>
-                <th>제출</th>
+                <th>항목</th>
+                <th>정답</th>
+                <th>내 제출</th>
+                <th>결과</th>
               </tr>
             </thead>
             <tbody>
-              {activity.byQuiz.map((q) => (
-                <tr key={q.quizId}>
-                  <td>{q.title}</td>
-                  <td>{formatDurationMs(q.focusMs)}</td>
+              {item.answers.map((row) => (
+                <tr
+                  key={`${item.quizId}-${row.label}`}
+                  className={
+                    row.ok
+                      ? 'grade-report-answers__ok'
+                      : 'grade-report-answers__bad'
+                  }
+                >
+                  <td>{row.label}</td>
                   <td>
-                    {Object.entries(q.tabMs)
-                      .map(
-                        ([tab, ms]) =>
-                          `${tabLabel(tab)} ${formatDurationMs(ms)}`,
-                      )
-                      .join(' · ') || '—'}
+                    <code>{row.expected || '—'}</code>
                   </td>
                   <td>
-                    {q.runCount}회 / {formatDurationMs(q.runMs)}
+                    <code>{row.submitted || '(미입력)'}</code>
                   </td>
-                  <td>{q.submitCount}</td>
+                  <td>{row.ok ? '정답' : '오답'}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-        )}
+        </div>
+      ) : null}
 
-        <h3>타임라인</h3>
-        <ol className="grade-report-timeline">
-          {activity.events.map((e, i) => (
-            <li key={`${e.type}-${e.at}-${i}`}>
-              <time dateTime={new Date(e.at).toISOString()}>
-                {new Date(e.at).toLocaleTimeString('ko-KR')}
-              </time>
-              <span>
-                {e.type}
-                {e.title ? ` · ${e.title}` : ''}
-                {e.tab ? ` · ${tabLabel(e.tab)}` : ''}
-                {e.durationMs != null
-                  ? ` · ${formatDurationMs(e.durationMs)}`
-                  : ''}
-                {e.ok === false ? ' · fail' : e.ok ? ' · ok' : ''}
-              </span>
+      {item.type2Score ? (
+        <div className="grade-report-type2">
+          <h3>제2유형 점수</h3>
+          <ul>
+            <li>
+              유형 <code>{item.type2Score.mlKind}</code>
+              {' · '}
+              지표 <code>{item.type2Score.label}</code>{' '}
+              (
+              {item.type2Score.direction === 'higher'
+                ? '높을수록 좋음'
+                : item.type2Score.direction === 'lower'
+                  ? '낮을수록 좋음'
+                  : '방향 미상'}
+              )
             </li>
-          ))}
-        </ol>
-      </section>
-    </div>
+            <li>
+              제출 모델 지표 (STUDENT){' '}
+              <strong>
+                {item.type2Score.achieved != null
+                  ? item.type2Score.achieved
+                  : '—'}
+              </strong>
+            </li>
+            <li>
+              정답 모델 지표 (REF){' '}
+              <strong>
+                {item.type2Score.expected != null
+                  ? item.type2Score.expected
+                  : '—'}
+              </strong>
+            </li>
+            {item.type2Score.yScale != null ? (
+              <li>
+                타깃 스케일 (Y_SCALE){' '}
+                <strong>{item.type2Score.yScale}</strong>
+              </li>
+            ) : null}
+            <li>
+              오차{' '}
+              <strong>
+                {item.type2Score.gap != null ? item.type2Score.gap : '—'}
+              </strong>
+              {item.type2Score.gapBasis === 'perfect'
+                ? ' (만점 기준 대비)'
+                : item.type2Score.gapBasis === 'expected'
+                  ? ' (|REF − STUDENT|)'
+                  : ''}
+            </li>
+            <li>
+              구간 채점{' '}
+              <code>{item.type2Score.bandSource ?? 'ratio'}</code>
+              {item.type2Score.pointsBeforePenalty != null
+                ? ` · 구간점수 ${item.type2Score.pointsBeforePenalty}/${item.max}`
+                : ''}
+            </li>
+            <li>
+              최종 점수{' '}
+              <strong>
+                {item.earned}/{item.max}
+                {item.type2Score.fullCredit ? ' · 만점 구간' : ''}
+              </strong>{' '}
+              (형식 감점은 구간점수에서 차감)
+            </li>
+          </ul>
+          {item.submittedCsvPreview ? (
+            <pre className="grade-report-pre">{item.submittedCsvPreview}</pre>
+          ) : null}
+        </div>
+      ) : null}
+
+      {item.detail ? (
+        <pre className="grade-report-pre grade-report-pre--muted">
+          {item.detail}
+        </pre>
+      ) : null}
+
+      {item.status !== 'pass' ? (
+        <div className="grade-report-coach">
+          <button
+            type="button"
+            className="ghost-btn btn-with-icon"
+            disabled={coachBusy}
+            onClick={onAskCoach}
+          >
+            <Sparkles size={15} />
+            {coachBusy ? 'AI 분석 중…' : 'AI에게 왜 틀렸는지 묻기'}
+          </button>
+          {coachError ? (
+            <p className="edit-page__sub" role="alert">
+              {coachError}
+            </p>
+          ) : null}
+          {coachReply ? (
+            <div
+              className="grade-report-coach__reply md-content"
+              dangerouslySetInnerHTML={{
+                __html: renderMarkdown(coachReply),
+              }}
+            />
+          ) : null}
+        </div>
+      ) : null}
+    </article>
   );
 }

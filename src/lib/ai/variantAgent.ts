@@ -115,11 +115,12 @@ function systemPrompt(
           '- MUTATE: list_project_csvs → preview_csv_asset → set_transform_code (python|r) → run_transform_code(asset_ids=source) → save_generated_assets.',
           '  Read data/<file>.csv; write NEW out/*.csv (rename columns, resample, shift target — not a verbatim copy).',
           '- SYNTHESIZE: set_dataset_code (seeded Python) → run_dataset_code → save_generated_assets.',
+          '- Always produce train + test + `test_label.csv` (true labels for test; grading-only). Save/link as data/test_label.csv.',
           '- save_generated_assets never overwrites an existing library basename — a _<hash> suffix is added when needed.',
           '- SAVE GATE: save/apply re-runs answer code on stored CSV; type 2 must produce result.csv.',
           '- Do NOT paste CSV rows in chat.',
-          '- Provide gradingCode via update_draft grading fields with SCORE_BANDS (5pt steps); no short-answer tools.',
-          '- Problem markdown: metric + submit rules only — do NOT prescribe preprocessing techniques/steps (encoding, imputation, scaling, feature recipes, model/hparams).',
+          '- Provide gradingCode via update_draft grading fields: load data/test_label.csv as y_true + SCORE_BANDS (5pt steps); no short-answer tools.',
+          '- Problem markdown: metric + submit rules only — do NOT prescribe preprocessing techniques/steps (encoding, imputation, scaling, feature recipes, model/hparams). Do NOT mention test_label to examinees.',
           '- Examinee still submits result.csv; do not invent scores.',
         ].join('\n'),
     '',
@@ -325,7 +326,7 @@ function toolsFor(source: BankProblem, mode: ProblemEditMode): ChatToolDef[] {
         function: {
           name: 'set_dataset_code',
           description:
-            'SYNTHESIZE path: Python that creates NEW CSVs under out/ with a fixed seed (e.g. out/train.csv, out/test.csv).',
+            'SYNTHESIZE path: Python that creates NEW CSVs under out/ with a fixed seed (e.g. out/train.csv, out/test.csv, out/test_label.csv).',
           parameters: {
             type: 'object',
             properties: {

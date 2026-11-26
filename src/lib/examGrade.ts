@@ -1,6 +1,6 @@
-import type { ExamSet, QuizProblem, RunResult } from '@/types/exam';
+import type { ExamAsset, ExamSet, QuizProblem, RunResult } from '@/types/exam';
 import { preloadPyodide, runPython } from '@/runtimes/pyodideRuntime';
-import { preloadWebR, runR } from '@/runtimes/webrRuntime';
+import { preloadWebR, runR, writeWebRFile } from '@/runtimes/webrRuntime';
 import { mountAssetsToPyodide, mountAssetsToWebR } from '@/runtimes/fsMount';
 import {
   resolveType2Points,
@@ -16,6 +16,16 @@ import {
   type2MaxPoints,
 } from '@/lib/examOfficialSpec';
 import { shortAnswersEqual } from '@/lib/shortAnswerMatch';
+import {
+  findType2LabelAsset,
+  type2LabelAliasPaths,
+} from '@/lib/type2Assets';
+import { loadType2ExamSubmissions } from '@/lib/type2ResultStore';
+import {
+  ensureType2LabelsForGrading,
+  isMissingType2LabelError,
+  mountSynthesizedType2Labels,
+} from '@/lib/ensureType2Labels';
 
 export type GradeStatus = 'pass' | 'fail' | 'partial' | 'unsubmitted' | 'ungradable';
 
@@ -302,18 +312,66 @@ async function writeRuntimeFile(
 ): Promise<void> {
   if (language === 'python') {
     const py = await preloadPyodide();
-    py.FS.writeFile(path, content);
+    const FS = (
+      py as unknown as {
+        FS: {
+          writeFile: (p: string, d: string, opts?: { encoding?: string }) => void;
+          analyzePath: (p: string) => { exists: boolean };
+          mkdir: (p: string) => void;
+        };
+      }
+    ).FS;
+    const slash = path.lastIndexOf('/');
+    if (slash > 0) {
+      const dir = path.slice(0, slash);
+      const parts = dir.split('/').filter(Boolean);
+      let cur = '';
+      for (const part of parts) {
+        cur = cur ? `${cur}/${part}` : part;
+        try {
+          if (!FS.analyzePath(cur).exists) FS.mkdir(cur);
+        } catch {
+          try {
+            FS.mkdir(cur);
+          } catch {
+            /* exists */
+          }
+        }
+      }
+    }
+    FS.writeFile(path, content, { encoding: 'utf8' });
     return;
   }
-  await preloadWebR();
-  const escaped = content
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '');
-  await runR(
-    `writeLines(strsplit("${escaped}", "\\n", fixed=TRUE)[[1]], "${path}")`,
-  );
+  await writeWebRFile(path, content);
+}
+
+function decodeExamAssetText(file: ExamAsset): string {
+  if (file.encoding === 'base64') {
+    try {
+      return atob(file.content);
+    } catch {
+      return file.content;
+    }
+  }
+  return file.content;
+}
+
+/** Ensure test_label / test_labels (± data/) all resolve during grading. */
+async function mountType2LabelAliases(
+  language: 'python' | 'r',
+  files: ExamAsset[] | undefined,
+): Promise<void> {
+  const label = findType2LabelAsset(files);
+  if (!label) return;
+  const body = decodeExamAssetText(label);
+  if (!body.trim()) return;
+  for (const alias of type2LabelAliasPaths(label.path)) {
+    try {
+      await writeRuntimeFile(language, alias, body);
+    } catch {
+      /* best-effort aliases */
+    }
+  }
 }
 
 /** Parse SCORE / EXPECTED / SCORE_BANDS and resolve type-2 metric points. */
@@ -399,15 +457,57 @@ async function gradeType2Quiz(
   }
 
   try {
-    if (quiz.files?.length) {
-      if (lang === 'python') await mountAssetsToPyodide(quiz.files);
-      else await mountAssetsToWebR(quiz.files);
-    }
-    await writeRuntimeFile(lang, path, quiz.submittedCsv);
-    const out: RunResult =
+    let files = quiz.files ?? [];
+    let labelNote = '';
+
+    const ensureAndMountLabels = async (force: boolean) => {
+      const ensured = await ensureType2LabelsForGrading(quiz, {
+        timeoutMs,
+        force,
+      });
+      if (ensured.asset && ensured.csv.trim()) {
+        const withoutOld = files.filter(
+          (f) =>
+            !findType2LabelAsset([f]) &&
+            f.path !== ensured.asset!.path,
+        );
+        files = [...withoutOld, ensured.asset];
+        labelNote = ensured.note;
+      } else if (ensured.note) {
+        labelNote = ensured.note;
+      }
+      if (files.length) {
+        if (lang === 'python') await mountAssetsToPyodide(files);
+        else await mountAssetsToWebR(files);
+      }
+      await mountType2LabelAliases(lang, files);
+      if (ensured.csv.trim()) {
+        await mountSynthesizedType2Labels(lang, ensured.csv);
+      }
+      // Answer-code runs overwrite result.csv — restore the examinee submit.
+      await writeRuntimeFile(lang, path, quiz.submittedCsv);
+      return ensured;
+    };
+
+    let ensured = await ensureAndMountLabels(false);
+
+    const runGradingOnce = async (): Promise<RunResult> =>
       lang === 'python'
         ? await runPython(grading, { timeoutMs })
         : await runR(grading, { timeoutMs });
+
+    let out = await runGradingOnce();
+    const errBlob = `${out.stdout}\n${out.stderr}`;
+    if (
+      !out.ok &&
+      isMissingType2LabelError(errBlob) &&
+      ensured.source !== 'ai_generate'
+    ) {
+      ensured = await ensureAndMountLabels(true);
+      out = await runGradingOnce();
+      if (ensured.note) labelNote = ensured.note;
+    }
+
     const type2Score = parseType2Score(out.stdout, grading, max);
     const hasMetric =
       type2Score.achieved != null ||
@@ -443,6 +543,7 @@ async function gradeType2Quiz(
       status,
       detail: [
         out.ok ? '채점 코드 실행 성공' : '채점 코드 실행 실패',
+        labelNote ? `라벨: ${labelNote}` : '',
         `ML=${type2Score.mlKind} · metric=${type2Score.label} (${type2Score.direction})`,
         `구간채점=${type2Score.bandSource ?? 'none'} · 구간점수=${type2Score.pointsBeforePenalty ?? 0}/${max}`,
         gapLine,
@@ -475,13 +576,39 @@ async function gradeType2Quiz(
   }
 }
 
+/**
+ * Merge IndexedDB type-2 result snapshots onto quiz.submittedCsv so end-of-exam
+ * grading works even if session state drifted.
+ */
+export async function hydrateType2SubmissionsFromIdb(
+  exam: ExamSet,
+): Promise<ExamSet> {
+  const stored = await loadType2ExamSubmissions(exam.id);
+  if (!Object.keys(stored).length) return exam;
+  let changed = false;
+  const quizzes = exam.quizzes.map((q) => {
+    const hit = stored[q.id];
+    if (!hit?.csv?.trim()) return q;
+    if (q.submitted && q.submittedCsv?.trim()) return q;
+    changed = true;
+    return {
+      ...q,
+      submitted: true,
+      submittedCsv: hit.csv,
+      submitFile: q.submitFile || hit.submitFile || 'result.csv',
+    };
+  });
+  return changed ? { ...exam, quizzes } : exam;
+}
+
 /** Grade all submit-kind quizzes against answer keys / grading scripts. */
 export async function gradeExam(
   exam: ExamSet,
   opts?: { timeoutMs?: number },
 ): Promise<GradeReport> {
   const timeoutMs = opts?.timeoutMs ?? OFFICIAL_MAX_RUN_SECONDS * 1000;
-  const submit = listSubmitQuizzes(exam);
+  const hydrated = await hydrateType2SubmissionsFromIdb(exam);
+  const submit = listSubmitQuizzes(hydrated);
   const unsubmittedCount = submit.filter((q) => !q.submitted).length;
   const items: GradeItem[] = [];
 

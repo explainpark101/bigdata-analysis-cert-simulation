@@ -662,13 +662,8 @@ export function materializeExam(
         submitSeq += 1;
         const { files, mountByAssetId } = collectQuizFiles(project, [bank]);
         const filePaths = files.map((f) => f.path);
-        const bankStarter = bank.starterCode;
-        const hasBankStarter = Boolean(
-          bankStarter?.python?.trim() || bankStarter?.r?.trim(),
-        );
-        const rewrittenStarter = hasBankStarter
-          ? rewriteCodePair(bankStarter, project, bank, mountByAssetId)
-          : undefined;
+        // Always rebuild type-2 starter from mounted CSVs so train*/test*
+        // basenames (incl. hash suffixes) load even if bank starter paths drift.
         quizzes.push({
           id: bank.id,
           number: String(submitSeq).padStart(2, '0'),
@@ -685,9 +680,7 @@ export function materializeExam(
             mountByAssetId,
           ),
           language: bank.language,
-          starterCode: rewrittenStarter
-            ? { ...rewrittenStarter }
-            : buildStarterCode(2, filePaths),
+          starterCode: buildStarterCode(2, filePaths),
           answerCode: rewriteCodePair(
             bank.answerCode,
             project,

@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import type { QuizProblem } from '@/types/exam';
 import { renderMarkdown } from '@/lib/markdown';
 import { isImageAsset } from '@/lib/assetMedia';
+import { examineeDataFiles } from '@/lib/type2Assets';
 import { ProvidedFilesPanel } from './ProvidedFilesPanel';
 
 interface ProblemPanelProps {
@@ -20,9 +21,12 @@ export function ProblemPanel({
   onZoomChange,
 }: ProblemPanelProps) {
   const files = quiz.files ?? [];
-  const dataFiles = useMemo(() => files.filter((f) => !isImageAsset(f)), [files]);
+  const dataFiles = useMemo(
+    () => examineeDataFiles(files.filter((f) => !isImageAsset(f))),
+    [files],
+  );
   const html = useMemo(
-    () => renderMarkdown(quiz.markdown, files),
+    () => renderMarkdown(quiz.markdown, examineeDataFiles(files)),
     [quiz.markdown, files],
   );
 

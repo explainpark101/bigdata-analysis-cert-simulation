@@ -1,22 +1,42 @@
 import type { CodeByLanguage } from '@/types/exam';
 import type { TaskType } from '@/types/project';
 import { assetBasename } from '@/lib/assetPaths';
+import { isType2LabelCsv } from '@/lib/type2Assets';
 
 function isDataPath(path: string): boolean {
   return !/\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(path);
 }
 
-/** Prefer main train file (not y_train) among provided paths. */
+function csvBasename(path: string): string | null {
+  const b = assetBasename(path).toLowerCase();
+  return b.endsWith('.csv') ? b : null;
+}
+
+/**
+ * Prefer main train file among provided paths.
+ * Priority: basename starts with `train` → `*_train.csv` → contains "train"
+ * (excludes obvious test files; demotes x_train / y_train).
+ */
 export function pickTrainPath(paths: string[]): string | undefined {
   const data = paths.filter(isDataPath);
   const scored = data
     .map((p) => {
-      const b = assetBasename(p).toLowerCase();
-      if (!b.includes('train') || b.includes('test')) return null;
-      let score = 10;
-      if (/^y[_-]?train\.csv$/.test(b)) score = 1;
-      else if (/^x[_-]?train\.csv$/.test(b)) score = 8;
-      else if (/_train\.csv$/.test(b)) score = 9;
+      const b = csvBasename(p);
+      if (!b) return null;
+      // Pure test files (start with test / *_test) are never train.
+      if (b.startsWith('test') || /_test\.csv$/.test(b)) return null;
+
+      let score = 0;
+      if (b.startsWith('train')) score = 100;
+      else if (/_train\.csv$/.test(b)) score = 50;
+      else return null;
+
+      if (b === 'train.csv') score = 110;
+
+      // Feature/label split helpers — not the main train table.
+      if (/^y[_-]?train\.csv$/.test(b)) score = 10;
+      else if (/^x[_-]?train\.csv$/.test(b)) score = 40;
+
       return { p, score };
     })
     .filter((x): x is { p: string; score: number } => x != null)
@@ -24,15 +44,29 @@ export function pickTrainPath(paths: string[]): string | undefined {
   return scored[0]?.p;
 }
 
+/**
+ * Prefer main test file among provided paths.
+ * Priority: basename starts with `test` → `*_test.csv`
+ * (excludes train files; avoids false positives like welch_ttest.csv).
+ */
 export function pickTestPath(paths: string[]): string | undefined {
   const data = paths.filter(isDataPath);
   const scored = data
     .map((p) => {
-      const b = assetBasename(p).toLowerCase();
-      if (!b.includes('test') || b.includes('train')) return null;
-      let score = 10;
-      if (/^x[_-]?test\.csv$/.test(b)) score = 9;
-      else if (/_test\.csv$/.test(b)) score = 8;
+      const b = csvBasename(p);
+      if (!b) return null;
+      // Grading-only labels must never be treated as the examinee test CSV.
+      if (isType2LabelCsv(b)) return null;
+      if (b.startsWith('train') || /_train\.csv$/.test(b)) return null;
+
+      let score = 0;
+      if (b.startsWith('test')) score = 100;
+      else if (/_test\.csv$/.test(b)) score = 50;
+      else return null;
+
+      if (b === 'test.csv') score = 110;
+      if (/^x[_-]?test\.csv$/.test(b)) score = 40;
+
       return { p, score };
     })
     .filter((x): x is { p: string; score: number } => x != null)
@@ -59,7 +93,7 @@ const R_HEADER = `# 출력을 원할 경우 print() 함수 활용
 /**
  * Exam/project starter templates (DataQ-style).
  * - Type 1·3 → `df` + head preview
- * - Type 2 → `train` / `test`
+ * - Type 2 → `train` / `test` (basename starts with train/test, or *_train/*_test)
  */
 export function buildStarterCode(
   taskType: TaskType,
@@ -69,7 +103,10 @@ export function buildStarterCode(
 
   if (taskType === 2) {
     const byBase = (re: RegExp) =>
-      data.find((p) => re.test(assetBasename(p).toLowerCase()));
+      data.find((p) => {
+        const b = csvBasename(p);
+        return b != null && re.test(b);
+      });
     const xTrain = byBase(/^x[_-]?train\.csv$/);
     const yTrain = byBase(/^y[_-]?train\.csv$/);
     const xTest = byBase(/^x[_-]?test\.csv$/);
