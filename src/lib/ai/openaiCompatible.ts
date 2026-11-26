@@ -518,6 +518,20 @@ export class RepetitionLoopError extends Error {
   }
 }
 
+/** Abort and retry when the model produces no bytes for this long. */
+const STALL_TIMEOUT_MS = 30_000;
+
+/** Idle stream / request with no progress — abort and regenerate. */
+export class StallTimeoutError extends Error {
+  readonly regenerate = true;
+  constructor(
+    message = `AI 응답이 ${STALL_TIMEOUT_MS / 1000}초 이상 멈춰 재요청합니다.`,
+  ) {
+    super(message);
+    this.name = 'StallTimeoutError';
+  }
+}
+
 /**
  * Detect pathological repetition (same line / phrase loop) in assistant text.
  * Used mid-stream to abort and regenerate.
@@ -718,6 +732,13 @@ export type ChatToolChoice =
 const RETRY_BASE_MS = 800;
 const RETRY_MAX_MS = 20_000;
 
+function isStallTimeoutError(err: unknown): boolean {
+  return (
+    err instanceof StallTimeoutError ||
+    (err instanceof Error && err.name === 'StallTimeoutError')
+  );
+}
+
 function isAbortError(err: unknown): boolean {
   if (err instanceof DOMException && err.name === 'AbortError') return true;
   if (err instanceof Error && err.name === 'AbortError') return true;
@@ -767,8 +788,9 @@ function errorMessage(err: unknown): string {
 
 /**
  * OpenAI-compatible chat.completions.
- * Retries **forever** on any failure (empty stream, HTTP errors, network, …)
- * until a usable message/tool_calls arrives or `signal` aborts.
+ * Retries **forever** on any failure (empty stream, HTTP errors, network,
+ * 30s idle stall, …) until a usable message/tool_calls arrives or `signal` aborts.
+ * Model traffic is always logged with `console.debug`.
  */
 export async function createChatCompletion(opts: {
   settings: AiEndpointSettings;
@@ -790,6 +812,12 @@ export async function createChatCompletion(opts: {
   while (true) {
     throwIfAborted(opts.signal);
     try {
+      console.debug('[ai] chat.completions start', {
+        attempt: attempt + 1,
+        model: opts.settings.model,
+        messageCount: opts.messages.length,
+        toolCount: opts.tools?.length ?? 0,
+      });
       const raw = await createChatCompletionOnce(opts);
       const result: ChatCompletionResult = {
         ...raw,
@@ -809,10 +837,23 @@ export async function createChatCompletion(opts: {
           toolCallNames: result.message.tool_calls.map((t) => t.function.name),
         });
       }
+      console.debug('[ai] chat.completions done', {
+        attempt: attempt + 1,
+        finishReason: result.finishReason,
+        contentLength: text.length,
+        toolCalls: result.message.tool_calls?.map((t) => t.function.name) ?? [],
+        content: text,
+      });
       return result;
     } catch (err) {
-      if (isAbortError(err)) throw err;
+      // StallTimeoutError is retriable; user AbortError is not.
+      if (isAbortError(err) && !isStallTimeoutError(err)) throw err;
       attempt += 1;
+      console.debug('[ai] chat.completions retry', {
+        attempt,
+        error: errorMessage(err),
+        stall: isStallTimeoutError(err),
+      });
       opts.onRetry?.(attempt, err);
       opts.onEmptyStreamRetry?.(attempt);
       await sleepAbortable(retryDelayMs(attempt), opts.signal);
@@ -837,6 +878,7 @@ async function createChatCompletionOnce(opts: {
 }): Promise<ChatCompletionResult> {
   const body = buildCompletionBody({ ...opts, stream: true });
   let stopForRepetition = false;
+  let stopForStall = false;
   const localCtrl = new AbortController();
   const onParentAbort = () => {
     localCtrl.abort(
@@ -845,9 +887,33 @@ async function createChatCompletionOnce(opts: {
   };
   opts.signal?.addEventListener('abort', onParentAbort);
 
+  let stallTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearStallWatch = () => {
+    if (stallTimer != null) {
+      clearTimeout(stallTimer);
+      stallTimer = null;
+    }
+  };
+  const armStallWatch = () => {
+    clearStallWatch();
+    stallTimer = setTimeout(() => {
+      if (stopForRepetition || stopForStall || localCtrl.signal.aborted) return;
+      stopForStall = true;
+      console.debug('[ai] stall timeout — aborting idle response', {
+        idleMs: STALL_TIMEOUT_MS,
+      });
+      try {
+        localCtrl.abort(new StallTimeoutError());
+      } catch {
+        /* ignore */
+      }
+    }, STALL_TIMEOUT_MS);
+  };
+
   const throwIfRepetition = (text: string) => {
     if (!detectTextRepetitionLoop(text)) return;
     stopForRepetition = true;
+    clearStallWatch();
     try {
       localCtrl.abort();
     } catch {
@@ -855,6 +921,30 @@ async function createChatCompletionOnce(opts: {
     }
     throw new RepetitionLoopError();
   };
+
+  const rethrowIfControlledStop = (err: unknown): never => {
+    if (stopForRepetition || err instanceof RepetitionLoopError) {
+      throw new RepetitionLoopError();
+    }
+    if (
+      stopForStall ||
+      isStallTimeoutError(err) ||
+      isStallTimeoutError(localCtrl.signal.reason)
+    ) {
+      throw new StallTimeoutError();
+    }
+    throw err;
+  };
+
+  const debugDelta = (delta: {
+    content?: string;
+    toolCallNames?: string[];
+  }) => {
+    console.debug('[ai] stream delta', delta);
+    opts.onDelta?.(delta);
+  };
+
+  armStallWatch();
 
   let res: Response;
   try {
@@ -864,19 +954,22 @@ async function createChatCompletionOnce(opts: {
       body: JSON.stringify(body),
       signal: localCtrl.signal,
     });
+    armStallWatch();
   } catch (err) {
+    clearStallWatch();
     opts.signal?.removeEventListener('abort', onParentAbort);
-    if (stopForRepetition) throw new RepetitionLoopError();
-    throw err;
+    rethrowIfControlledStop(err);
   }
 
   if (!res.ok) {
+    clearStallWatch();
     opts.signal?.removeEventListener('abort', onParentAbort);
     const text = await res.text();
     throw parseErrorPayload(res.status, text);
   }
 
   if (!res.body) {
+    clearStallWatch();
     opts.signal?.removeEventListener('abort', onParentAbort);
     throw new Error('AI 스트림 본문이 비어 있습니다.');
   }
@@ -895,6 +988,7 @@ async function createChatCompletionOnce(opts: {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      armStallWatch();
       buffer += decoder.decode(value, { stream: true });
 
       if (mode === 'unknown') {
@@ -951,6 +1045,11 @@ async function createChatCompletionOnce(opts: {
 
         if (choice.message) {
           const earlyText = chatContentToText(choice.message.content);
+          console.debug('[ai] stream message', {
+            content: earlyText,
+            finishReason: choice.finish_reason ?? finishReason,
+            toolCalls: choice.message.tool_calls?.map((t) => t.function.name),
+          });
           throwIfRepetition(earlyText);
           const early: ChatCompletionResult = {
             message: choice.message,
@@ -965,7 +1064,7 @@ async function createChatCompletionOnce(opts: {
 
         if (typeof delta.content === 'string' && delta.content) {
           content += delta.content;
-          opts.onDelta?.({ content: delta.content });
+          debugDelta({ content: delta.content });
           // Check periodically to keep streaming cheap.
           if (content.length - lastRepCheckLen >= 48) {
             lastRepCheckLen = content.length;
@@ -983,17 +1082,15 @@ async function createChatCompletionOnce(opts: {
           const fresh = names.filter((n) => !announcedTools.has(n));
           for (const n of fresh) announcedTools.add(n);
           if (fresh.length) {
-            opts.onDelta?.({ toolCallNames: [...announcedTools] });
+            debugDelta({ toolCallNames: [...announcedTools] });
           }
         }
       }
     }
   } catch (err) {
-    if (stopForRepetition || err instanceof RepetitionLoopError) {
-      throw new RepetitionLoopError();
-    }
-    throw err;
+    rethrowIfControlledStop(err);
   } finally {
+    clearStallWatch();
     opts.signal?.removeEventListener('abort', onParentAbort);
     try {
       reader.releaseLock();
@@ -1005,6 +1102,11 @@ async function createChatCompletionOnce(opts: {
 
   if (mode === 'json' || (mode === 'unknown' && buffer.trimStart().startsWith('{'))) {
     const parsed = parseNonStreamCompletion(buffer);
+    console.debug('[ai] non-stream completion', {
+      content: chatContentToText(parsed.message.content),
+      finishReason: parsed.finishReason,
+      toolCalls: parsed.message.tool_calls?.map((t) => t.function.name),
+    });
     throwIfRepetition(chatContentToText(parsed.message.content));
     return parsed;
   }
@@ -1030,7 +1132,7 @@ async function createChatCompletionOnce(opts: {
           const delta = choice?.delta;
           if (delta?.content) {
             content += delta.content;
-            opts.onDelta?.({ content: delta.content });
+            debugDelta({ content: delta.content });
           }
           if (delta?.tool_calls?.length) {
             for (const tc of delta.tool_calls) applyToolCallDelta(toolAcc, tc);
@@ -1054,7 +1156,7 @@ async function createChatCompletionOnce(opts: {
   throwIfRepetition(content);
 
   if (tool_calls.length) {
-    opts.onDelta?.({
+    debugDelta({
       toolCallNames: tool_calls.map((t) => t.function.name),
     });
   }
