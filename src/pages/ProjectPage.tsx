@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import {
   CheckSquare,
   Copy,
+  Cpu,
   Download,
   FilePlus2,
   FolderPlus,
@@ -40,6 +41,7 @@ import {
 import { AnswerAuthorPanel } from '@/components/project/AnswerAuthorPanel';
 import { ExamAssemblePreview } from '@/components/project/ExamAssemblePreview';
 import { ExamAutoReviewQueueModal } from '@/components/project/ExamAutoReviewQueueModal';
+import { RuntimeLockQueueModal } from '@/components/project/RuntimeLockQueueModal';
 import { VariantChatDock } from '@/components/project/VariantChatDock';
 import { ModifyChatDock } from '@/components/project/ModifyChatDock';
 import { ProblemAuthorTab } from '@/components/project/ProblemAuthorTab';
@@ -69,6 +71,10 @@ import {
   isExamAutoReviewRunning,
   subscribeExamAutoReviewQueue,
 } from '@/lib/examAutoReviewQueue';
+import {
+  countBusyRuntimeLocks,
+  subscribeRuntimeLockQueue,
+} from '@/lib/runtimeMutex';
 
 interface PendingImportSession {
   ready: PendingAssetImport[];
@@ -147,7 +153,9 @@ export default function ProjectPage() {
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [autoReviewQueueOpen, setAutoReviewQueueOpen] = useState(false);
+  const [runtimeQueueOpen, setRuntimeQueueOpen] = useState(false);
   const [runningAutoReviews, setRunningAutoReviews] = useState(0);
+  const [busyRuntimes, setBusyRuntimes] = useState(0);
   const [activeExamReviewing, setActiveExamReviewing] = useState(false);
   const [variantOpen, setVariantOpen] = useState(false);
   const [message, setMessage] = useState('');
@@ -163,6 +171,14 @@ export default function ProjectPage() {
         setActiveExamReviewing(isExamAutoReviewRunning(activeExam.id));
       }),
     [activeExam.id],
+  );
+
+  useEffect(
+    () =>
+      subscribeRuntimeLockQueue(() => {
+        setBusyRuntimes(countBusyRuntimeLocks());
+      }),
+    [],
   );
   const csvRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
@@ -308,6 +324,21 @@ export default function ProjectPage() {
           </p>
         </div>
         <div className="row edit-page__actions">
+          <button
+            type="button"
+            className="ghost-btn btn-with-icon"
+            onClick={() => setRuntimeQueueOpen(true)}
+            aria-label="런타임 큐"
+            title="Pyodide / WebR 사용·대기 큐"
+          >
+            <Cpu size={16} />
+            런타임 큐
+            {busyRuntimes > 0 ? (
+              <span className="exam-auto-review-header-badge">
+                {busyRuntimes}
+              </span>
+            ) : null}
+          </button>
           <button
             type="button"
             className="ghost-btn btn-with-icon"
@@ -1427,6 +1458,11 @@ export default function ProjectPage() {
       <GlobalSettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+      />
+
+      <RuntimeLockQueueModal
+        open={runtimeQueueOpen}
+        onClose={() => setRuntimeQueueOpen(false)}
       />
 
       <ExamAutoReviewQueueModal

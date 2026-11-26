@@ -610,6 +610,22 @@ async function syncWebROutToPyodide(files: string[]): Promise<void> {
 async function runAnswer(
   ctx: AuthorAgentContext,
   language: 'python' | 'r',
+  lock?: {
+    signal?: AbortSignal;
+    onWait?: (info: {
+      runtime: 'python' | 'r';
+      position: number;
+      holder: {
+        id: string;
+        runtime: 'python' | 'r';
+        label: string;
+        session: string;
+        phase: 'waiting' | 'running';
+        enqueuedAt: number;
+        startedAt?: number;
+      } | null;
+    }) => void;
+  },
 ): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   // Asset bodies live in IDB/disk (lean project.assets have content: '').
   // Hydrate before mounting — same pattern as AnswerAuthorPanel.
@@ -656,17 +672,38 @@ async function runAnswer(
     return { ok: out.ok, stdout: out.stdout, stderr: out.stderr };
   };
   const { withRuntimeLock } = await import('@/lib/runtimeMutex');
-  return withRuntimeLock(async () => {
-    if (language === 'python') {
-      await preloadPyodide();
-      await mountAssetsToPyodide(files);
-      return finish(await runPython(source));
-    }
-    await preloadWebR();
-    const { mountAssetsToWebR } = await import('@/runtimes/fsMount');
-    await mountAssetsToWebR(files);
-    return finish(await runR(source));
+  const { runtimeSessionLabel, runtimeWaitStatus } = await import(
+    '@/lib/runtimeLockWait'
+  );
+  const session = runtimeSessionLabel({
+    mode: ctx.mode === 'modify' ? 'modify' : 'author',
+    title: ctx.draft.title,
+    taskType: ctx.draft.taskType,
   });
+  return withRuntimeLock(
+    async () => {
+      if (language === 'python') {
+        await preloadPyodide();
+        await mountAssetsToPyodide(files);
+        return finish(await runPython(source));
+      }
+      await preloadWebR();
+      const { mountAssetsToWebR } = await import('@/runtimes/fsMount');
+      await mountAssetsToWebR(files);
+      return finish(await runR(source));
+    },
+    {
+      runtime: language,
+      label: 'run_answer_code',
+      session,
+      signal: lock?.signal,
+      onWait: (info) => {
+        lock?.onWait?.(info);
+        // Always surface wait in console for debugging sessions.
+        console.debug('[runtime-queue] wait', runtimeWaitStatus(info));
+      },
+    },
+  );
 }
 
 function assertType13AnswersFinite(draft: AuthorDraft): string | null {
@@ -798,6 +835,33 @@ export async function runAuthorAgentTurn(opts: {
     opts;
   const mode: AuthorAgentMode = opts.ctx.mode ?? 'author';
   const report = (event: AuthorAgentProgress) => onProgress?.(event);
+  const runtimeSession = () => {
+    const modeLabel = mode === 'modify' ? 'modify' : 'author';
+    return {
+      mode: modeLabel as 'author' | 'modify',
+      title: draft.title,
+      taskType: draft.taskType,
+    };
+  };
+  const withAgentRuntimeLock = async <T,>(
+    runtime: 'python' | 'r' | 'both',
+    label: string,
+    fn: () => Promise<T>,
+  ): Promise<T> => {
+    const { withRuntimeLock } = await import('@/lib/runtimeMutex');
+    const { runtimeSessionLabel, runtimeWaitStatus } = await import(
+      '@/lib/runtimeLockWait'
+    );
+    return withRuntimeLock(fn, {
+      runtime,
+      label,
+      session: runtimeSessionLabel(runtimeSession()),
+      signal,
+      onWait: (info) => {
+        report({ kind: 'status', text: runtimeWaitStatus(info) });
+      },
+    });
+  };
   const emitMessages = (msgs: ChatMessage[]) => {
     if (!onMessages) return;
     const uiMessages = msgs.filter(
@@ -1119,7 +1183,19 @@ export async function runAuthorAgentTurn(opts: {
               ? args.language
               : draft.language;
           toolResult = JSON.stringify(
-            await runAnswer({ ...ctx, draft }, lang),
+            await runAnswer({ ...ctx, draft }, lang, {
+              signal,
+              onWait: (info) => {
+                void import('@/lib/runtimeLockWait').then(
+                  ({ runtimeWaitStatus }) => {
+                    report({
+                      kind: 'status',
+                      text: runtimeWaitStatus(info),
+                    });
+                  },
+                );
+              },
+            }),
           );
         } else if (name === 'set_short_answers') {
           if (draft.taskType === 2) {
@@ -1292,14 +1368,43 @@ export async function runAuthorAgentTurn(opts: {
               ctx.project.assets = hydrated.assets;
               const files = resolveAssets(hydrated, csvIds);
               const mounted = files.map((f) => f.path);
-              const { withRuntimeLock } = await import('@/lib/runtimeMutex');
-              toolResult = await withRuntimeLock(async () => {
-                if (lang === 'python') {
-                  await preloadPyodide();
-                  await clearPyodideOutCsvs();
-                  await mountAssetsToPyodide(files);
-                  const out = await runPython(code);
-                  const outFiles = await listOutFiles();
+              // R transform also syncs out/ into Pyodide — hold both lanes.
+              const lockRuntime = lang === 'r' ? 'both' : 'python';
+              toolResult = await withAgentRuntimeLock(
+                lockRuntime,
+                'run_transform_code',
+                async () => {
+                  if (lang === 'python') {
+                    await preloadPyodide();
+                    await clearPyodideOutCsvs();
+                    await mountAssetsToPyodide(files);
+                    const out = await runPython(code);
+                    const outFiles = await listOutFiles();
+                    return JSON.stringify({
+                      ok: out.ok,
+                      language: lang,
+                      stdout: out.stdout,
+                      stderr: out.stderr,
+                      mounted,
+                      files: outFiles,
+                      rejected,
+                      hint: outFiles.length
+                        ? 'Call save_generated_assets with these out/*.csv basenames.'
+                        : 'No out/*.csv written — fix transform code.',
+                    });
+                  }
+                  await preloadWebR();
+                  await clearWebROutCsvs();
+                  const { mountAssetsToWebR } = await import(
+                    '@/runtimes/fsMount'
+                  );
+                  await mountAssetsToWebR(files);
+                  await ensureWebROutDir();
+                  const out = await runR(code);
+                  const outFiles = await listOutFilesWebR();
+                  if (outFiles.length) {
+                    await syncWebROutToPyodide(outFiles);
+                  }
                   return JSON.stringify({
                     ok: out.ok,
                     language: lang,
@@ -1312,32 +1417,8 @@ export async function runAuthorAgentTurn(opts: {
                       ? 'Call save_generated_assets with these out/*.csv basenames.'
                       : 'No out/*.csv written — fix transform code.',
                   });
-                }
-                await preloadWebR();
-                await clearWebROutCsvs();
-                const { mountAssetsToWebR } = await import(
-                  '@/runtimes/fsMount'
-                );
-                await mountAssetsToWebR(files);
-                await ensureWebROutDir();
-                const out = await runR(code);
-                const outFiles = await listOutFilesWebR();
-                if (outFiles.length) {
-                  await syncWebROutToPyodide(outFiles);
-                }
-                return JSON.stringify({
-                  ok: out.ok,
-                  language: lang,
-                  stdout: out.stdout,
-                  stderr: out.stderr,
-                  mounted,
-                  files: outFiles,
-                  rejected,
-                  hint: outFiles.length
-                    ? 'Call save_generated_assets with these out/*.csv basenames.'
-                    : 'No out/*.csv written — fix transform code.',
-                });
-              });
+                },
+              );
             }
           }
         } else if (name === 'set_dataset_code') {
@@ -1355,8 +1436,10 @@ export async function runAuthorAgentTurn(opts: {
               error: 'datasetCode empty',
             });
           } else {
-            const { withRuntimeLock } = await import('@/lib/runtimeMutex');
-            toolResult = await withRuntimeLock(async () => {
+            toolResult = await withAgentRuntimeLock(
+              'python',
+              'run_dataset_code',
+              async () => {
               await clearPyodideOutCsvs();
               const out = await runPython(draft.datasetCode);
               const files = await listOutFiles();

@@ -4481,6 +4481,112 @@ body.is-resizing-y * {
   line-height: 1;
 }
 
+.runtime-lock-dialog__panel {
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(80vh, 720px);
+  display: flex;
+  flex-direction: column;
+}
+
+.runtime-lock-dialog__body {
+  overflow: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.runtime-lock-queue {
+  display: grid;
+  gap: 14px;
+}
+
+.runtime-lock-queue__lane {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--dq-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--dq-surface, transparent) 80%, transparent);
+}
+
+.runtime-lock-queue__lane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.runtime-lock-queue__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--dq-border);
+  color: var(--dq-muted);
+}
+
+.runtime-lock-queue__pill--busy {
+  border-color: color-mix(in srgb, var(--dq-accent, #4568ff) 40%, var(--dq-border));
+  color: var(--dq-text);
+  background: color-mix(in srgb, var(--dq-accent, #4568ff) 12%, transparent);
+}
+
+.runtime-lock-queue__empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--dq-muted);
+}
+
+.runtime-lock-queue__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.runtime-lock-queue__item {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--dq-border);
+  background: var(--dq-ghost);
+}
+
+.runtime-lock-queue__item--running {
+  border-color: color-mix(in srgb, var(--dq-accent, #4568ff) 35%, var(--dq-border));
+}
+
+.runtime-lock-queue__title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.runtime-lock-queue__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--dq-border);
+  color: var(--dq-muted);
+}
+
+.runtime-lock-queue__badge--wait {
+  opacity: 0.9;
+}
+
+.runtime-lock-queue__meta {
+  font-size: 11px;
+  color: var(--dq-muted);
+  line-height: 1.4;
+}
+
 .exam-auto-review-dialog__panel {
   width: min(560px, calc(100vw - 32px));
   max-height: min(80vh, 720px);

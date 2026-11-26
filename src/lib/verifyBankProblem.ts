@@ -91,17 +91,29 @@ export async function verifyBankProblemAnswer(
     );
     const files = resolveAssets(hydrated, problem.assetIds);
 
-    const out = await withRuntimeLock(async () => {
-      if (lang === 'python') {
-        await preloadPyodide();
-        await mountAssetsToPyodide(files);
-        return runPython(answerCode);
-      }
-      await preloadWebR();
-      const { mountAssetsToWebR } = await import('@/runtimes/fsMount');
-      await mountAssetsToWebR(files);
-      return runR(answerCode);
-    });
+    const { runtimeSessionLabel } = await import('@/lib/runtimeLockWait');
+    const out = await withRuntimeLock(
+      async () => {
+        if (lang === 'python') {
+          await preloadPyodide();
+          await mountAssetsToPyodide(files);
+          return runPython(answerCode);
+        }
+        await preloadWebR();
+        const { mountAssetsToWebR } = await import('@/runtimes/fsMount');
+        await mountAssetsToWebR(files);
+        return runR(answerCode);
+      },
+      {
+        runtime: lang,
+        label: 'verify_bank_problem',
+        session: runtimeSessionLabel({
+          mode: 'verify',
+          title: problem.title,
+          taskType: problem.taskType,
+        }),
+      },
+    );
 
     const got = linesFromStdout(out.stdout);
     const match = type2 ? null : compareAnswerLines(expected, got);

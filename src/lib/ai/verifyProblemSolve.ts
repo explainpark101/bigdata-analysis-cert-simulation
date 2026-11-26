@@ -127,17 +127,28 @@ export async function verifyDraftSolvedWithStoredCsv(
   let out: { ok: boolean; stdout: string; stderr: string };
   try {
     const { withRuntimeLock } = await import('@/lib/runtimeMutex');
-    out = await withRuntimeLock(async () => {
-      if (lang === 'python') {
-        await preloadPyodide();
-        await mountAssetsToPyodide(files);
-        return runPython(source);
-      }
-      await preloadWebR();
-      const { mountAssetsToWebR } = await import('@/runtimes/fsMount');
-      await mountAssetsToWebR(files);
-      return runR(source);
-    });
+    const { runtimeSessionLabel } = await import('@/lib/runtimeLockWait');
+    out = await withRuntimeLock(
+      async () => {
+        if (lang === 'python') {
+          await preloadPyodide();
+          await mountAssetsToPyodide(files);
+          return runPython(source);
+        }
+        await preloadWebR();
+        const { mountAssetsToWebR } = await import('@/runtimes/fsMount');
+        await mountAssetsToWebR(files);
+        return runR(source);
+      },
+      {
+        runtime: lang,
+        label: 'verify_problem_solve',
+        session: runtimeSessionLabel({
+          mode: 'verify',
+          taskType: input.taskType,
+        }),
+      },
+    );
   } catch (err) {
     return {
       ok: false,

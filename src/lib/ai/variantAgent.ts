@@ -510,17 +510,29 @@ async function runAnswer(
     return { ok: out.ok, stdout: out.stdout, stderr: out.stderr };
   };
   const { withRuntimeLock } = await import('@/lib/runtimeMutex');
-  return withRuntimeLock(async () => {
-    if (language === 'python') {
-      await preloadPyodide();
-      await mountAssetsToPyodide(files);
-      return finish(await runPython(source));
-    }
-    await preloadWebR();
-    const { mountAssetsToWebR } = await import('@/runtimes/fsMount');
-    await mountAssetsToWebR(files);
-    return finish(await runR(source));
-  });
+  const { runtimeSessionLabel } = await import('@/lib/runtimeLockWait');
+  return withRuntimeLock(
+    async () => {
+      if (language === 'python') {
+        await preloadPyodide();
+        await mountAssetsToPyodide(files);
+        return finish(await runPython(source));
+      }
+      await preloadWebR();
+      const { mountAssetsToWebR } = await import('@/runtimes/fsMount');
+      await mountAssetsToWebR(files);
+      return finish(await runR(source));
+    },
+    {
+      runtime: language,
+      label: 'run_answer_code',
+      session: runtimeSessionLabel({
+        mode: ctx.mode === 'modify' ? 'modify' : 'variant',
+        title: ctx.draft.title,
+        taskType: ctx.source.taskType,
+      }),
+    },
+  );
 }
 
 export async function runVariantAgentTurn(opts: {
@@ -856,13 +868,39 @@ export async function runVariantAgentTurn(opts: {
                 const files = resolveAssets(hydrated, csvIds);
                 const mounted = files.map((f) => f.path);
                 const { withRuntimeLock } = await import('@/lib/runtimeMutex');
-                toolResult = await withRuntimeLock(async () => {
-                  if (lang === 'python') {
-                    await preloadPyodide();
-                    await clearPyodideOutCsvs();
-                    await mountAssetsToPyodide(files);
-                    const out = await runPython(code);
-                    const outFiles = await listOutFiles();
+                const { runtimeSessionLabel } = await import(
+                  '@/lib/runtimeLockWait'
+                );
+                toolResult = await withRuntimeLock(
+                  async () => {
+                    if (lang === 'python') {
+                      await preloadPyodide();
+                      await clearPyodideOutCsvs();
+                      await mountAssetsToPyodide(files);
+                      const out = await runPython(code);
+                      const outFiles = await listOutFiles();
+                      return JSON.stringify({
+                        ok: out.ok,
+                        language: lang,
+                        stdout: out.stdout,
+                        stderr: out.stderr,
+                        mounted,
+                        files: outFiles,
+                        rejected,
+                      });
+                    }
+                    await preloadWebR();
+                    await clearWebROutCsvs();
+                    const { mountAssetsToWebR } = await import(
+                      '@/runtimes/fsMount'
+                    );
+                    await mountAssetsToWebR(files);
+                    await ensureWebROutDir();
+                    const out = await runR(code);
+                    const outFiles = await listOutFilesWebR();
+                    if (outFiles.length) {
+                      await syncWebROutToPyodide(outFiles);
+                    }
                     return JSON.stringify({
                       ok: out.ok,
                       language: lang,
@@ -872,29 +910,17 @@ export async function runVariantAgentTurn(opts: {
                       files: outFiles,
                       rejected,
                     });
-                  }
-                  await preloadWebR();
-                  await clearWebROutCsvs();
-                  const { mountAssetsToWebR } = await import(
-                    '@/runtimes/fsMount'
-                  );
-                  await mountAssetsToWebR(files);
-                  await ensureWebROutDir();
-                  const out = await runR(code);
-                  const outFiles = await listOutFilesWebR();
-                  if (outFiles.length) {
-                    await syncWebROutToPyodide(outFiles);
-                  }
-                  return JSON.stringify({
-                    ok: out.ok,
-                    language: lang,
-                    stdout: out.stdout,
-                    stderr: out.stderr,
-                    mounted,
-                    files: outFiles,
-                    rejected,
-                  });
-                });
+                  },
+                  {
+                    runtime: lang === 'r' ? 'both' : 'python',
+                    label: 'run_transform_code',
+                    session: runtimeSessionLabel({
+                      mode: mode === 'modify' ? 'modify' : 'variant',
+                      title: draft.title,
+                      taskType: ctx.source.taskType,
+                    }),
+                  },
+                );
               }
             }
           }
@@ -922,17 +948,31 @@ export async function runVariantAgentTurn(opts: {
             });
           } else {
             const { withRuntimeLock } = await import('@/lib/runtimeMutex');
-            toolResult = await withRuntimeLock(async () => {
-              await clearPyodideOutCsvs();
-              const out = await runPython(draft.datasetCode);
-              const files = await listOutFiles();
-              return JSON.stringify({
-                ok: out.ok,
-                stdout: out.stdout,
-                stderr: out.stderr,
-                files,
-              });
-            });
+            const { runtimeSessionLabel } = await import(
+              '@/lib/runtimeLockWait'
+            );
+            toolResult = await withRuntimeLock(
+              async () => {
+                await clearPyodideOutCsvs();
+                const out = await runPython(draft.datasetCode);
+                const files = await listOutFiles();
+                return JSON.stringify({
+                  ok: out.ok,
+                  stdout: out.stdout,
+                  stderr: out.stderr,
+                  files,
+                });
+              },
+              {
+                runtime: 'python',
+                label: 'run_dataset_code',
+                session: runtimeSessionLabel({
+                  mode: mode === 'modify' ? 'modify' : 'variant',
+                  title: draft.title,
+                  taskType: ctx.source.taskType,
+                }),
+              },
+            );
           }
         } else if (name === 'save_generated_assets') {
           if (ctx.source.taskType !== 2) {
