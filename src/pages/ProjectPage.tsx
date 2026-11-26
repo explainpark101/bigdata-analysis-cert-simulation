@@ -648,6 +648,7 @@ export default function ProjectPage() {
                     {bankByType[tt].map((b) => (
                       <button
                         key={b.id}
+                        id={`bank-problem-${b.id}`}
                         type="button"
                         className={`quiz-item ${b.id === problem?.id ? 'active' : ''}`}
                         onClick={() => setSelectedId(b.id)}
@@ -1432,16 +1433,26 @@ export default function ProjectPage() {
         open={autoReviewQueueOpen}
         onClose={() => setAutoReviewQueueOpen(false)}
         onSelectExam={(examId) => {
+          setAutoReviewQueueOpen(false);
           selectExam(examId);
           setTab('exam');
           setMessage('시험 조립 탭으로 이동했습니다.');
         }}
         onSelectProblem={(problemId, examId) => {
+          setAutoReviewQueueOpen(false);
           selectExam(examId);
-          setSelectedId(problemId);
           setVariantOpen(false);
+          setSelectedId(problemId);
           setTab('bank');
-          setMessage('문제 수정 탭에서 자동 검수 채팅을 표시합니다.');
+          const title =
+            project.bank.find((b) => b.id === problemId)?.title ?? problemId;
+          setMessage(`문제은행에서 선택: ${title}`);
+          // Bank list mounts after tab switch — wait a tick before scrolling.
+          window.setTimeout(() => {
+            document
+              .getElementById(`bank-problem-${problemId}`)
+              ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          }, 50);
         }}
       />
 

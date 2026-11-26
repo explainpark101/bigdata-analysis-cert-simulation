@@ -124,7 +124,6 @@ export function ExamAutoReviewQueueModal({
                       className="exam-auto-review-queue__select"
                       onClick={() => {
                         onSelectExam(job.examId);
-                        onClose();
                       }}
                     >
                       <div className="exam-auto-review-queue__title-row">
@@ -161,9 +160,8 @@ export function ExamAutoReviewQueueModal({
                               className="exam-auto-review-queue__problem-btn"
                               onClick={() => {
                                 onSelectProblem(p.problemId, job.examId);
-                                onClose();
                               }}
-                              title="문제 수정 탭에서 검수 채팅 보기"
+                              title="문제은행에서 이 문제 열기"
                             >
                               <span className="badge">제{p.taskType}유형</span>
                               <span className="exam-auto-review-queue__pname">
