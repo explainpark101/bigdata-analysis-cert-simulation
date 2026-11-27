@@ -80,7 +80,7 @@ export interface QuizProblem {
   answerDraft?: string;
   /**
    * Per-language editor drafts so switching Python ↔ R keeps both buffers.
-   * Grade reports read `answerDrafts[language] ?? answerDraft`.
+   * Grade reports always surface both `answerDrafts.python` and `answerDrafts.r`.
    */
   answerDrafts?: Partial<CodeByLanguage>;
   /**

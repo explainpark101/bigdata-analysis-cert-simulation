@@ -14,6 +14,7 @@ export type IdbKey =
   | 'variantChats'
   | 'modifyChats'
   | 'authorChats'
+  | 'gradeChats'
   | 'gradeResult'
   /** examId → quizId → type-2 result.csv snapshot */
   | 'type2Results'

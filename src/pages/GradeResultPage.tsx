@@ -11,9 +11,9 @@ import {
   toDateTimeAttr,
 } from '@/lib/formatLocalTime';
 import type { GradeItem, GradeStatus } from '@/lib/examGrade';
-import { askGradeCoach } from '@/lib/ai/gradeCoach';
 import { renderMarkdown } from '@/lib/markdown';
 import { EdgeResizeHandle } from '@/components/layout/EdgeResizeHandle';
+import { GradeChatDock } from '@/components/results/GradeChatDock';
 import { GlobalSettingsModal } from '@/components/settings/GlobalSettingsModal';
 import {
   getGradeProgress,
@@ -24,6 +24,8 @@ import {
 
 const CODE_W_DEFAULT = 420;
 const CODE_W_MIN = 260;
+const COACH_W_DEFAULT = 380;
+const COACH_W_MIN = 280;
 
 function statusLabel(s: GradeStatus): string {
   switch (s) {
@@ -98,11 +100,12 @@ export default function GradeResultPage() {
   const [progress, setProgress] = useState<GradeProgressState>(() =>
     getGradeProgress(),
   );
-  const [coachBusyId, setCoachBusyId] = useState<string | null>(null);
-  const [coachReply, setCoachReply] = useState<Record<string, string>>({});
-  const [coachError, setCoachError] = useState<Record<string, string>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [codeWidth, setCodeWidth] = useState(CODE_W_DEFAULT);
+  const [coachWidth, setCoachWidth] = useState(COACH_W_DEFAULT);
+  const [coachOpen, setCoachOpen] = useState(false);
+  const [coachQuizId, setCoachQuizId] = useState<string | null>(null);
+  const [coachAskNonce, setCoachAskNonce] = useState(0);
   const [narrow, setNarrow] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -152,24 +155,16 @@ export default function GradeResultPage() {
     return Math.max(CODE_W_MIN, Math.floor(window.innerWidth * 0.55));
   }, []);
 
-  const askCoach = async (item: GradeItem) => {
-    setCoachBusyId(item.quizId);
-    setCoachError((prev) => {
-      const next = { ...prev };
-      delete next[item.quizId];
-      return next;
-    });
-    try {
-      const reply = await askGradeCoach(item);
-      setCoachReply((prev) => ({ ...prev, [item.quizId]: reply }));
-    } catch (err) {
-      setCoachError((prev) => ({
-        ...prev,
-        [item.quizId]: err instanceof Error ? err.message : String(err),
-      }));
-    } finally {
-      setCoachBusyId(null);
-    }
+  const maxCoachWidth = useMemo(() => {
+    if (typeof window === 'undefined') return 560;
+    return Math.max(COACH_W_MIN, Math.floor(window.innerWidth * 0.45));
+  }, []);
+
+  const openCoach = (item: GradeItem) => {
+    setCoachQuizId(item.quizId);
+    setSelectedId(item.quizId);
+    setCoachOpen(true);
+    setCoachAskNonce((n) => n + 1);
   };
 
   if (progress.phase === 'running') {
@@ -206,6 +201,8 @@ export default function GradeResultPage() {
       : 0;
   const selected =
     report.items.find((i) => i.quizId === selectedId) ?? report.items[0];
+  const coachItem =
+    report.items.find((i) => i.quizId === coachQuizId) ?? selected;
 
   return (
     <div className="grade-report-page">
@@ -262,129 +259,168 @@ export default function GradeResultPage() {
       </section>
 
       <div
-        className={`grade-report-split${narrow ? ' grade-report-split--narrow' : ''}`}
+        className={`grade-report-body${coachOpen ? ' grade-report-body--with-dock' : ''}`}
       >
-        <aside
-          className="grade-report-split__code"
-          style={narrow ? undefined : { width: codeWidth }}
+        <div
+          className={`grade-report-split${narrow ? ' grade-report-split--narrow' : ''}`}
         >
-          <h2>내 코드</h2>
-          <div className="grade-report-split__scroll">
-            {report.items.map((item) => {
-              const active = item.quizId === selected?.quizId;
-              const lang = item.language ?? 'python';
-              const code = item.userCode?.trim() || '(코드 없음)';
-              return (
-                <button
-                  key={`code-${item.quizId}`}
-                  type="button"
-                  className={`grade-report-code-card grade-report-card--${item.status}${active ? ' is-active' : ''}`}
-                  onClick={() => setSelectedId(item.quizId)}
-                >
-                  <header className="grade-report-code-card__head">
-                    <span className="grade-result-item__badge">
-                      {statusLabel(item.status)}
-                    </span>
-                    <strong>{itemHeading(item)}</strong>
-                    <span className="grade-report-code-card__lang">
-                      {lang}
-                    </span>
-                  </header>
-                  <pre className="grade-report-code-card__pre">
-                    <code>{code}</code>
-                  </pre>
-                </button>
-              );
-            })}
-          </div>
-          {!narrow ? (
-            <EdgeResizeHandle
-              axis="x"
-              value={codeWidth}
-              onChange={setCodeWidth}
-              min={CODE_W_MIN}
-              max={maxCodeWidth}
-              label="코드 패널 너비 조절"
-            />
-          ) : null}
-        </aside>
-
-        <section className="grade-report-split__results">
-          <h2>채점 결과</h2>
-          <div className="grade-report-split__scroll">
-            {selected ? (
-              <GradeResultDetail
-                item={selected}
-                coachBusy={coachBusyId === selected.quizId}
-                coachError={coachError[selected.quizId]}
-                coachReply={coachReply[selected.quizId]}
-                onAskCoach={() => void askCoach(selected)}
+          <aside
+            className="grade-report-split__code"
+            style={narrow ? undefined : { width: codeWidth }}
+          >
+            <h2>내 코드</h2>
+            <div className="grade-report-split__scroll">
+              {report.items.map((item) => {
+                const active = item.quizId === selected?.quizId;
+                const pythonCode =
+                  item.userCodes?.python?.trim() ||
+                  (item.language === 'python'
+                    ? item.userCode?.trim()
+                    : '') ||
+                  '';
+                const rCode =
+                  item.userCodes?.r?.trim() ||
+                  (item.language === 'r' ? item.userCode?.trim() : '') ||
+                  '';
+                return (
+                  <button
+                    key={`code-${item.quizId}`}
+                    type="button"
+                    className={`grade-report-code-card grade-report-card--${item.status}${active ? ' is-active' : ''}`}
+                    onClick={() => setSelectedId(item.quizId)}
+                  >
+                    <header className="grade-report-code-card__head">
+                      <span className="grade-result-item__badge">
+                        {statusLabel(item.status)}
+                      </span>
+                      <strong>{itemHeading(item)}</strong>
+                      <span className="grade-report-code-card__lang">
+                        python · r
+                      </span>
+                    </header>
+                    <div className="grade-report-code-card__langs">
+                      <div className="grade-report-code-card__block">
+                        <span className="grade-report-code-card__lang-label">
+                          python
+                        </span>
+                        <pre className="grade-report-code-card__pre">
+                          <code>{pythonCode || '(코드 없음)'}</code>
+                        </pre>
+                      </div>
+                      <div className="grade-report-code-card__block">
+                        <span className="grade-report-code-card__lang-label">
+                          r
+                        </span>
+                        <pre className="grade-report-code-card__pre">
+                          <code>{rCode || '(코드 없음)'}</code>
+                        </pre>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            {!narrow ? (
+              <EdgeResizeHandle
+                axis="x"
+                value={codeWidth}
+                onChange={setCodeWidth}
+                min={CODE_W_MIN}
+                max={maxCodeWidth}
+                label="코드 패널 너비 조절"
               />
-            ) : (
-              <p className="edit-page__sub">문항을 선택하세요.</p>
-            )}
+            ) : null}
+          </aside>
 
-            <div className="grade-report-log edit-card">
-              <h2>시험 활동 로그</h2>
-              <h3>문제별 요약</h3>
-              {!activity.byQuiz.length ? (
-                <p className="edit-page__sub">기록된 체류 로그가 없습니다.</p>
+          <section className="grade-report-split__results">
+            <h2>채점 결과</h2>
+            <div className="grade-report-split__scroll">
+              {selected ? (
+                <GradeResultDetail
+                  item={selected}
+                  coachOpen={
+                    coachOpen && coachItem?.quizId === selected.quizId
+                  }
+                  onAskCoach={() => openCoach(selected)}
+                />
               ) : (
-                <table className="grade-report-log-table">
-                  <thead>
-                    <tr>
-                      <th>문제</th>
-                      <th>체류</th>
-                      <th>탭</th>
-                      <th>실행</th>
-                      <th>제출</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {activity.byQuiz.map((q) => (
-                      <tr key={q.quizId}>
-                        <td>{q.title}</td>
-                        <td>{formatDurationMs(q.focusMs)}</td>
-                        <td>
-                          {Object.entries(q.tabMs)
-                            .map(
-                              ([tab, ms]) =>
-                                `${tabLabel(tab)} ${formatDurationMs(ms)}`,
-                            )
-                            .join(' · ') || '—'}
-                        </td>
-                        <td>
-                          {q.runCount}회 / {formatDurationMs(q.runMs)}
-                        </td>
-                        <td>{q.submitCount}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <p className="edit-page__sub">문항을 선택하세요.</p>
               )}
 
-              <h3>타임라인</h3>
-              <ol className="grade-report-timeline">
-                {activity.events.map((e, i) => (
-                  <li key={`${e.type}-${e.at}-${i}`}>
-                    <time dateTime={toDateTimeAttr(e.at)}>
-                      {formatLocalDateTime(e.at)}
-                    </time>
-                    <span>
-                      {e.type}
-                      {e.title ? ` · ${e.title}` : ''}
-                      {e.tab ? ` · ${tabLabel(e.tab)}` : ''}
-                      {e.durationMs != null
-                        ? ` · ${formatDurationMs(e.durationMs)}`
-                        : ''}
-                      {e.ok === false ? ' · fail' : e.ok ? ' · ok' : ''}
-                    </span>
-                  </li>
-                ))}
-              </ol>
+              <div className="grade-report-log edit-card">
+                <h2>시험 활동 로그</h2>
+                <h3>문제별 요약</h3>
+                {!activity.byQuiz.length ? (
+                  <p className="edit-page__sub">기록된 체류 로그가 없습니다.</p>
+                ) : (
+                  <table className="grade-report-log-table">
+                    <thead>
+                      <tr>
+                        <th>문제</th>
+                        <th>체류</th>
+                        <th>탭</th>
+                        <th>실행</th>
+                        <th>제출</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {activity.byQuiz.map((q) => (
+                        <tr key={q.quizId}>
+                          <td>{q.title}</td>
+                          <td>{formatDurationMs(q.focusMs)}</td>
+                          <td>
+                            {Object.entries(q.tabMs)
+                              .map(
+                                ([tab, ms]) =>
+                                  `${tabLabel(tab)} ${formatDurationMs(ms)}`,
+                              )
+                              .join(' · ') || '—'}
+                          </td>
+                          <td>
+                            {q.runCount}회 / {formatDurationMs(q.runMs)}
+                          </td>
+                          <td>{q.submitCount}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+
+                <h3>타임라인</h3>
+                <ol className="grade-report-timeline">
+                  {activity.events.map((e, i) => (
+                    <li key={`${e.type}-${e.at}-${i}`}>
+                      <time dateTime={toDateTimeAttr(e.at)}>
+                        {formatLocalDateTime(e.at)}
+                      </time>
+                      <span>
+                        {e.type}
+                        {e.title ? ` · ${e.title}` : ''}
+                        {e.tab ? ` · ${tabLabel(e.tab)}` : ''}
+                        {e.durationMs != null
+                          ? ` · ${formatDurationMs(e.durationMs)}`
+                          : ''}
+                        {e.ok === false ? ' · fail' : e.ok ? ' · ok' : ''}
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
             </div>
-          </div>
-        </section>
+          </section>
+        </div>
+
+        {coachOpen && coachItem ? (
+          <GradeChatDock
+            open={coachOpen}
+            item={coachItem}
+            width={coachWidth}
+            onWidthChange={setCoachWidth}
+            maxWidth={maxCoachWidth}
+            onClose={() => setCoachOpen(false)}
+            askNonce={coachAskNonce}
+          />
+        ) : null}
       </div>
 
       <GlobalSettingsModal
@@ -397,15 +433,11 @@ export default function GradeResultPage() {
 
 function GradeResultDetail({
   item,
-  coachBusy,
-  coachError,
-  coachReply,
+  coachOpen,
   onAskCoach,
 }: {
   item: GradeItem;
-  coachBusy: boolean;
-  coachError?: string;
-  coachReply?: string;
+  coachOpen: boolean;
   onAskCoach: () => void;
 }) {
   return (
@@ -550,25 +582,13 @@ function GradeResultDetail({
           <button
             type="button"
             className="ghost-btn btn-with-icon"
-            disabled={coachBusy}
             onClick={onAskCoach}
           >
             <Sparkles size={15} />
-            {coachBusy ? 'AI 분석 중…' : 'AI에게 왜 틀렸는지 묻기'}
+            {coachOpen
+              ? '채팅 Dock에서 이어서 질문'
+              : 'AI에게 왜 틀렸는지 묻기'}
           </button>
-          {coachError ? (
-            <p className="edit-page__sub" role="alert">
-              {coachError}
-            </p>
-          ) : null}
-          {coachReply ? (
-            <div
-              className="grade-report-coach__reply md-content"
-              dangerouslySetInnerHTML={{
-                __html: renderMarkdown(coachReply),
-              }}
-            />
-          ) : null}
         </div>
       ) : null}
     </article>

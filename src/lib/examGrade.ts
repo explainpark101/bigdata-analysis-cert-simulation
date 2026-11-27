@@ -81,6 +81,8 @@ export interface GradeItem {
   /** Examinee code draft (for AI coaching on the report page). */
   userCode?: string;
   language?: 'python' | 'r';
+  /** Both language buffers — always populated for the report UI. */
+  userCodes?: { python: string; r: string };
 }
 
 export interface GradeReport {
@@ -140,25 +142,40 @@ export async function forceSubmitPending(
   return { ...exam, quizzes };
 }
 
+function draftForLang(
+  quiz: QuizProblem,
+  lang: 'python' | 'r',
+): string {
+  const fromDrafts = quiz.answerDrafts?.[lang]?.trim() ?? '';
+  if (fromDrafts) return fromDrafts;
+  // Active single-buffer mirrors answerDrafts[language] when present.
+  if ((quiz.language ?? 'python') === lang) {
+    const active = quiz.answerDraft?.trim() ?? '';
+    if (active) return active;
+  }
+  return '';
+}
+
 function baseFields(quiz: QuizProblem) {
   const lang = quiz.language ?? 'python';
-  const other: 'python' | 'r' = lang === 'python' ? 'r' : 'python';
-  const langDraft = quiz.answerDrafts?.[lang]?.trim();
-  const otherDraft = quiz.answerDrafts?.[other]?.trim();
-  const activeDraft = quiz.answerDraft?.trim();
-  // Prefer language-matched draft; if the active buffer looks like the other
-  // language's saved draft (legacy single-buffer switch), keep that code.
+  const userCodes = {
+    python: draftForLang(quiz, 'python'),
+    r: draftForLang(quiz, 'r'),
+  };
+  // Prefer the active language buffer; if empty, fall back to the other
+  // language so legacy single-buffer sessions still surface written code.
   const userCode =
-    langDraft ||
-    activeDraft ||
-    otherDraft ||
+    userCodes[lang] ||
+    userCodes[lang === 'python' ? 'r' : 'python'] ||
     quiz.starterCode?.[lang]?.trim() ||
-    quiz.starterCode?.[other]?.trim() ||
+    quiz.starterCode?.[lang === 'python' ? 'r' : 'python']?.trim() ||
     '';
   const language: 'python' | 'r' =
-    langDraft || activeDraft || !otherDraft
+    userCodes[lang] || !userCodes[lang === 'python' ? 'r' : 'python']
       ? lang
-      : other;
+      : lang === 'python'
+        ? 'r'
+        : 'python';
   return {
     quizId: quiz.id,
     title: quiz.title,
@@ -166,6 +183,7 @@ function baseFields(quiz: QuizProblem) {
     markdown: quiz.markdown ?? '',
     userCode,
     language,
+    userCodes,
   };
 }
 
