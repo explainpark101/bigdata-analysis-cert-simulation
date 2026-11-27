@@ -740,8 +740,14 @@ body.is-resizing-y * {
   color: #ff7369;
 }
 
-/* Problem statement: keep Notion light-mode inline chips even in dark UI. */
-[data-theme='dark'] .problem-panel .md-content :not(pre) > code {
+/*
+ * Exam problem surfaces (좌측 문제 + 1·3유형 답안제출) keep Notion light-mode
+ * inline chips even when the app chrome is dark. data-force-light alone does
+ * not win against [data-theme=dark] .md-content code.
+ */
+[data-theme='dark'] .problem-panel .md-content :not(pre) > code,
+[data-theme='dark'] .short-answer-panel .md-content :not(pre) > code,
+[data-theme='dark'] [data-force-light] .md-content :not(pre) > code {
   background: rgba(135, 131, 120, 0.15);
   color: #eb5757;
 }
