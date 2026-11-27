@@ -16,6 +16,8 @@ export type IdbKey =
   | 'authorChats'
   | 'gradeChats'
   | 'gradeResult'
+  /** Newest-first list of GradeResultSnapshot (home recent grades). */
+  | 'gradeResultHistory'
   /** examId → quizId → type-2 result.csv snapshot */
   | 'type2Results'
   /** problemId → synthesized test_label.csv for re-grade */

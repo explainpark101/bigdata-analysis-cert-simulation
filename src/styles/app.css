@@ -2045,13 +2045,14 @@ body.is-resizing-y * {
   will-change: transform, opacity;
 }
 
-.grade-coach-dock__stream {
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
 .grade-coach-dock__md {
   white-space: normal;
+}
+
+.grade-coach-dock__md--streaming .variant-dock__caret {
+  display: inline;
+  margin-left: 1px;
+  vertical-align: text-bottom;
 }
 
 .grade-coach-dock__md > :first-child {
@@ -5467,12 +5468,21 @@ a.ghost-btn {
   opacity: 1;
 }
 
-.home-exam-library {
+.home-scroll-stack {
   margin-top: 22px;
-  padding-top: 18px;
-  border-top: 1px solid var(--dq-border);
   flex: 1 1 auto;
   min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.home-exam-library {
+  padding-top: 18px;
+  border-top: 1px solid var(--dq-border);
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
 }
@@ -5498,14 +5508,11 @@ a.ghost-btn {
   gap: 10px;
 }
 
-.home-exam-library .home-exam-list {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+.home-grade-list {
+  list-style: none;
 }
 
-.home-page .home-card > :not(.home-exam-library) {
+.home-page .home-card > :not(.home-scroll-stack) {
   flex: 0 0 auto;
 }
 

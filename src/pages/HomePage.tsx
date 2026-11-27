@@ -1,6 +1,7 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
+  ClipboardList,
   Download,
   FolderOpen,
   Moon,
@@ -8,6 +9,7 @@ import {
   RotateCcw,
   Settings,
   Sun,
+  Trash2,
   Upload,
 } from 'lucide-react';
 import { useTheme } from '@/context/ThemeContext';
@@ -15,8 +17,20 @@ import { useProject } from '@/context/ProjectContext';
 import { useExamSession } from '@/context/ExamSessionContext';
 import { GlobalSettingsModal } from '@/components/settings/GlobalSettingsModal';
 import { ConfirmModal } from '@/components/exam/ConfirmModal';
-import { clearGradeResult } from '@/lib/gradeResultStore';
-import { clearActivityEvents } from '@/lib/examActivityLog';
+import {
+  clearGradeResult,
+  loadGradeResultHistory,
+  removeGradeResultFromHistory,
+  type GradeResultSnapshot,
+} from '@/lib/gradeResultStore';
+import {
+  clearActivityEvents,
+  formatDurationMs,
+} from '@/lib/examActivityLog';
+import {
+  formatLocalDateTime,
+  toDateTimeAttr,
+} from '@/lib/formatLocalTime';
 
 export default function HomePage() {
   const { theme, toggleTheme } = useTheme();
@@ -36,6 +50,26 @@ export default function HomePage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [clearBusy, setClearBusy] = useState(false);
+  const [gradeHistory, setGradeHistory] = useState<GradeResultSnapshot[]>([]);
+  const [historyReady, setHistoryReady] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadGradeResultHistory().then((rows) => {
+      if (cancelled) return;
+      setGradeHistory(rows);
+      setHistoryReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const refreshGradeHistory = async () => {
+    const rows = await loadGradeResultHistory();
+    setGradeHistory(rows);
+    setHistoryReady(true);
+  };
 
   const openExam = async (examId: string) => {
     setBusyId(examId);
@@ -72,12 +106,35 @@ export default function HomePage() {
       await clearGradeResult();
       if (examId) clearActivityEvents(examId);
       setClearConfirmOpen(false);
-      setMessage('시험 세션을 초기화했습니다.');
+      setMessage(
+        '시험 세션을 초기화했습니다. 최근 채점 기록은 홈에 그대로 남습니다.',
+      );
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
     } finally {
       setClearBusy(false);
     }
+  };
+
+  const removeHistoryItem = async (id: string | undefined) => {
+    if (!id) return;
+    setBusyId(`grade-${id}`);
+    try {
+      await removeGradeResultFromHistory(id);
+      await refreshGradeHistory();
+      setMessage('채점 기록을 삭제했습니다.');
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const scoreLabel = (snap: GradeResultSnapshot) => {
+    const { earned, max } = snap.report;
+    const pct =
+      max > 0 ? Math.round((earned / max) * 1000) / 10 : 0;
+    return max > 0 ? `${earned}/${max}점 (${pct}%)` : `${earned}/${max}점`;
   };
 
   const openProjectZips = async (sources: Array<File | string>) => {
@@ -183,57 +240,120 @@ export default function HomePage() {
               <RotateCcw size={16} />
               세션 초기화
             </span>
-            <span>현재 시험 세션·채점 리포트 비우기</span>
+            <span>현재 시험 세션만 비우기 (최근 채점 기록 유지)</span>
           </button>
         </div>
 
-        <section className="home-exam-library">
-          <div className="home-exam-library__head">
-            <h2>저장된 시험지</h2>
-            <span className="badge">{project.exams.length}</span>
-          </div>
-          {!project.exams.length ? (
-            <p className="edit-page__sub">
-              아직 시험지가 없습니다. 프로젝트에서 시험지를 만드세요.
-            </p>
-          ) : (
-            <ul className="home-exam-list">
-              {project.exams.map((ex) => (
-                <li key={ex.id} className="home-exam-item">
-                  <div className="home-exam-item__meta">
-                    <strong>{ex.title}</strong>
-                    <span>
-                      문제 {ex.problemIds.length}개
-                      {ex.description?.trim()
-                        ? ` · ${ex.description.trim()}`
-                        : ''}
-                    </span>
-                  </div>
-                  <div className="home-exam-item__actions">
-                    <button
-                      type="button"
-                      className="primary-btn btn-with-icon"
-                      disabled={busyId === ex.id}
-                      onClick={() => void openExam(ex.id)}
-                    >
-                      <Play size={15} />
-                      시험 보기
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost-btn btn-with-icon"
-                      disabled={busyId === ex.id}
-                      onClick={() => void exportOne(ex.id)}
-                    >
-                      <Download size={15} />
-                      내보내기
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+        <div className="home-scroll-stack">
+          <section className="home-exam-library">
+            <div className="home-exam-library__head">
+              <h2>최근 채점 결과</h2>
+              <span className="badge">{gradeHistory.length}</span>
+            </div>
+            {!historyReady ? (
+              <p className="edit-page__sub">불러오는 중…</p>
+            ) : !gradeHistory.length ? (
+              <p className="edit-page__sub">
+                아직 저장된 채점 결과가 없습니다. 시험에서 채점을 실행하면 여기에
+                쌓입니다.
+              </p>
+            ) : (
+              <ol className="home-exam-list home-grade-list">
+                {gradeHistory.map((snap) => {
+                  const id = snap.id ?? `${snap.examId}-${snap.gradedAt}`;
+                  const href = snap.id
+                    ? `/exam/result?id=${encodeURIComponent(snap.id)}`
+                    : '/exam/result';
+                  return (
+                    <li key={id} className="home-exam-item">
+                      <div className="home-exam-item__meta">
+                        <strong>{snap.examTitle || '채점 리포트'}</strong>
+                        <span>
+                          {scoreLabel(snap)}
+                          {' · '}
+                          응시 {formatDurationMs(snap.elapsedMs)}
+                          {' · '}
+                          <time dateTime={toDateTimeAttr(snap.gradedAt)}>
+                            {formatLocalDateTime(snap.gradedAt)}
+                          </time>
+                        </span>
+                      </div>
+                      <div className="home-exam-item__actions">
+                        <Link
+                          className="primary-btn btn-with-icon"
+                          to={href}
+                        >
+                          <ClipboardList size={15} />
+                          리포트
+                        </Link>
+                        {snap.id ? (
+                          <button
+                            type="button"
+                            className="ghost-btn btn-with-icon"
+                            disabled={busyId === `grade-${snap.id}`}
+                            aria-label={`${snap.examTitle} 채점 기록 삭제`}
+                            onClick={() => void removeHistoryItem(snap.id)}
+                          >
+                            <Trash2 size={15} />
+                            삭제
+                          </button>
+                        ) : null}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+          </section>
+
+          <section className="home-exam-library">
+            <div className="home-exam-library__head">
+              <h2>저장된 시험지</h2>
+              <span className="badge">{project.exams.length}</span>
+            </div>
+            {!project.exams.length ? (
+              <p className="edit-page__sub">
+                아직 시험지가 없습니다. 프로젝트에서 시험지를 만드세요.
+              </p>
+            ) : (
+              <ul className="home-exam-list">
+                {project.exams.map((ex) => (
+                  <li key={ex.id} className="home-exam-item">
+                    <div className="home-exam-item__meta">
+                      <strong>{ex.title}</strong>
+                      <span>
+                        문제 {ex.problemIds.length}개
+                        {ex.description?.trim()
+                          ? ` · ${ex.description.trim()}`
+                          : ''}
+                      </span>
+                    </div>
+                    <div className="home-exam-item__actions">
+                      <button
+                        type="button"
+                        className="primary-btn btn-with-icon"
+                        disabled={busyId === ex.id}
+                        onClick={() => void openExam(ex.id)}
+                      >
+                        <Play size={15} />
+                        시험 보기
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-btn btn-with-icon"
+                        disabled={busyId === ex.id}
+                        onClick={() => void exportOne(ex.id)}
+                      >
+                        <Download size={15} />
+                        내보내기
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </div>
 
         {message ? <p className="edit-toast">{message}</p> : null}
       </div>
@@ -266,7 +386,7 @@ export default function HomePage() {
         open={clearConfirmOpen}
         title="세션 초기화"
         message={
-          '현재 시험 세션을 비울까요?\n진행 중인 답안·제출 상태와 채점 리포트가 사라집니다.'
+          '현재 시험 세션을 비울까요?\n진행 중인 답안·제출 상태는 사라집니다.\n홈의 최근 채점 기록은 유지됩니다.'
         }
         cancelLabel="취소"
         confirmLabel="세션 초기화"

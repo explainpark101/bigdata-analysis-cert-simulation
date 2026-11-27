@@ -301,26 +301,18 @@ export function GradeChatDock({
                     </div>
                   </div>
                   {m.role === 'assistant' ? (
-                    streaming ? (
-                      <pre
-                        id={bodyId}
-                        className="variant-msg__body grade-coach-dock__stream"
-                        aria-live="polite"
-                      >
-                        {text}
-                        <span className="variant-dock__caret" aria-hidden>
-                          ▍
-                        </span>
-                      </pre>
-                    ) : (
-                      <div
-                        id={bodyId}
-                        className="variant-msg__body md-content grade-coach-dock__md"
-                        dangerouslySetInnerHTML={{
-                          __html: renderMarkdown(text),
-                        }}
-                      />
-                    )
+                    <div
+                      id={bodyId}
+                      className={`variant-msg__body md-content grade-coach-dock__md${streaming ? ' grade-coach-dock__md--streaming' : ''}`}
+                      aria-live={streaming ? 'polite' : undefined}
+                      dangerouslySetInnerHTML={{
+                        __html:
+                          renderMarkdown(text) +
+                          (streaming
+                            ? '<span class="variant-dock__caret" aria-hidden="true">▍</span>'
+                            : ''),
+                      }}
+                    />
                   ) : (
                     <pre id={bodyId} className="variant-msg__body">
                       {text}

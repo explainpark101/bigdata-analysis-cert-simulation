@@ -1,8 +1,9 @@
 import { useEffect, useId, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Home, Settings, Sparkles } from 'lucide-react';
 import {
   loadGradeResult,
+  loadGradeResultById,
   type GradeResultSnapshot,
 } from '@/lib/gradeResultStore';
 import { formatDurationMs } from '@/lib/examActivityLog';
@@ -95,6 +96,8 @@ function GradeLoadingScreen({ progress }: { progress: GradeProgressState }) {
 }
 
 export default function GradeResultPage() {
+  const [searchParams] = useSearchParams();
+  const resultId = searchParams.get('id')?.trim() || null;
   const [snap, setSnap] = useState<GradeResultSnapshot | null>(null);
   const [ready, setReady] = useState(false);
   const [progress, setProgress] = useState<GradeProgressState>(() =>
@@ -113,22 +116,24 @@ export default function GradeResultPage() {
 
   useEffect(() => {
     let cancelled = false;
-    const load = () => {
-      void loadGradeResult().then((data) => {
-        if (cancelled) return;
-        setSnap(data);
-        setSelectedId((prev) => prev ?? data?.report.items[0]?.quizId ?? null);
-        setReady(true);
-      });
+    const load = async () => {
+      const data = resultId
+        ? await loadGradeResultById(resultId)
+        : await loadGradeResult();
+      if (cancelled) return;
+      setSnap(data);
+      setSelectedId((prev) => prev ?? data?.report.items[0]?.quizId ?? null);
+      setReady(true);
     };
-    load();
+    void load();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [resultId]);
 
-  // When grading finishes, reload the saved snapshot.
+  // When grading finishes, reload the saved snapshot (latest, not a pinned id).
   useEffect(() => {
+    if (resultId) return;
     if (progress.phase !== 'done' && progress.phase !== 'error') return;
     let cancelled = false;
     void loadGradeResult().then((data) => {
@@ -140,7 +145,7 @@ export default function GradeResultPage() {
     return () => {
       cancelled = true;
     };
-  }, [progress.phase, progress.updatedAt]);
+  }, [progress.phase, progress.updatedAt, resultId]);
 
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 900px)');
@@ -180,13 +185,17 @@ export default function GradeResultPage() {
       <div className="home-page">
         <div className="home-card">
           <h1>채점 리포트 없음</h1>
-          <p>아직 채점한 결과가 없습니다. 시험에서 채점을 실행하세요.</p>
+          <p>
+            {resultId
+              ? '요청한 채점 기록을 찾을 수 없습니다. 홈의 최근 채점 목록을 확인하세요.'
+              : '아직 채점한 결과가 없습니다. 시험에서 채점을 실행하세요.'}
+          </p>
           <div className="home-actions">
-            <Link className="primary-btn home-btn" to="/exam">
-              시험 화면
-            </Link>
-            <Link className="ghost-btn home-btn" to="/">
+            <Link className="primary-btn home-btn" to="/">
               홈
+            </Link>
+            <Link className="ghost-btn home-btn" to="/exam">
+              시험 화면
             </Link>
           </div>
         </div>
