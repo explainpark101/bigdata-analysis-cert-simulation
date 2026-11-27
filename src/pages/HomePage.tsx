@@ -3,7 +3,9 @@ import { Link, useNavigate } from 'react-router-dom';
 import {
   ClipboardList,
   Download,
+  FolderKanban,
   FolderOpen,
+  Library,
   Moon,
   Play,
   RotateCcw,
@@ -205,67 +207,137 @@ export default function HomePage() {
       <div
         className={`home-split${narrow ? ' home-split--narrow' : ''}`}
       >
-        <div className="home-card home-main-pane">
-          <h1>박재형 빅분기 실기 연습</h1>
-          <p>
-            제13회 가이드 기준(6문항 · 180분 · 실행 1분)으로 실기 환경을 체험할
-            수 있습니다.
-          </p>
-          <div className="home-actions">
-            <Link className="primary-btn home-btn" to="/project">
-              프로젝트 편집 / 시험 만들기
-              <span>CSV · 문제은행 · 시험지 조립 · .project.zip</span>
-            </Link>
-            <Link className="ghost-btn home-btn" to="/exam">
-              시험보기
-              <span>.exam.zip 불러오기 · 현재 세션 이어하기</span>
-            </Link>
-            <button
-              type="button"
-              className="ghost-btn home-btn"
-              disabled={busyId === 'project-zip'}
-              onClick={() => {
-                // HTML file picker only — Tauri JS dialog plugin OOMs before paint.
-                projectZipRef.current?.click();
-              }}
-            >
-              <span className="home-btn__row">
-                <FolderOpen size={16} />
-                다른 프로젝트 열기
-              </span>
-              <span>.project.zip 불러와 프로젝트 화면으로 이동</span>
-            </button>
-            <button
-              type="button"
-              className="ghost-btn home-btn"
-              disabled={busyId === 'exam-zip'}
-              onClick={() => examZipRef.current?.click()}
-            >
-              <span className="home-btn__row">
-                <Upload size={16} />
-                다른 시험지 열기
-              </span>
-              <span>.exam.zip 불러와 시험 세션으로 이동</span>
-            </button>
-            <button
-              type="button"
-              className="danger-btn home-btn"
-              onClick={() => setClearConfirmOpen(true)}
-            >
-              <span className="home-btn__row">
-                <RotateCcw size={16} />
-                세션 초기화
-              </span>
-              <span>현재 시험 세션만 비우기 (최근 채점 기록 유지)</span>
-            </button>
+        <div className="home-main-pane">
+          <div className="home-scroll-stack">
+            <article className="home-section-card">
+              <header className="home-section-card__head">
+                <span className="home-section-card__icon" aria-hidden="true">
+                  <FolderKanban size={18} />
+                </span>
+                <div className="home-section-card__titles">
+                  <h1>박재형 빅분기 실기 연습</h1>
+                  <p>
+                    제13회 가이드 기준(6문항 · 180분 · 실행 1분)으로 실기 환경을
+                    체험할 수 있습니다.
+                  </p>
+                </div>
+              </header>
+              <div className="home-actions">
+                <Link className="primary-btn home-btn" to="/project">
+                  <span className="home-btn__row">
+                    <FolderKanban size={16} aria-hidden="true" />
+                    프로젝트 편집 / 시험 만들기
+                  </span>
+                  <span>CSV · 문제은행 · 시험지 조립 · .project.zip</span>
+                </Link>
+                <Link className="ghost-btn home-btn" to="/exam">
+                  <span className="home-btn__row">
+                    <Play size={16} aria-hidden="true" />
+                    시험보기
+                  </span>
+                  <span>.exam.zip 불러오기 · 현재 세션 이어하기</span>
+                </Link>
+                <button
+                  type="button"
+                  className="ghost-btn home-btn"
+                  disabled={busyId === 'project-zip'}
+                  onClick={() => {
+                    // HTML file picker only — Tauri JS dialog plugin OOMs before paint.
+                    projectZipRef.current?.click();
+                  }}
+                >
+                  <span className="home-btn__row">
+                    <FolderOpen size={16} aria-hidden="true" />
+                    다른 프로젝트 열기
+                  </span>
+                  <span>.project.zip 불러와 프로젝트 화면으로 이동</span>
+                </button>
+                <button
+                  type="button"
+                  className="ghost-btn home-btn"
+                  disabled={busyId === 'exam-zip'}
+                  onClick={() => examZipRef.current?.click()}
+                >
+                  <span className="home-btn__row">
+                    <Upload size={16} aria-hidden="true" />
+                    다른 시험지 열기
+                  </span>
+                  <span>.exam.zip 불러와 시험 세션으로 이동</span>
+                </button>
+                <button
+                  type="button"
+                  className="danger-btn home-btn"
+                  onClick={() => setClearConfirmOpen(true)}
+                >
+                  <span className="home-btn__row">
+                    <RotateCcw size={16} aria-hidden="true" />
+                    세션 초기화
+                  </span>
+                  <span>현재 시험 세션만 비우기 (최근 채점 기록 유지)</span>
+                </button>
+              </div>
+              {message ? <p className="edit-toast">{message}</p> : null}
+            </article>
+
+            <article className="home-section-card">
+              <header className="home-section-card__head">
+                <span className="home-section-card__icon" aria-hidden="true">
+                  <Library size={18} />
+                </span>
+                <div className="home-section-card__titles">
+                  <h2>저장된 시험지</h2>
+                </div>
+                <span className="badge">{project.exams.length}</span>
+              </header>
+              {!project.exams.length ? (
+                <p className="edit-page__sub">
+                  아직 시험지가 없습니다. 프로젝트에서 시험지를 만드세요.
+                </p>
+              ) : (
+                <ul className="home-exam-list">
+                  {project.exams.map((ex) => (
+                    <li key={ex.id} className="home-exam-item">
+                      <div className="home-exam-item__meta">
+                        <strong>{ex.title}</strong>
+                        <span>
+                          문제 {ex.problemIds.length}개
+                          {ex.description?.trim()
+                            ? ` · ${ex.description.trim()}`
+                            : ''}
+                        </span>
+                      </div>
+                      <div className="home-exam-item__actions">
+                        <button
+                          type="button"
+                          className="primary-btn btn-with-icon"
+                          disabled={busyId === ex.id}
+                          onClick={() => void openExam(ex.id)}
+                        >
+                          <Play size={15} aria-hidden="true" />
+                          시험 보기
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-btn btn-with-icon"
+                          disabled={busyId === ex.id}
+                          onClick={() => void exportOne(ex.id)}
+                        >
+                          <Download size={15} aria-hidden="true" />
+                          내보내기
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </article>
           </div>
-          {message ? <p className="edit-toast">{message}</p> : null}
         </div>
 
         <aside
           className="home-side-pane"
           style={narrow ? undefined : { width: sideWidth }}
-          aria-label="최근 리포트와 저장된 시험지"
+          aria-label="최근 채점 결과"
         >
           {!narrow ? (
             <EdgeResizeHandle
@@ -278,121 +350,76 @@ export default function HomePage() {
               label="홈 사이드 패널 너비 조절"
             />
           ) : null}
-          <div className="home-card home-side-card">
-            <div className="home-scroll-stack">
-              <section className="home-exam-library">
-                <div className="home-exam-library__head">
-                  <h2>최근 채점 결과</h2>
-                  <span className="badge">{gradeHistory.length}</span>
-                </div>
-                {!historyReady ? (
-                  <p className="edit-page__sub">불러오는 중…</p>
-                ) : !gradeHistory.length ? (
-                  <p className="edit-page__sub">
-                    아직 저장된 채점 결과가 없습니다. 시험에서 채점을 실행하면
-                    여기에 쌓입니다.
-                  </p>
-                ) : (
-                  <ol className="home-exam-list home-grade-list">
-                    {gradeHistory.map((snap) => {
-                      const id =
-                        snap.id ?? `${snap.examId}-${snap.gradedAt}`;
-                      const href = snap.id
-                        ? `/exam/result?id=${encodeURIComponent(snap.id)}`
-                        : '/exam/result';
-                      return (
-                        <li key={id} className="home-exam-item">
-                          <div className="home-exam-item__meta">
-                            <strong>{snap.examTitle || '채점 리포트'}</strong>
-                            <span>
-                              {scoreLabel(snap)}
-                              {' · '}
-                              응시 {formatDurationMs(snap.elapsedMs)}
-                              {' · '}
-                              <time dateTime={toDateTimeAttr(snap.gradedAt)}>
-                                {formatLocalDateTime(snap.gradedAt)}
-                              </time>
-                            </span>
-                          </div>
-                          <div className="home-exam-item__actions">
-                            <Link
-                              className="primary-btn btn-with-icon"
-                              to={href}
-                            >
-                              <ClipboardList size={15} />
-                              리포트
-                            </Link>
-                            {snap.id ? (
-                              <button
-                                type="button"
-                                className="ghost-btn btn-with-icon"
-                                disabled={busyId === `grade-${snap.id}`}
-                                aria-label={`${snap.examTitle} 채점 기록 삭제`}
-                                onClick={() =>
-                                  void removeHistoryItem(snap.id)
-                                }
-                              >
-                                <Trash2 size={15} />
-                                삭제
-                              </button>
-                            ) : null}
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ol>
-                )}
-              </section>
-
-              <section className="home-exam-library">
-                <div className="home-exam-library__head">
-                  <h2>저장된 시험지</h2>
-                  <span className="badge">{project.exams.length}</span>
-                </div>
-                {!project.exams.length ? (
-                  <p className="edit-page__sub">
-                    아직 시험지가 없습니다. 프로젝트에서 시험지를 만드세요.
-                  </p>
-                ) : (
-                  <ul className="home-exam-list">
-                    {project.exams.map((ex) => (
-                      <li key={ex.id} className="home-exam-item">
+          <article className="home-section-card home-section-card--fill">
+            <header className="home-section-card__head">
+              <span className="home-section-card__icon" aria-hidden="true">
+                <ClipboardList size={18} />
+              </span>
+              <div className="home-section-card__titles">
+                <h2>최근 채점 결과</h2>
+              </div>
+              <span className="badge">{gradeHistory.length}</span>
+            </header>
+            <div className="home-section-card__body">
+              {!historyReady ? (
+                <p className="edit-page__sub">불러오는 중…</p>
+              ) : !gradeHistory.length ? (
+                <p className="edit-page__sub">
+                  아직 저장된 채점 결과가 없습니다. 시험에서 채점을 실행하면
+                  여기에 쌓입니다.
+                </p>
+              ) : (
+                <ol className="home-exam-list home-grade-list">
+                  {gradeHistory.map((snap) => {
+                    const id =
+                      snap.id ?? `${snap.examId}-${snap.gradedAt}`;
+                    const href = snap.id
+                      ? `/exam/result?id=${encodeURIComponent(snap.id)}`
+                      : '/exam/result';
+                    return (
+                      <li key={id} className="home-exam-item">
                         <div className="home-exam-item__meta">
-                          <strong>{ex.title}</strong>
+                          <strong>{snap.examTitle || '채점 리포트'}</strong>
                           <span>
-                            문제 {ex.problemIds.length}개
-                            {ex.description?.trim()
-                              ? ` · ${ex.description.trim()}`
-                              : ''}
+                            {scoreLabel(snap)}
+                            {' · '}
+                            응시 {formatDurationMs(snap.elapsedMs)}
+                            {' · '}
+                            <time dateTime={toDateTimeAttr(snap.gradedAt)}>
+                              {formatLocalDateTime(snap.gradedAt)}
+                            </time>
                           </span>
                         </div>
                         <div className="home-exam-item__actions">
-                          <button
-                            type="button"
+                          <Link
                             className="primary-btn btn-with-icon"
-                            disabled={busyId === ex.id}
-                            onClick={() => void openExam(ex.id)}
+                            to={href}
                           >
-                            <Play size={15} />
-                            시험 보기
-                          </button>
-                          <button
-                            type="button"
-                            className="ghost-btn btn-with-icon"
-                            disabled={busyId === ex.id}
-                            onClick={() => void exportOne(ex.id)}
-                          >
-                            <Download size={15} />
-                            내보내기
-                          </button>
+                            <ClipboardList size={15} aria-hidden="true" />
+                            리포트
+                          </Link>
+                          {snap.id ? (
+                            <button
+                              type="button"
+                              className="ghost-btn btn-with-icon"
+                              disabled={busyId === `grade-${snap.id}`}
+                              aria-label={`${snap.examTitle} 채점 기록 삭제`}
+                              onClick={() =>
+                                void removeHistoryItem(snap.id)
+                              }
+                            >
+                              <Trash2 size={15} aria-hidden="true" />
+                              삭제
+                            </button>
+                          ) : null}
                         </div>
                       </li>
-                    ))}
-                  </ul>
-                )}
-              </section>
+                    );
+                  })}
+                </ol>
+              )}
             </div>
-          </div>
+          </article>
         </aside>
       </div>
 
