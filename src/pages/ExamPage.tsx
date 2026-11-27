@@ -100,6 +100,7 @@ import {
   getExamEndedMs,
   markExamEndedMs,
 } from '@/lib/examTimer';
+import { excludeExamFromResume } from '@/lib/examResumeExclude';
 
 const SIDEBAR_W_DEFAULT = 240;
 const SIDEBAR_W_MIN = 180;
@@ -121,7 +122,6 @@ export default function ExamPage() {
     exportZip,
     loadSampleExam,
     clear,
-    releaseForGrade,
   } = useExamSession();
   const { theme, toggleTheme, setTheme } = useTheme();
   const { runtime, ensureRuntimes } = useRuntime();
@@ -621,9 +621,8 @@ export default function ExamPage() {
         });
         // Show loading UI immediately; grading continues after navigation.
         navigate('/exam/result');
-        // Drop session so Home "이어풀기" no longer offers this graded exam.
-        // Keep type-2 blobs until gradeExam finishes reading them.
-        releaseForGrade();
+        // Keep the session so "시험으로" can reopen it; only hide Home resume.
+        excludeExamFromResume(gradingExamId);
 
         appendActivityEvent(gradingExamId, {
           type: 'grade',
@@ -642,8 +641,8 @@ export default function ExamPage() {
                   : `채점 중 · ${p.title || `문항 ${p.current + 1}`}`,
             });
           },
-          onQuizUpdate: () => {
-            // Session already released — ignore live patches.
+          onQuizUpdate: (quizId, patch) => {
+            updateQuiz(quizId, patch);
           },
         });
         const startMs = ensureExamStartMs(gradingExamId);
@@ -660,8 +659,7 @@ export default function ExamPage() {
         });
         finishGradeProgress();
       } catch (err) {
-        // Grade was requested — never leave this exam in "이어풀기".
-        releaseForGrade();
+        excludeExamFromResume(gradingExamId);
         const message = err instanceof Error ? err.message : String(err);
         const startMs = ensureExamStartMs(gradingExamId);
         const events = loadActivityEvents(gradingExamId);
@@ -697,7 +695,7 @@ export default function ExamPage() {
         setGradeBusy(false);
       }
     },
-    [exam, gradeBusy, navigate, releaseForGrade, updateQuiz],
+    [exam, gradeBusy, navigate, updateQuiz],
   );
 
   const requestGrade = useCallback(() => {

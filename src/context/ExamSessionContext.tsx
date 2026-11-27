@@ -17,6 +17,7 @@ import {
 import { SAMPLE_PROJECT } from '@/data/sampleProject';
 import { parseExamZip, exportExamZip } from '@/lib/examZip';
 import { clearType2ExamSubmissions } from '@/lib/type2ResultStore';
+import { clearExamResumeExclude } from '@/lib/examResumeExclude';
 import type { ExamSet, QuizProblem } from '@/types/exam';
 
 interface ExamSessionContextValue {
@@ -30,11 +31,6 @@ interface ExamSessionContextValue {
   exportZip: () => Promise<void>;
   loadSampleExam: () => void;
   clear: () => void;
-  /**
-   * Drop the take-home session so Home "이어풀기" hides, but keep type-2
-   * submission blobs until grading finishes (caller cleans those up).
-   */
-  releaseForGrade: () => string | null;
 }
 
 const ExamSessionContext = createContext<ExamSessionContextValue | null>(null);
@@ -81,9 +77,12 @@ export function ExamSessionProvider({ children }: { children: ReactNode }) {
       const prevId = examRef.current?.id;
       void clearExamSession();
       if (prevId) void clearType2ExamSubmissions(prevId);
+      clearExamResumeExclude();
       setExamState(null);
       return;
     }
+    // Loading / replacing a session re-enables Home resume for this exam.
+    clearExamResumeExclude();
     setExamState({ ...next, kind: 'exam', updatedAt: new Date().toISOString() });
   }, []);
 
@@ -114,6 +113,7 @@ export function ExamSessionProvider({ children }: { children: ReactNode }) {
 
   const importExamZip = useCallback(async (file: File) => {
     const next = await parseExamZip(file);
+    clearExamResumeExclude();
     setExamState({ ...next, kind: 'exam', updatedAt: new Date().toISOString() });
   }, []);
 
@@ -123,6 +123,7 @@ export function ExamSessionProvider({ children }: { children: ReactNode }) {
   }, [exam]);
 
   const loadSampleExam = useCallback(() => {
+    clearExamResumeExclude();
     setExamState(materializeExam(SAMPLE_PROJECT));
   }, []);
 
@@ -130,15 +131,8 @@ export function ExamSessionProvider({ children }: { children: ReactNode }) {
     const prevId = examRef.current?.id;
     void clearExamSession();
     if (prevId) void clearType2ExamSubmissions(prevId);
+    clearExamResumeExclude();
     setExamState(null);
-  }, []);
-
-  const releaseForGrade = useCallback(() => {
-    const prevId = examRef.current?.id ?? null;
-    examRef.current = null;
-    setExamState(null);
-    void clearExamSession();
-    return prevId;
   }, []);
 
   const value = useMemo(
@@ -152,7 +146,6 @@ export function ExamSessionProvider({ children }: { children: ReactNode }) {
       exportZip,
       loadSampleExam,
       clear,
-      releaseForGrade,
     }),
     [
       exam,
@@ -164,7 +157,6 @@ export function ExamSessionProvider({ children }: { children: ReactNode }) {
       exportZip,
       loadSampleExam,
       clear,
-      releaseForGrade,
     ],
   );
 

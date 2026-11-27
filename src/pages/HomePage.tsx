@@ -36,6 +36,7 @@ import {
   toDateTimeAttr,
 } from '@/lib/formatLocalTime';
 import { getExamSessionProgress } from '@/lib/examSessionProgress';
+import { isExamExcludedFromResume } from '@/lib/examResumeExclude';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 
 const SIDE_W_DEFAULT = 400;
@@ -69,9 +70,12 @@ export default function HomePage() {
     return Math.max(SIDE_W_MIN, Math.floor(window.innerWidth * 0.55));
   }, [narrow]);
 
+  const showResume = Boolean(
+    exam && !isExamExcludedFromResume(exam.id),
+  );
   const resumeProgress = useMemo(
-    () => (exam ? getExamSessionProgress(exam) : null),
-    [exam],
+    () => (showResume && exam ? getExamSessionProgress(exam) : null),
+    [exam, showResume],
   );
 
   useEffect(() => {
@@ -364,7 +368,7 @@ export default function HomePage() {
             />
           ) : null}
           <div className="home-side-stack">
-            {exam && resumeProgress ? (
+            {showResume && resumeProgress && exam ? (
               <article className="home-section-card home-section-card--resume">
                 <header className="home-section-card__head">
                   <span className="home-section-card__icon" aria-hidden="true">
