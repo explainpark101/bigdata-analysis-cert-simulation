@@ -74,7 +74,23 @@ function buildFixPrompt(
     lines.push(
       '',
       '작업형 2유형: 답안 코드가 오류 없이 result.csv를 쓰도록 고치세요.',
+      '채점(제출) CSV는 데이터 칼럼이 반드시 1개여야 합니다 (예측값 한 열, index/Unnamed 금지).',
     );
+    if (verify.reason === 'type2_multi_column_csv') {
+      lines.push(
+        '실패 원인: result.csv 칼럼 수가 1개가 아닙니다. to_csv(..., index=False) / write.csv(..., row.names=FALSE)로 단일 예측 칼럼만 남기세요.',
+      );
+    }
+    if (verify.reason === 'type2_index_column_csv') {
+      lines.push(
+        '실패 원인: result.csv에 index/Unnamed 칼럼이 있습니다. to_csv(..., index=False) / write.csv(..., row.names=FALSE)로 고치세요.',
+      );
+    }
+    if (verify.reason === 'type2_missing_result_csv') {
+      lines.push(
+        '실패 원인: result.csv가 생성되지 않았습니다. 제출 파일명과 경로를 확인하세요.',
+      );
+    }
   }
   lines.push(
     '',

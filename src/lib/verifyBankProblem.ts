@@ -1,3 +1,8 @@
+import {
+  type2CsvDataColumns,
+  type2CsvHasIndexHeader,
+} from '@/lib/examGrade';
+import { readExamResultCsv } from '@/lib/examResultFile';
 import { resolveAssets } from '@/lib/projectIO';
 import { withRuntimeLock } from '@/lib/runtimeMutex';
 import { shortAnswersEqual } from '@/lib/shortAnswerMatch';
@@ -91,18 +96,30 @@ export async function verifyBankProblemAnswer(
     );
     const files = resolveAssets(hydrated, problem.assetIds);
 
+    const submitPath = problem.submitFile?.trim() || 'result.csv';
     const { runtimeSessionLabel } = await import('@/lib/runtimeLockWait');
     const out = await withRuntimeLock(
       async () => {
+        let run;
         if (lang === 'python') {
           await preloadPyodide();
           await mountAssetsToPyodide(files);
-          return runPython(answerCode);
+          run = await runPython(answerCode);
+        } else {
+          await preloadWebR();
+          const { mountAssetsToWebR } = await import('@/runtimes/fsMount');
+          await mountAssetsToWebR(files);
+          run = await runR(answerCode);
         }
-        await preloadWebR();
-        const { mountAssetsToWebR } = await import('@/runtimes/fsMount');
-        await mountAssetsToWebR(files);
-        return runR(answerCode);
+        let resultCsv: string | null = null;
+        if (type2 && run.ok) {
+          try {
+            resultCsv = await readExamResultCsv(lang, submitPath);
+          } catch {
+            resultCsv = null;
+          }
+        }
+        return { ...run, resultCsv };
       },
       {
         runtime: lang,
@@ -131,7 +148,52 @@ export async function verifyBankProblemAnswer(
       };
     }
 
-    if (!type2 && match === false) {
+    if (type2) {
+      if (!out.resultCsv?.trim()) {
+        return {
+          ok: false,
+          stdout: out.stdout,
+          stderr: out.stderr || `Missing ${submitPath} after answer code run.`,
+          expected,
+          got,
+          match: null,
+          needsAiReview: true,
+          reason: 'type2_missing_result_csv',
+        };
+      }
+      const dataCols = type2CsvDataColumns(out.resultCsv);
+      const hasIndex = type2CsvHasIndexHeader(out.resultCsv);
+      if (dataCols.length !== 1 || hasIndex) {
+        return {
+          ok: false,
+          stdout: out.stdout,
+          stderr:
+            out.stderr ||
+            (hasIndex
+              ? `${submitPath} must not include an index/Unnamed column — write a single prediction column (index=False / row.names=FALSE).`
+              : `${submitPath} must have exactly 1 data column for grading (found ${dataCols.length}: ${dataCols.join(', ') || '(none)'}). Write a single prediction column.`),
+          expected,
+          got,
+          match: null,
+          needsAiReview: true,
+          reason: hasIndex
+            ? 'type2_index_column_csv'
+            : 'type2_multi_column_csv',
+        };
+      }
+      return {
+        ok: true,
+        stdout: out.stdout,
+        stderr: out.stderr,
+        expected,
+        got,
+        match: null,
+        needsAiReview: false,
+        reason: 'type2_ok',
+      };
+    }
+
+    if (match === false) {
       return {
         ok: true,
         stdout: out.stdout,
@@ -144,7 +206,7 @@ export async function verifyBankProblemAnswer(
       };
     }
 
-    if (!type2 && expected.length === 0) {
+    if (expected.length === 0) {
       return {
         ok: true,
         stdout: out.stdout,
@@ -163,9 +225,9 @@ export async function verifyBankProblemAnswer(
       stderr: out.stderr,
       expected,
       got,
-      match: type2 ? null : true,
+      match: true,
       needsAiReview: false,
-      reason: type2 ? 'type2_ok' : 'match',
+      reason: 'match',
     };
   } catch (err) {
     return {

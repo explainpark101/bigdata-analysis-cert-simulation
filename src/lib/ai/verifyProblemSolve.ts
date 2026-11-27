@@ -4,6 +4,11 @@ import {
   stdoutHasNonFiniteAnswer,
 } from '@/lib/ai/authorRuntimePrompt';
 import { linkedCsvAssetIds } from '@/lib/ai/ensureProblemCsv';
+import {
+  type2CsvDataColumns,
+  type2CsvHasIndexHeader,
+} from '@/lib/examGrade';
+import { readExamResultCsv } from '@/lib/examResultFile';
 import { resolveAssets } from '@/lib/projectIO';
 import { shortAnswersEqual } from '@/lib/shortAnswerMatch';
 import { mountAssetsToPyodide } from '@/runtimes/fsMount';
@@ -75,22 +80,6 @@ function pickAnswerLanguage(
   return null;
 }
 
-async function runtimeHasResultCsv(
-  language: 'python' | 'r',
-): Promise<boolean> {
-  if (language === 'python') {
-    const py = await preloadPyodide();
-    return Boolean(py.FS.analyzePath('result.csv').exists);
-  }
-  const { readWebRFileText } = await import('@/runtimes/webrRuntime');
-  try {
-    const text = await readWebRFileText('result.csv');
-    return text.trim().length > 0;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Hydrate linked CSVs from internal storage, mount them, run answer code, and
  * confirm the problem is actually solvable with those files before bank save.
@@ -124,21 +113,37 @@ export async function verifyDraftSolvedWithStoredCsv(
   input.project.assets = hydrated.assets;
   const files = resolveAssets(hydrated, input.assetIds);
 
-  let out: { ok: boolean; stdout: string; stderr: string };
+  let out: {
+    ok: boolean;
+    stdout: string;
+    stderr: string;
+    resultCsv: string | null;
+  };
   try {
     const { withRuntimeLock } = await import('@/lib/runtimeMutex');
     const { runtimeSessionLabel } = await import('@/lib/runtimeLockWait');
     out = await withRuntimeLock(
       async () => {
+        let run;
         if (lang === 'python') {
           await preloadPyodide();
           await mountAssetsToPyodide(files);
-          return runPython(source);
+          run = await runPython(source);
+        } else {
+          await preloadWebR();
+          const { mountAssetsToWebR } = await import('@/runtimes/fsMount');
+          await mountAssetsToWebR(files);
+          run = await runR(source);
         }
-        await preloadWebR();
-        const { mountAssetsToWebR } = await import('@/runtimes/fsMount');
-        await mountAssetsToWebR(files);
-        return runR(source);
+        let resultCsv: string | null = null;
+        if (input.taskType === 2 && run.ok) {
+          try {
+            resultCsv = await readExamResultCsv(lang, 'result.csv');
+          } catch {
+            resultCsv = null;
+          }
+        }
+        return { ...run, resultCsv };
       },
       {
         runtime: lang,
@@ -183,12 +188,25 @@ export async function verifyDraftSolvedWithStoredCsv(
   }
 
   if (input.taskType === 2) {
-    const hasResult = await runtimeHasResultCsv(lang);
-    if (!hasResult) {
+    if (!out.resultCsv?.trim()) {
       return {
         ok: false,
         error:
           'VERIFY_FAILED: type 2 answer code must write result.csv using the stored CSV mounts',
+        regenerate: true,
+        language: lang,
+        stdout: out.stdout,
+        stderr: out.stderr,
+      };
+    }
+    const dataCols = type2CsvDataColumns(out.resultCsv);
+    const hasIndex = type2CsvHasIndexHeader(out.resultCsv);
+    if (dataCols.length !== 1 || hasIndex) {
+      return {
+        ok: false,
+        error: hasIndex
+          ? 'VERIFY_FAILED: type 2 result.csv must not include an index/Unnamed column — write a single prediction column with index=False / row.names=FALSE'
+          : `VERIFY_FAILED: type 2 result.csv must have exactly 1 data column for grading (found ${dataCols.length}: ${dataCols.join(', ') || '(none)'}). Write a single prediction column with index=False / row.names=FALSE.`,
         regenerate: true,
         language: lang,
         stdout: out.stdout,

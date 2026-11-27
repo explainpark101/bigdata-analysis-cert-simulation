@@ -26,6 +26,7 @@ import {
 import { useExamSession } from '@/context/ExamSessionContext';
 import { useProject } from '@/context/ProjectContext';
 import { clearExamResumeExclude } from '@/lib/examResumeExclude';
+import { restoreExamFromGradeReport } from '@/lib/restoreExamFromGrade';
 
 const CODE_W_DEFAULT = 420;
 const CODE_W_MIN = 260;
@@ -196,29 +197,32 @@ export default function GradeResultPage() {
       // Returning from a report means the user wants to (re)take this exam.
       clearExamResumeExclude();
 
-      if (exam?.id === snap.examId) {
-        navigate('/exam');
+      let base = exam?.id === snap.examId ? exam : null;
+
+      if (!base) {
+        const inProject = project.exams.some((e) => e.id === snap.examId);
+        if (inProject) {
+          selectExam(snap.examId);
+          base = await pushExamToSession(snap.examId);
+        }
+      }
+
+      if (!base) {
+        if (exam) {
+          // Different live session — still allow leaving the report.
+          navigate('/exam');
+          return;
+        }
+        setBackMessage(
+          '이 리포트에 연결된 시험 세션이 없습니다. 홈의 저장된 시험지에서 다시 열어 주세요.',
+        );
         return;
       }
 
-      const inProject = project.exams.some((e) => e.id === snap.examId);
-      if (inProject) {
-        selectExam(snap.examId);
-        const next = await pushExamToSession(snap.examId);
-        setExam(next);
-        navigate('/exam');
-        return;
-      }
-
-      if (exam) {
-        // Different live session — still allow leaving the report.
-        navigate('/exam');
-        return;
-      }
-
-      setBackMessage(
-        '이 리포트에 연결된 시험 세션이 없습니다. 홈의 저장된 시험지에서 다시 열어 주세요.',
-      );
+      // Re-apply code drafts + short answers + type-2 CSV from this report.
+      const restored = restoreExamFromGradeReport(base, snap.report);
+      setExam(restored);
+      navigate('/exam');
     } catch (err) {
       setBackMessage(err instanceof Error ? err.message : String(err));
     } finally {

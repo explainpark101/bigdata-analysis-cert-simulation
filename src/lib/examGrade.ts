@@ -78,6 +78,8 @@ export interface GradeItem {
   answers?: GradeAnswerRow[];
   type2Score?: Type2ScoreInfo;
   submittedCsvPreview?: string;
+  /** Full type-2 submit CSV (for restoring the exam session from a report). */
+  submittedCsv?: string;
   /** Examinee code draft (for AI coaching on the report page). */
   userCode?: string;
   language?: 'python' | 'r';
@@ -362,29 +364,52 @@ function gradeShortQuiz(quiz: QuizProblem, exam: ExamSet): GradeItem {
   };
 }
 
+/** Header cells of a type-2 submit CSV (result.csv). */
+export function type2CsvHeaderColumns(csv: string): string[] {
+  const lines = csv.replace(/\r\n/g, '\n').split('\n').filter((l) => l.trim());
+  if (!lines.length) return [];
+  return lines[0]
+    .split(',')
+    .map((c) => c.trim().replace(/^"|"$/g, ''));
+}
+
+/** True when the first header cell looks like a pandas/R index column. */
+export function type2CsvHasIndexHeader(csv: string): boolean {
+  const cols = type2CsvHeaderColumns(csv);
+  if (!cols.length) return false;
+  return (
+    cols[0] === '' ||
+    /^unnamed/i.test(cols[0]) ||
+    /^index$/i.test(cols[0])
+  );
+}
+
+/**
+ * Prediction / submit columns only (index/Unnamed stripped).
+ * Official type-2 submit format requires exactly one data column.
+ */
+export function type2CsvDataColumns(csv: string): string[] {
+  const cols = type2CsvHeaderColumns(csv);
+  if (!cols.length) return [];
+  return type2CsvHasIndexHeader(csv) ? cols.slice(1) : cols;
+}
+
 /** Inspect submitted CSV for 제13회 type-2 format penalties. */
 export function type2FormatPenalties(csv: string): {
   penalty: number;
   reasons: string[];
 } {
   const reasons: string[] = [];
-  const lines = csv.replace(/\r\n/g, '\n').split('\n').filter((l) => l.trim());
-  if (!lines.length) {
+  const dataCols = type2CsvDataColumns(csv);
+  if (!type2CsvHeaderColumns(csv).length) {
     return { penalty: 0, reasons };
   }
-  const header = lines[0];
-  const cols = header.split(',').map((c) => c.trim().replace(/^"|"$/g, ''));
-  const looksLikeIndex =
-    cols[0] === '' ||
-    /^unnamed/i.test(cols[0]) ||
-    /^index$/i.test(cols[0]);
-  const dataCols = looksLikeIndex ? cols.slice(1) : cols;
   if (dataCols.length > 1) {
     reasons.push(
       `제출 칼럼 1개 초과 (${dataCols.length}개) −${TYPE2_FORMAT_PENALTY}`,
     );
   }
-  if (looksLikeIndex) {
+  if (type2CsvHasIndexHeader(csv)) {
     reasons.push(`index/Unnamed 칼럼 포함 −${TYPE2_FORMAT_PENALTY}`);
   }
   const penalty = reasons.length * TYPE2_FORMAT_PENALTY;
@@ -576,6 +601,7 @@ async function gradeType2Quiz(
       ].join('\n'),
       earned,
       submittedCsvPreview: preview,
+      submittedCsv,
     };
   }
 
@@ -695,6 +721,7 @@ async function gradeType2Quiz(
       earned,
       type2Score,
       submittedCsvPreview: preview,
+      submittedCsv,
     };
   } catch (err) {
     return {
@@ -703,6 +730,7 @@ async function gradeType2Quiz(
       detail: err instanceof Error ? err.message : String(err),
       earned: 0,
       submittedCsvPreview: preview,
+      submittedCsv,
     };
   }
 }
