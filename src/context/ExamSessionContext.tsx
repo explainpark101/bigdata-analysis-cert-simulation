@@ -43,7 +43,9 @@ export function ExamSessionProvider({ children }: { children: ReactNode }) {
     void (async () => {
       const stored = await loadExamSession();
       if (cancelled) return;
-      setExamState(stored ?? materializeExam(SAMPLE_PROJECT));
+      // Empty IDB → null so Home "이어풀기" only appears for a real session.
+      // ExamPage empty state still offers loading a sample / zip.
+      setExamState(stored);
       setReady(true);
     })();
     return () => {

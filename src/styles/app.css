@@ -5592,6 +5592,50 @@ a.ghost-btn {
   overscroll-behavior: contain;
 }
 
+.home-section-card--resume {
+  border-color: color-mix(in srgb, var(--dq-accent) 35%, var(--dq-card-border));
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--dq-accent) 10%, transparent) 0%,
+      transparent 42%
+    ),
+    var(--dq-surface);
+}
+
+.home-resume-exam {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--dq-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--dq-bg) 55%, var(--dq-surface));
+}
+
+.home-resume-exam__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 180px;
+}
+
+.home-resume-exam__meta strong {
+  font-size: 14px;
+}
+
+.home-resume-exam__meta span {
+  font-size: 12px;
+  color: var(--dq-muted);
+}
+
+.home-resume-exam__cta {
+  flex: 0 0 auto;
+}
+
 .home-actions {
   display: grid;
   gap: 10px;

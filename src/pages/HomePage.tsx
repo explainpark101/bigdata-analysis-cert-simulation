@@ -5,6 +5,7 @@ import {
   Download,
   FolderKanban,
   FolderOpen,
+  History,
   Library,
   Moon,
   Play,
@@ -34,6 +35,7 @@ import {
   formatLocalDateTime,
   toDateTimeAttr,
 } from '@/lib/formatLocalTime';
+import { getExamSessionProgress } from '@/lib/examSessionProgress';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 
 const SIDE_W_DEFAULT = 400;
@@ -66,6 +68,11 @@ export default function HomePage() {
     if (typeof window === 'undefined') return 640;
     return Math.max(SIDE_W_MIN, Math.floor(window.innerWidth * 0.55));
   }, [narrow]);
+
+  const resumeProgress = useMemo(
+    () => (exam ? getExamSessionProgress(exam) : null),
+    [exam],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -235,7 +242,11 @@ export default function HomePage() {
                     <Play size={16} aria-hidden="true" />
                     시험보기
                   </span>
-                  <span>.exam.zip 불러오기 · 현재 세션 이어하기</span>
+                  <span>
+                    {exam
+                      ? '시험 화면으로 이동 · ZIP / 샘플 불러오기'
+                      : '.exam.zip 불러오기 · 샘플 시험 시작'}
+                  </span>
                 </Link>
                 <button
                   type="button"
@@ -264,20 +275,66 @@ export default function HomePage() {
                   </span>
                   <span>.exam.zip 불러와 시험 세션으로 이동</span>
                 </button>
-                <button
-                  type="button"
-                  className="danger-btn home-btn"
-                  onClick={() => setClearConfirmOpen(true)}
-                >
-                  <span className="home-btn__row">
-                    <RotateCcw size={16} aria-hidden="true" />
-                    세션 초기화
-                  </span>
-                  <span>현재 시험 세션만 비우기 (최근 채점 기록 유지)</span>
-                </button>
+                {exam ? (
+                  <button
+                    type="button"
+                    className="danger-btn home-btn"
+                    onClick={() => setClearConfirmOpen(true)}
+                  >
+                    <span className="home-btn__row">
+                      <RotateCcw size={16} aria-hidden="true" />
+                      세션 초기화
+                    </span>
+                    <span>현재 시험 세션만 비우기 (최근 채점 기록 유지)</span>
+                  </button>
+                ) : null}
               </div>
               {message ? <p className="edit-toast">{message}</p> : null}
             </article>
+
+            {exam && resumeProgress ? (
+              <article className="home-section-card home-section-card--resume">
+                <header className="home-section-card__head">
+                  <span className="home-section-card__icon" aria-hidden="true">
+                    <History size={18} />
+                  </span>
+                  <div className="home-section-card__titles">
+                    <h2>이어서 풀기</h2>
+                    <p>
+                      마지막으로 열어 둔 시험지입니다. 작성 중인 답안은 그대로
+                      유지됩니다.
+                    </p>
+                  </div>
+                </header>
+                <div className="home-resume-exam">
+                  <div className="home-resume-exam__meta">
+                    <strong>{exam.title || '시험 세션'}</strong>
+                    <span>
+                      문항 {resumeProgress.quizCount}개
+                      {resumeProgress.submitCount > 0
+                        ? ` · 제출 ${resumeProgress.submittedCount}/${resumeProgress.submitCount}`
+                        : ''}
+                      {resumeProgress.hasDraftWork ? ' · 작성 중' : ''}
+                      {exam.updatedAt ? (
+                        <>
+                          {' · '}
+                          <time dateTime={toDateTimeAttr(exam.updatedAt)}>
+                            {formatLocalDateTime(exam.updatedAt)}
+                          </time>
+                        </>
+                      ) : null}
+                    </span>
+                  </div>
+                  <Link
+                    className="primary-btn btn-with-icon home-resume-exam__cta"
+                    to="/exam"
+                  >
+                    <Play size={15} aria-hidden="true" />
+                    이어풀기
+                  </Link>
+                </div>
+              </article>
+            ) : null}
 
             <article className="home-section-card">
               <header className="home-section-card__head">
