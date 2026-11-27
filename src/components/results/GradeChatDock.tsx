@@ -294,6 +294,7 @@ export function GradeChatDock({
                       {!streaming ? (
                         <CopyButton
                           targetId={bodyId}
+                          text={raw}
                           label="메시지 내용 복사"
                           className="variant-msg__copy"
                         />

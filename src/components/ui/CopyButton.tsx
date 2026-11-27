@@ -61,14 +61,24 @@ async function copyText(button: HTMLButtonElement, text: string) {
 }
 
 interface CopyButtonProps {
-  /** id of the element whose text will be copied */
+  /** id of the element whose text will be copied (fallback when `text` is omitted) */
   targetId: string;
+  /**
+   * Explicit clipboard payload. Prefer this for rendered markdown so the
+   * markdown source is copied instead of `innerText` from the HTML view.
+   */
+  text?: string;
   /** Accessible name, e.g. "메시지 내용 복사" */
   label: string;
   className?: string;
 }
 
-export function CopyButton({ targetId, label, className }: CopyButtonProps) {
+export function CopyButton({
+  targetId,
+  text: textProp,
+  label,
+  className,
+}: CopyButtonProps) {
   const tipId = useId();
 
   return (
@@ -79,6 +89,11 @@ export function CopyButton({ targetId, label, className }: CopyButtonProps) {
         aria-label={label}
         aria-describedby={tipId}
         onClick={(e) => {
+          const explicit = textProp?.trim();
+          if (explicit) {
+            void copyText(e.currentTarget, explicit);
+            return;
+          }
           const target = document.getElementById(targetId);
           if (!target) return;
           const text = target.matches('input, textarea')
