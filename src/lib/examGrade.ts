@@ -156,17 +156,59 @@ function draftForLang(
   return '';
 }
 
-function baseFields(quiz: QuizProblem) {
-  const lang = quiz.language ?? 'python';
+/**
+ * Type 1/3: examinees write & run code on the `practice` quiz; short answers
+ * live on a separate `submit` quiz. Prefer the runnable workspace for report
+ * code. Type 2 keeps code on the submit quiz itself.
+ */
+function codeWorkspaceQuiz(
+  exam: ExamSet,
+  graded: QuizProblem,
+): QuizProblem {
+  const group = graded.notepadGroup;
+  const practice = exam.quizzes.find(
+    (q) =>
+      q.kind === 'practice' &&
+      q.taskType === graded.taskType &&
+      (!group || q.notepadGroup === group),
+  );
+  if (practice) return practice;
+
+  // Fallback: any non-short code workspace sharing the notepad group / type.
+  const peer = exam.quizzes.find(
+    (q) =>
+      q.id !== graded.id &&
+      q.viewMode !== 'short' &&
+      q.taskType === graded.taskType &&
+      (!group || q.notepadGroup === group),
+  );
+  return peer ?? graded;
+}
+
+function mergeDraftForLang(
+  primary: QuizProblem,
+  secondary: QuizProblem | null,
+  lang: 'python' | 'r',
+): string {
+  return draftForLang(primary, lang) || (secondary ? draftForLang(secondary, lang) : '');
+}
+
+function baseFields(quiz: QuizProblem, codeQuiz: QuizProblem = quiz) {
+  // Prefer workspace (practice) drafts; fall back to graded quiz buffers
+  // (type-2 submit, or legacy single-quiz exams).
+  const secondary = codeQuiz.id === quiz.id ? null : quiz;
   const userCodes = {
-    python: draftForLang(quiz, 'python'),
-    r: draftForLang(quiz, 'r'),
+    python: mergeDraftForLang(codeQuiz, secondary, 'python'),
+    r: mergeDraftForLang(codeQuiz, secondary, 'r'),
   };
+  const lang = codeQuiz.language ?? quiz.language ?? 'python';
   // Prefer the active language buffer; if empty, fall back to the other
   // language so legacy single-buffer sessions still surface written code.
   const userCode =
     userCodes[lang] ||
     userCodes[lang === 'python' ? 'r' : 'python'] ||
+    codeQuiz.starterCode?.[lang]?.trim() ||
+    codeQuiz.starterCode?.[lang === 'python' ? 'r' : 'python']?.trim() ||
     quiz.starterCode?.[lang]?.trim() ||
     quiz.starterCode?.[lang === 'python' ? 'r' : 'python']?.trim() ||
     '';
@@ -201,9 +243,9 @@ function slotMaxPoints(
   return 1;
 }
 
-function gradeShortQuiz(quiz: QuizProblem): GradeItem {
+function gradeShortQuiz(quiz: QuizProblem, exam: ExamSet): GradeItem {
   const slots = quiz.shortSlots ?? [];
-  const base = baseFields(quiz);
+  const base = baseFields(quiz, codeWorkspaceQuiz(exam, quiz));
   const legacyItemMax =
     quiz.taskType === 1 || quiz.taskType === 3
       ? OFFICIAL_POINTS_PER_ITEM[quiz.taskType]
@@ -487,12 +529,13 @@ async function persistType2LabelOntoQuiz(opts: {
 
 async function gradeType2Quiz(
   quiz: QuizProblem,
+  exam: ExamSet,
   timeoutMs: number,
   onQuizUpdate?: GradeQuizUpdate,
 ): Promise<GradeItem> {
   const max = type2MaxPoints();
   const base = {
-    ...baseFields(quiz),
+    ...baseFields(quiz, codeWorkspaceQuiz(exam, quiz)),
     max,
   };
 
@@ -761,9 +804,16 @@ export async function gradeExam(
       title: quiz.title,
     });
     if (quiz.taskType === 2 || quiz.submitFormat === 'csv') {
-      items.push(await gradeType2Quiz(quiz, timeoutMs, opts?.onQuizUpdate));
+      items.push(
+        await gradeType2Quiz(
+          quiz,
+          hydrated,
+          timeoutMs,
+          opts?.onQuizUpdate,
+        ),
+      );
     } else {
-      items.push(gradeShortQuiz(quiz));
+      items.push(gradeShortQuiz(quiz, hydrated));
     }
   }
 
