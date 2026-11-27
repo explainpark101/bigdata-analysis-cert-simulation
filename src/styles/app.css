@@ -5385,9 +5385,9 @@ a.ghost-btn {
   min-height: 0;
   overflow: hidden;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 20px 20px;
   background:
     radial-gradient(ellipse at 20% 0%, color-mix(in srgb, var(--dq-accent) 35%, transparent) 0%, transparent 55%),
     var(--dq-bg);
@@ -5401,18 +5401,50 @@ a.ghost-btn {
 }
 
 .home-top-actions {
-  position: absolute;
-  top: 16px;
-  right: 16px;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
 }
 
-.home-card {
-  width: min(560px, 100%);
-  max-height: 100%;
+.home-split {
+  flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
+  max-inline-size: 1200px;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.home-split--narrow {
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.home-split--narrow .home-main-pane {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.home-split--narrow .home-side-card {
+  height: auto;
+  overflow: visible;
+}
+
+.home-split--narrow .home-scroll-stack {
+  overflow: visible;
+}
+
+.home-card {
+  min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -5423,8 +5455,52 @@ a.ghost-btn {
   color: var(--dq-text);
 }
 
-.home-card--wide {
+/* Standalone empty/error cards still centered (no home-split). */
+.home-page > .home-card {
+  width: min(560px, 100%);
+  max-height: 100%;
+  margin-block: auto;
+  margin-inline: auto;
+}
+
+.home-page > .home-card--wide {
   width: min(720px, 100%);
+}
+
+.home-main-pane {
+  flex: 1 1 0;
+  inline-size: auto;
+  width: auto;
+  margin: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.home-side-pane {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.home-split--narrow .home-side-pane {
+  flex: 0 0 auto;
+  inline-size: 100%;
+  width: 100% !important;
+}
+
+.home-side-pane > .edge-handle--x {
+  left: -3px;
+  right: auto;
+}
+
+.home-side-card {
+  flex: 1 1 auto;
+  height: 100%;
+  padding: 18px 16px;
 }
 
 .home-card h1 {
@@ -5469,7 +5545,6 @@ a.ghost-btn {
 }
 
 .home-scroll-stack {
-  margin-top: 22px;
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -5480,11 +5555,14 @@ a.ghost-btn {
 }
 
 .home-exam-library {
-  padding-top: 18px;
-  border-top: 1px solid var(--dq-border);
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
+}
+
+.home-exam-library + .home-exam-library {
+  padding-top: 18px;
+  border-top: 1px solid var(--dq-border);
 }
 
 .home-exam-library__head {
@@ -5510,10 +5588,6 @@ a.ghost-btn {
 
 .home-grade-list {
   list-style: none;
-}
-
-.home-page .home-card > :not(.home-scroll-stack) {
-  flex: 0 0 auto;
 }
 
 .home-exam-item {
