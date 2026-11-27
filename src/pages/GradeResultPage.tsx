@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Home, Settings, Sparkles } from 'lucide-react';
 import {
   loadGradeResult,
@@ -19,9 +19,13 @@ import { GlobalSettingsModal } from '@/components/settings/GlobalSettingsModal';
 import {
   getGradeProgress,
   gradeProgressRatio,
+  resetGradeProgress,
   subscribeGradeProgress,
   type GradeProgressState,
 } from '@/lib/gradeProgressStore';
+import { useExamSession } from '@/context/ExamSessionContext';
+import { useProject } from '@/context/ProjectContext';
+import { clearExamResumeExclude } from '@/lib/examResumeExclude';
 
 const CODE_W_DEFAULT = 420;
 const CODE_W_MIN = 260;
@@ -98,6 +102,9 @@ function GradeLoadingScreen({ progress }: { progress: GradeProgressState }) {
 export default function GradeResultPage() {
   const [searchParams] = useSearchParams();
   const resultId = searchParams.get('id')?.trim() || null;
+  const navigate = useNavigate();
+  const { exam, setExam } = useExamSession();
+  const { project, selectExam, pushExamToSession } = useProject();
   const [snap, setSnap] = useState<GradeResultSnapshot | null>(null);
   const [ready, setReady] = useState(false);
   const [progress, setProgress] = useState<GradeProgressState>(() =>
@@ -111,8 +118,17 @@ export default function GradeResultPage() {
   const [coachAskNonce, setCoachAskNonce] = useState(0);
   const [narrow, setNarrow] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [backBusy, setBackBusy] = useState(false);
+  const [backMessage, setBackMessage] = useState('');
 
   useEffect(() => subscribeGradeProgress(setProgress), []);
+
+  useEffect(() => {
+    // History deep-links should not stay stuck on an in-flight loading screen.
+    if (resultId && getGradeProgress().phase === 'running') {
+      resetGradeProgress();
+    }
+  }, [resultId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -172,7 +188,46 @@ export default function GradeResultPage() {
     setCoachAskNonce((n) => n + 1);
   };
 
-  if (progress.phase === 'running') {
+  const goToExam = async () => {
+    if (!snap || backBusy) return;
+    setBackMessage('');
+    setBackBusy(true);
+    try {
+      // Returning from a report means the user wants to (re)take this exam.
+      clearExamResumeExclude();
+
+      if (exam?.id === snap.examId) {
+        navigate('/exam');
+        return;
+      }
+
+      const inProject = project.exams.some((e) => e.id === snap.examId);
+      if (inProject) {
+        selectExam(snap.examId);
+        const next = await pushExamToSession(snap.examId);
+        setExam(next);
+        navigate('/exam');
+        return;
+      }
+
+      if (exam) {
+        // Different live session — still allow leaving the report.
+        navigate('/exam');
+        return;
+      }
+
+      setBackMessage(
+        '이 리포트에 연결된 시험 세션이 없습니다. 홈의 저장된 시험지에서 다시 열어 주세요.',
+      );
+    } catch (err) {
+      setBackMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBackBusy(false);
+    }
+  };
+
+  // Live grading only — history ?id= views must stay interactive.
+  if (!resultId && progress.phase === 'running') {
     return <GradeLoadingScreen progress={progress} />;
   }
 
@@ -235,16 +290,27 @@ export default function GradeResultPage() {
             <Settings size={16} />
             AI 설정
           </button>
-          <Link className="ghost-btn btn-with-icon" to="/exam">
+          <button
+            type="button"
+            className="ghost-btn btn-with-icon"
+            disabled={backBusy}
+            onClick={() => void goToExam()}
+          >
             <ArrowLeft size={16} />
-            시험으로
-          </Link>
+            {backBusy ? '여는 중…' : '시험으로'}
+          </button>
           <Link className="ghost-btn btn-with-icon" to="/">
             <Home size={16} />
             홈
           </Link>
         </div>
       </header>
+
+      {backMessage ? (
+        <p className="edit-toast" role="status">
+          {backMessage}
+        </p>
+      ) : null}
 
       <section className="grade-report-summary edit-card">
         <div className="grade-report-summary__score">
