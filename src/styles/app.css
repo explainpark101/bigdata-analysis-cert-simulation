@@ -740,6 +740,12 @@ body.is-resizing-y * {
   color: #ff7369;
 }
 
+/* Problem statement: keep Notion light-mode inline chips even in dark UI. */
+[data-theme='dark'] .problem-panel .md-content :not(pre) > code {
+  background: rgba(135, 131, 120, 0.15);
+  color: #eb5757;
+}
+
 .md-content pre,
 .md-content .md-code-block {
   background: #0f172a;
@@ -5500,6 +5506,20 @@ a.ghost-btn {
 .home-side-pane > .edge-handle--x {
   left: -3px;
   right: auto;
+}
+
+.home-side-stack {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.home-split--narrow .home-side-stack {
+  overflow: visible;
 }
 
 .home-card h1 {

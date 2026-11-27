@@ -59,6 +59,7 @@ import {
 } from '@/lib/examGrade';
 import {
   appendActivityEvent,
+  clearActivityEvents,
   ensureSessionStart,
   loadActivityEvents,
   summarizeActivity,
@@ -87,7 +88,10 @@ import {
 import { preloadWebR, runR } from '@/runtimes/webrRuntime';
 import type { ShortAnswerSlot } from '@/types/exam';
 import { examineeDataFiles } from '@/lib/type2Assets';
-import { saveType2Submission } from '@/lib/type2ResultStore';
+import {
+  clearType2ExamSubmissions,
+  saveType2Submission,
+} from '@/lib/type2ResultStore';
 import { readExamResultCsv } from '@/lib/examResultFile';
 import {
   clearExamTimer,
@@ -117,6 +121,7 @@ export default function ExamPage() {
     exportZip,
     loadSampleExam,
     clear,
+    releaseForGrade,
   } = useExamSession();
   const { theme, toggleTheme, setTheme } = useTheme();
   const { runtime, ensureRuntimes } = useRuntime();
@@ -567,6 +572,8 @@ export default function ExamPage() {
       setGradeConfirmOpen(false);
       // Freeze exam wall clock immediately so grading time is not counted.
       const examEndedAtMs = markExamEndedMs(exam.id);
+      const gradingExamId = exam.id;
+      const gradingExamTitle = exam.title;
 
       try {
         let gradingExam = exam;
@@ -597,7 +604,7 @@ export default function ExamPage() {
             });
             if (q.taskType === 2 && q.submittedCsv?.trim()) {
               await saveType2Submission({
-                examId: exam.id,
+                examId: gradingExamId,
                 quizId: q.id,
                 csv: q.submittedCsv,
                 submitFile: q.submitFile || 'result.csv',
@@ -608,17 +615,20 @@ export default function ExamPage() {
 
         const submitCount = listSubmitQuizzes(gradingExam).length;
         startGradeProgress({
-          examId: exam.id,
-          examTitle: exam.title,
+          examId: gradingExamId,
+          examTitle: gradingExamTitle,
           total: Math.max(1, submitCount),
         });
         // Show loading UI immediately; grading continues after navigation.
         navigate('/exam/result');
+        // Drop session so Home "이어풀기" no longer offers this graded exam.
+        // Keep type-2 blobs until gradeExam finishes reading them.
+        releaseForGrade();
 
-        appendActivityEvent(exam.id, {
+        appendActivityEvent(gradingExamId, {
           type: 'grade',
           at: Date.now(),
-          title: exam.title,
+          title: gradingExamTitle,
         });
         const report = await gradeExam(gradingExam, {
           timeoutMs: maxRunTimeoutMs(gradingExam.maxRunSeconds),
@@ -632,16 +642,16 @@ export default function ExamPage() {
                   : `채점 중 · ${p.title || `문항 ${p.current + 1}`}`,
             });
           },
-          onQuizUpdate: (quizId, patch) => {
-            updateQuiz(quizId, patch);
+          onQuizUpdate: () => {
+            // Session already released — ignore live patches.
           },
         });
-        const startMs = ensureExamStartMs(exam.id);
-        const events = loadActivityEvents(exam.id);
+        const startMs = ensureExamStartMs(gradingExamId);
+        const events = loadActivityEvents(gradingExamId);
         const activity = summarizeActivity(events, examEndedAtMs);
         await saveGradeResult({
-          examId: exam.id,
-          examTitle: exam.title,
+          examId: gradingExamId,
+          examTitle: gradingExamTitle,
           gradedAt: new Date(examEndedAtMs).toISOString(),
           elapsedMs: Math.max(0, examEndedAtMs - startMs),
           report,
@@ -650,12 +660,14 @@ export default function ExamPage() {
         });
         finishGradeProgress();
       } catch (err) {
+        // Grade was requested — never leave this exam in "이어풀기".
+        releaseForGrade();
         const message = err instanceof Error ? err.message : String(err);
-        const startMs = ensureExamStartMs(exam.id);
-        const events = loadActivityEvents(exam.id);
+        const startMs = ensureExamStartMs(gradingExamId);
+        const events = loadActivityEvents(gradingExamId);
         await saveGradeResult({
-          examId: exam.id,
-          examTitle: exam.title,
+          examId: gradingExamId,
+          examTitle: gradingExamTitle,
           gradedAt: new Date(examEndedAtMs).toISOString(),
           elapsedMs: Math.max(0, examEndedAtMs - startMs),
           report: {
@@ -679,10 +691,13 @@ export default function ExamPage() {
         failGradeProgress(message);
         navigate('/exam/result');
       } finally {
+        await clearType2ExamSubmissions(gradingExamId);
+        clearExamTimer(gradingExamId);
+        clearActivityEvents(gradingExamId);
         setGradeBusy(false);
       }
     },
-    [exam, gradeBusy, navigate, updateQuiz],
+    [exam, gradeBusy, navigate, releaseForGrade, updateQuiz],
   );
 
   const requestGrade = useCallback(() => {

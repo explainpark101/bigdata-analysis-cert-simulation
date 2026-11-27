@@ -30,6 +30,11 @@ interface ExamSessionContextValue {
   exportZip: () => Promise<void>;
   loadSampleExam: () => void;
   clear: () => void;
+  /**
+   * Drop the take-home session so Home "이어풀기" hides, but keep type-2
+   * submission blobs until grading finishes (caller cleans those up).
+   */
+  releaseForGrade: () => string | null;
 }
 
 const ExamSessionContext = createContext<ExamSessionContextValue | null>(null);
@@ -128,6 +133,14 @@ export function ExamSessionProvider({ children }: { children: ReactNode }) {
     setExamState(null);
   }, []);
 
+  const releaseForGrade = useCallback(() => {
+    const prevId = examRef.current?.id ?? null;
+    examRef.current = null;
+    setExamState(null);
+    void clearExamSession();
+    return prevId;
+  }, []);
+
   const value = useMemo(
     () => ({
       exam,
@@ -139,6 +152,7 @@ export function ExamSessionProvider({ children }: { children: ReactNode }) {
       exportZip,
       loadSampleExam,
       clear,
+      releaseForGrade,
     }),
     [
       exam,
@@ -150,6 +164,7 @@ export function ExamSessionProvider({ children }: { children: ReactNode }) {
       exportZip,
       loadSampleExam,
       clear,
+      releaseForGrade,
     ],
   );
 

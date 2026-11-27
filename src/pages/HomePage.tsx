@@ -292,50 +292,6 @@ export default function HomePage() {
               {message ? <p className="edit-toast">{message}</p> : null}
             </article>
 
-            {exam && resumeProgress ? (
-              <article className="home-section-card home-section-card--resume">
-                <header className="home-section-card__head">
-                  <span className="home-section-card__icon" aria-hidden="true">
-                    <History size={18} />
-                  </span>
-                  <div className="home-section-card__titles">
-                    <h2>이어서 풀기</h2>
-                    <p>
-                      마지막으로 열어 둔 시험지입니다. 작성 중인 답안은 그대로
-                      유지됩니다.
-                    </p>
-                  </div>
-                </header>
-                <div className="home-resume-exam">
-                  <div className="home-resume-exam__meta">
-                    <strong>{exam.title || '시험 세션'}</strong>
-                    <span>
-                      문항 {resumeProgress.quizCount}개
-                      {resumeProgress.submitCount > 0
-                        ? ` · 제출 ${resumeProgress.submittedCount}/${resumeProgress.submitCount}`
-                        : ''}
-                      {resumeProgress.hasDraftWork ? ' · 작성 중' : ''}
-                      {exam.updatedAt ? (
-                        <>
-                          {' · '}
-                          <time dateTime={toDateTimeAttr(exam.updatedAt)}>
-                            {formatLocalDateTime(exam.updatedAt)}
-                          </time>
-                        </>
-                      ) : null}
-                    </span>
-                  </div>
-                  <Link
-                    className="primary-btn btn-with-icon home-resume-exam__cta"
-                    to="/exam"
-                  >
-                    <Play size={15} aria-hidden="true" />
-                    이어풀기
-                  </Link>
-                </div>
-              </article>
-            ) : null}
-
             <article className="home-section-card">
               <header className="home-section-card__head">
                 <span className="home-section-card__icon" aria-hidden="true">
@@ -394,7 +350,7 @@ export default function HomePage() {
         <aside
           className="home-side-pane"
           style={narrow ? undefined : { width: sideWidth }}
-          aria-label="최근 채점 결과"
+          aria-label="이어풀기와 최근 채점 결과"
         >
           {!narrow ? (
             <EdgeResizeHandle
@@ -407,76 +363,122 @@ export default function HomePage() {
               label="홈 사이드 패널 너비 조절"
             />
           ) : null}
-          <article className="home-section-card home-section-card--fill">
-            <header className="home-section-card__head">
-              <span className="home-section-card__icon" aria-hidden="true">
-                <ClipboardList size={18} />
-              </span>
-              <div className="home-section-card__titles">
-                <h2>최근 채점 결과</h2>
-              </div>
-              <span className="badge">{gradeHistory.length}</span>
-            </header>
-            <div className="home-section-card__body">
-              {!historyReady ? (
-                <p className="edit-page__sub">불러오는 중…</p>
-              ) : !gradeHistory.length ? (
-                <p className="edit-page__sub">
-                  아직 저장된 채점 결과가 없습니다. 시험에서 채점을 실행하면
-                  여기에 쌓입니다.
-                </p>
-              ) : (
-                <ol className="home-exam-list home-grade-list">
-                  {gradeHistory.map((snap) => {
-                    const id =
-                      snap.id ?? `${snap.examId}-${snap.gradedAt}`;
-                    const href = snap.id
-                      ? `/exam/result?id=${encodeURIComponent(snap.id)}`
-                      : '/exam/result';
-                    return (
-                      <li key={id} className="home-exam-item">
-                        <div className="home-exam-item__meta">
-                          <strong>{snap.examTitle || '채점 리포트'}</strong>
-                          <span>
-                            {scoreLabel(snap)}
-                            {' · '}
-                            응시 {formatDurationMs(snap.elapsedMs)}
-                            {' · '}
-                            <time dateTime={toDateTimeAttr(snap.gradedAt)}>
-                              {formatLocalDateTime(snap.gradedAt)}
-                            </time>
-                          </span>
-                        </div>
-                        <div className="home-exam-item__actions">
-                          <Link
-                            className="primary-btn btn-with-icon"
-                            to={href}
-                          >
-                            <ClipboardList size={15} aria-hidden="true" />
-                            리포트
-                          </Link>
-                          {snap.id ? (
-                            <button
-                              type="button"
-                              className="ghost-btn btn-with-icon"
-                              disabled={busyId === `grade-${snap.id}`}
-                              aria-label={`${snap.examTitle} 채점 기록 삭제`}
-                              onClick={() =>
-                                void removeHistoryItem(snap.id)
-                              }
+          <div className="home-side-stack">
+            {exam && resumeProgress ? (
+              <article className="home-section-card home-section-card--resume">
+                <header className="home-section-card__head">
+                  <span className="home-section-card__icon" aria-hidden="true">
+                    <History size={18} />
+                  </span>
+                  <div className="home-section-card__titles">
+                    <h2>이어서 풀기</h2>
+                    <p>
+                      마지막으로 열어 둔 시험지입니다. 작성 중인 답안은 그대로
+                      유지됩니다.
+                    </p>
+                  </div>
+                </header>
+                <div className="home-resume-exam">
+                  <div className="home-resume-exam__meta">
+                    <strong>{exam.title || '시험 세션'}</strong>
+                    <span>
+                      문항 {resumeProgress.quizCount}개
+                      {resumeProgress.submitCount > 0
+                        ? ` · 제출 ${resumeProgress.submittedCount}/${resumeProgress.submitCount}`
+                        : ''}
+                      {resumeProgress.hasDraftWork ? ' · 작성 중' : ''}
+                      {exam.updatedAt ? (
+                        <>
+                          {' · '}
+                          <time dateTime={toDateTimeAttr(exam.updatedAt)}>
+                            {formatLocalDateTime(exam.updatedAt)}
+                          </time>
+                        </>
+                      ) : null}
+                    </span>
+                  </div>
+                  <Link
+                    className="primary-btn btn-with-icon home-resume-exam__cta"
+                    to="/exam"
+                  >
+                    <Play size={15} aria-hidden="true" />
+                    이어풀기
+                  </Link>
+                </div>
+              </article>
+            ) : null}
+
+            <article className="home-section-card home-section-card--fill">
+              <header className="home-section-card__head">
+                <span className="home-section-card__icon" aria-hidden="true">
+                  <ClipboardList size={18} />
+                </span>
+                <div className="home-section-card__titles">
+                  <h2>최근 채점 결과</h2>
+                </div>
+                <span className="badge">{gradeHistory.length}</span>
+              </header>
+              <div className="home-section-card__body">
+                {!historyReady ? (
+                  <p className="edit-page__sub">불러오는 중…</p>
+                ) : !gradeHistory.length ? (
+                  <p className="edit-page__sub">
+                    아직 저장된 채점 결과가 없습니다. 시험에서 채점을 실행하면
+                    여기에 쌓입니다.
+                  </p>
+                ) : (
+                  <ol className="home-exam-list home-grade-list">
+                    {gradeHistory.map((snap) => {
+                      const id =
+                        snap.id ?? `${snap.examId}-${snap.gradedAt}`;
+                      const href = snap.id
+                        ? `/exam/result?id=${encodeURIComponent(snap.id)}`
+                        : '/exam/result';
+                      return (
+                        <li key={id} className="home-exam-item">
+                          <div className="home-exam-item__meta">
+                            <strong>{snap.examTitle || '채점 리포트'}</strong>
+                            <span>
+                              {scoreLabel(snap)}
+                              {' · '}
+                              응시 {formatDurationMs(snap.elapsedMs)}
+                              {' · '}
+                              <time dateTime={toDateTimeAttr(snap.gradedAt)}>
+                                {formatLocalDateTime(snap.gradedAt)}
+                              </time>
+                            </span>
+                          </div>
+                          <div className="home-exam-item__actions">
+                            <Link
+                              className="primary-btn btn-with-icon"
+                              to={href}
                             >
-                              <Trash2 size={15} aria-hidden="true" />
-                              삭제
-                            </button>
-                          ) : null}
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ol>
-              )}
-            </div>
-          </article>
+                              <ClipboardList size={15} aria-hidden="true" />
+                              리포트
+                            </Link>
+                            {snap.id ? (
+                              <button
+                                type="button"
+                                className="ghost-btn btn-with-icon"
+                                disabled={busyId === `grade-${snap.id}`}
+                                aria-label={`${snap.examTitle} 채점 기록 삭제`}
+                                onClick={() =>
+                                  void removeHistoryItem(snap.id)
+                                }
+                              >
+                                <Trash2 size={15} aria-hidden="true" />
+                                삭제
+                              </button>
+                            ) : null}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                )}
+              </div>
+            </article>
+          </div>
         </aside>
       </div>
 
