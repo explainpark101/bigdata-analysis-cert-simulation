@@ -94,12 +94,14 @@ function buildSystemMessage(item: GradeItem): ChatMessage {
 /**
  * Multi-turn grade coach. `history` is prior user/assistant turns only
  * (no system). Returns the updated visible history including the new turn.
+ * `onDelta` receives the accumulating assistant text for live UI streaming.
  */
 export async function askGradeCoachTurn(opts: {
   item: GradeItem;
   history: ChatMessage[];
   userText: string;
   signal?: AbortSignal;
+  onDelta?: (accumulated: string) => void;
 }): Promise<{ reply: string; messages: ChatMessage[] }> {
   const settings = await loadAiSettings();
   const trimmed = opts.userText.trim() || '(empty)';
@@ -110,15 +112,27 @@ export async function askGradeCoachTurn(opts: {
     userMsg,
   ];
 
+  let accumulated = '';
   const result = await createChatCompletion({
     settings,
     temperature: 0.3,
     messages: apiMessages,
     signal: opts.signal,
+    onRetry: () => {
+      accumulated = '';
+      opts.onDelta?.('');
+    },
+    onDelta: (delta) => {
+      if (!delta.content) return;
+      accumulated += delta.content;
+      opts.onDelta?.(accumulated);
+    },
   });
 
   const reply =
-    chatContentToText(result.message.content).trim() || '(빈 응답)';
+    chatContentToText(result.message.content).trim() ||
+    accumulated.trim() ||
+    '(빈 응답)';
   const assistantMsg: ChatMessage = { role: 'assistant', content: reply };
   return {
     reply,

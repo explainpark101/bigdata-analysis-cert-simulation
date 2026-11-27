@@ -592,13 +592,15 @@ export function ModifyChatDock({
                 </div>
                 <button
                   type="button"
-                  className="ghost-btn btn-with-icon variant-dock__abort"
+                  className="variant-dock__abort"
                   onClick={abortGeneration}
                   aria-label={
                     autoReviewBusy ? '일괄 검수 중지' : '수정 중지'
                   }
                 >
-                  <Square size={12} fill="currentColor" aria-hidden />
+                  <span className="variant-dock__abort-icon" aria-hidden>
+                    <Square size={10} fill="currentColor" strokeWidth={0} />
+                  </span>
                   중지
                 </button>
               </div>
@@ -635,13 +637,15 @@ export function ModifyChatDock({
             {dockBusy ? (
               <button
                 type="button"
-                className="ghost-btn btn-with-icon variant-dock__abort"
+                className="variant-dock__abort"
                 onClick={abortGeneration}
                 aria-label={
                   autoReviewBusy ? '일괄 검수 중지' : '수정 중지'
                 }
               >
-                <Square size={12} fill="currentColor" aria-hidden />
+                <span className="variant-dock__abort-icon" aria-hidden>
+                  <Square size={10} fill="currentColor" strokeWidth={0} />
+                </span>
                 중지
               </button>
             ) : null}

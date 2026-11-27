@@ -1156,11 +1156,13 @@ export function AuthorChatDock({
                 </div>
                 <button
                   type="button"
-                  className="ghost-btn btn-with-icon variant-dock__abort"
+                  className="variant-dock__abort"
                   onClick={abortGeneration}
                   aria-label="생성 중지"
                 >
-                  <Square size={12} fill="currentColor" aria-hidden />
+                  <span className="variant-dock__abort-icon" aria-hidden>
+                    <Square size={10} fill="currentColor" strokeWidth={0} />
+                  </span>
                   중지
                 </button>
               </div>
@@ -1190,10 +1192,13 @@ export function AuthorChatDock({
             {busy ? (
               <button
                 type="button"
-                className="ghost-btn btn-with-icon variant-dock__abort"
+                className="variant-dock__abort"
                 onClick={abortGeneration}
+                aria-label="생성 중지"
               >
-                <Square size={12} fill="currentColor" aria-hidden />
+                <span className="variant-dock__abort-icon" aria-hidden>
+                  <Square size={10} fill="currentColor" strokeWidth={0} />
+                </span>
                 중지
               </button>
             ) : null}

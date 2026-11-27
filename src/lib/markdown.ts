@@ -2,6 +2,7 @@ import MarkdownIt from 'markdown-it';
 import TurndownService from 'turndown';
 import { betterMdMarkdownItPlugin } from './betterMdMarkdownItPlugin';
 import { katexMarkdownItPlugin } from './katexMarkdownItPlugin';
+import { lowlightMarkdownItPlugin } from './lowlightMarkdownItPlugin';
 import { buildAssetUrlMap, type MediaAsset } from './assetMedia';
 
 const md = new MarkdownIt({
@@ -12,6 +13,7 @@ const md = new MarkdownIt({
 });
 betterMdMarkdownItPlugin(md);
 katexMarkdownItPlugin(md);
+lowlightMarkdownItPlugin(md);
 
 function tableCellText(cell: Element): string {
   return (cell.textContent ?? '')

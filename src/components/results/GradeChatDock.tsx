@@ -39,10 +39,6 @@ function buildUserMessage(text: string): ChatMessage {
   return { role: 'user', content: text.trim() || '(empty)' };
 }
 
-function visibleText(m: ChatMessage): string {
-  return chatContentToText(m.content).trim() || '(…)';
-}
-
 export function GradeChatDock({
   open,
   item,
@@ -95,13 +91,14 @@ export function GradeChatDock({
   }, [open, item.quizId]);
 
   useEffect(() => {
-    if (!open || !ready) return;
+    // Persist finished turns only — skip mid-stream token writes.
+    if (!open || !ready || busy) return;
     void saveGradeSession({
       quizId: item.quizId,
       messages,
       updatedAt: new Date().toISOString(),
     });
-  }, [open, ready, item.quizId, messages]);
+  }, [open, ready, busy, item.quizId, messages]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -112,9 +109,15 @@ export function GradeChatDock({
     const trimmed = (opts?.text ?? input).trim();
     if (!trimmed || busy) return;
 
-    const historyBefore = messagesRef.current;
+    const historyBefore = messagesRef.current.filter(
+      (m) => !(m.role === 'assistant' && !chatContentToText(m.content).trim()),
+    );
     const userMsg = buildUserMessage(trimmed);
-    setMessages([...historyBefore, userMsg]);
+    const assistantPlaceholder: ChatMessage = {
+      role: 'assistant',
+      content: '',
+    };
+    setMessages([...historyBefore, userMsg, assistantPlaceholder]);
     if (clearComposer) setInput('');
     setBusy(true);
     setError('');
@@ -131,13 +134,42 @@ export function GradeChatDock({
         history: historyBefore,
         userText: trimmed,
         signal: ac.signal,
+        onDelta: (accumulated) => {
+          setMessages([
+            ...historyBefore,
+            userMsg,
+            { role: 'assistant', content: accumulated },
+          ]);
+        },
       });
       setMessages(result.messages);
       setError('');
     } catch (err) {
-      if (!isAbortError(err)) {
+      if (isAbortError(err)) {
+        // Keep partial streamed assistant text if any arrived.
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (
+            last?.role === 'assistant' &&
+            !chatContentToText(last.content).trim()
+          ) {
+            return prev.slice(0, -1);
+          }
+          return prev;
+        });
+      } else {
         setError(err instanceof Error ? err.message : String(err));
-        // Keep the optimistic user message; allow retry from the bubble.
+        // Drop empty placeholder; keep user message for retry.
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (
+            last?.role === 'assistant' &&
+            !chatContentToText(last.content).trim()
+          ) {
+            return prev.slice(0, -1);
+          }
+          return prev;
+        });
       }
     } finally {
       if (abortRef.current === ac) abortRef.current = null;
@@ -161,6 +193,16 @@ export function GradeChatDock({
     );
     abortRef.current = null;
     setBusy(false);
+    setMessages((prev) => {
+      const last = prev[prev.length - 1];
+      if (
+        last?.role === 'assistant' &&
+        !chatContentToText(last.content).trim()
+      ) {
+        return prev.slice(0, -1);
+      }
+      return prev;
+    });
   };
 
   const resetChat = async () => {
@@ -211,11 +253,18 @@ export function GradeChatDock({
           ) : (
             visible.map((m, i) => {
               const bodyId = `${bodyIdPrefix}-body-${i}`;
-              const text = visibleText(m);
+              const raw = chatContentToText(m.content);
+              const streaming =
+                busy &&
+                m.role === 'assistant' &&
+                i === visible.length - 1;
+              const text = streaming
+                ? raw
+                : raw.trim() || '(…)';
               return (
                 <div
                   key={`${m.role}-${i}`}
-                  className={`variant-msg variant-msg--${m.role}`}
+                  className={`variant-msg variant-msg--${m.role}${streaming ? ' variant-msg--streaming' : ''}`}
                 >
                   <div className="variant-msg__top">
                     <span className="variant-msg__role">
@@ -242,21 +291,36 @@ export function GradeChatDock({
                           <RefreshCw size={14} aria-hidden />
                         </button>
                       ) : null}
-                      <CopyButton
-                        targetId={bodyId}
-                        label="메시지 내용 복사"
-                        className="variant-msg__copy"
-                      />
+                      {!streaming ? (
+                        <CopyButton
+                          targetId={bodyId}
+                          label="메시지 내용 복사"
+                          className="variant-msg__copy"
+                        />
+                      ) : null}
                     </div>
                   </div>
                   {m.role === 'assistant' ? (
-                    <div
-                      id={bodyId}
-                      className="variant-msg__body md-content grade-coach-dock__md"
-                      dangerouslySetInnerHTML={{
-                        __html: renderMarkdown(text),
-                      }}
-                    />
+                    streaming ? (
+                      <pre
+                        id={bodyId}
+                        className="variant-msg__body grade-coach-dock__stream"
+                        aria-live="polite"
+                      >
+                        {text}
+                        <span className="variant-dock__caret" aria-hidden>
+                          ▍
+                        </span>
+                      </pre>
+                    ) : (
+                      <div
+                        id={bodyId}
+                        className="variant-msg__body md-content grade-coach-dock__md"
+                        dangerouslySetInnerHTML={{
+                          __html: renderMarkdown(text),
+                        }}
+                      />
+                    )
                   ) : (
                     <pre id={bodyId} className="variant-msg__body">
                       {text}
@@ -270,14 +334,17 @@ export function GradeChatDock({
             <div className="variant-dock__busy-row">
               <div className="variant-dock__busy">
                 <Loader2 size={14} className="spin" />
-                AI 분석 중…
+                응답 생성 중…
               </div>
               <button
                 type="button"
                 className="variant-dock__abort"
                 onClick={abort}
+                aria-label="생성 중지"
               >
-                <Square size={12} />
+                <span className="variant-dock__abort-icon" aria-hidden>
+                  <Square size={10} fill="currentColor" strokeWidth={0} />
+                </span>
                 중지
               </button>
             </div>
