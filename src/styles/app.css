@@ -5733,13 +5733,26 @@ a.ghost-btn {
   flex: 1 1 180px;
 }
 
+.home-exam-item__title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .home-exam-item__meta strong {
   font-size: 14px;
 }
 
-.home-exam-item__meta span {
+.home-exam-item__meta > span {
   font-size: 12px;
   color: var(--dq-muted);
+}
+
+.home-exam-item__attempt {
+  flex: 0 0 auto;
+  font-weight: 600;
 }
 
 .home-exam-item__actions {

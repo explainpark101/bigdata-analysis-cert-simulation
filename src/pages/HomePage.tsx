@@ -78,6 +78,16 @@ export default function HomePage() {
     [exam, showResume],
   );
 
+  /** examId → how many graded attempts exist in local history */
+  const attemptCountByExamId = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const row of gradeHistory) {
+      if (!row.examId) continue;
+      map.set(row.examId, (map.get(row.examId) ?? 0) + 1);
+    }
+    return map;
+  }, [gradeHistory]);
+
   useEffect(() => {
     let cancelled = false;
     void loadGradeResultHistory().then((rows) => {
@@ -312,39 +322,52 @@ export default function HomePage() {
                 </p>
               ) : (
                 <ul className="home-exam-list">
-                  {project.exams.map((ex) => (
-                    <li key={ex.id} className="home-exam-item">
-                      <div className="home-exam-item__meta">
-                        <strong>{ex.title}</strong>
-                        <span>
-                          문제 {ex.problemIds.length}개
-                          {ex.description?.trim()
-                            ? ` · ${ex.description.trim()}`
-                            : ''}
-                        </span>
-                      </div>
-                      <div className="home-exam-item__actions">
-                        <button
-                          type="button"
-                          className="primary-btn btn-with-icon"
-                          disabled={busyId === ex.id}
-                          onClick={() => void openExam(ex.id)}
-                        >
-                          <Play size={15} aria-hidden="true" />
-                          시험 보기
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost-btn btn-with-icon"
-                          disabled={busyId === ex.id}
-                          onClick={() => void exportOne(ex.id)}
-                        >
-                          <Download size={15} aria-hidden="true" />
-                          내보내기
-                        </button>
-                      </div>
-                    </li>
-                  ))}
+                  {project.exams.map((ex) => {
+                    const attempts = attemptCountByExamId.get(ex.id) ?? 0;
+                    return (
+                      <li key={ex.id} className="home-exam-item">
+                        <div className="home-exam-item__meta">
+                          <div className="home-exam-item__title-row">
+                            <strong>{ex.title}</strong>
+                            {attempts > 0 ? (
+                              <span
+                                className="badge ok home-exam-item__attempt"
+                                title={`이 시험지를 ${attempts}회 채점했습니다`}
+                              >
+                                풀이 {attempts}회
+                              </span>
+                            ) : null}
+                          </div>
+                          <span>
+                            문제 {ex.problemIds.length}개
+                            {ex.description?.trim()
+                              ? ` · ${ex.description.trim()}`
+                              : ''}
+                          </span>
+                        </div>
+                        <div className="home-exam-item__actions">
+                          <button
+                            type="button"
+                            className="primary-btn btn-with-icon"
+                            disabled={busyId === ex.id}
+                            onClick={() => void openExam(ex.id)}
+                          >
+                            <Play size={15} aria-hidden="true" />
+                            시험 보기
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-btn btn-with-icon"
+                            disabled={busyId === ex.id}
+                            onClick={() => void exportOne(ex.id)}
+                          >
+                            <Download size={15} aria-hidden="true" />
+                            내보내기
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </article>
